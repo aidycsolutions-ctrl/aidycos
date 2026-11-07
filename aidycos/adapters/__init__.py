@@ -1,0 +1,1 @@
+"""Distribution package-manager adapters."""

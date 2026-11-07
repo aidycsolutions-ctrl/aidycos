@@ -1,0 +1,12 @@
+name = "desktop-runtime"
+description = "Dependencias de sesión Wayland y multimedia usadas como base por Jugoo"
+
+[packages]
+apt = [
+  "wl-clipboard",
+  "wtype",
+  "pipewire-bin",
+  "xdg-desktop-portal",
+  "xdg-desktop-portal-gtk",
+  "swaybg",
+]
