@@ -8,21 +8,16 @@ Esta carpeta es un repositorio Git local independiente. Para publicarlo usando l
 4. Selecciona visibilidad **Public**. No uses el repositorio `AidyC-OS`: es privado y conserva el perfil anterior de ISO.
 5. Confirma el `push` de la rama `main`.
 
-Cuando termine, el repositorio será `https://github.com/aidycsolutions-ctrl/aidycos`. Desde el Debian de prueba:
+El repositorio público ya es `https://github.com/aidycsolutions-ctrl/aidycos`. Después de publicar los últimos cambios en `main`, desde Debian 13 se instala el perfil con:
 
 ```sh
-sudo apt install git python3 python3-venv
-git clone https://github.com/aidycsolutions-ctrl/aidycos.git
-cd aidycos
-./scripts/install-local.sh
-aidycos doctor
-aidycos plan desktop-runtime
+curl -fsSL https://raw.githubusercontent.com/aidycsolutions-ctrl/aidycos/main/install.sh | bash
 ```
 
-La instalación de paquetes del sistema queda como paso separado y explícito:
+Para revisar sin cambios antes de aplicar:
 
 ```sh
-aidycos install desktop-runtime --apply
+bash <(curl -fsSL https://raw.githubusercontent.com/aidycsolutions-ctrl/aidycos/main/install.sh) --dry-run
 ```
 
-El script crea un entorno virtual del usuario. No requiere ejecutar scripts descargados con `curl | sh`.
+El instalador crea el entorno virtual del usuario, instala el perfil y configura los elementos del sistema definidos en README.md.

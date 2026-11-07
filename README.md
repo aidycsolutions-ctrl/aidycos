@@ -1,12 +1,14 @@
 # AidyCOS
 
-AidyCOS es una capa modular para preparar instalaciones Linux existentes. El sistema base sigue siendo Debian, Arch, Ubuntu o Fedora; AidyCOS detecta la distribución y delega paquetes a un adaptador. No construye una ISO.
+AidyCOS adapta una instalación Linux existente al perfil de escritorio del proyecto, sin construir una ISO. El primer perfil automático es Debian 13; Arch, Ubuntu y Fedora están previstos en la arquitectura, pero todavía no tienen un instalador de perfil.
 
 ## Estado
 
-Versión inicial de desarrollo: el primer destino es **Debian 13**. La detección reconoce las familias Debian, Arch y Fedora para orientar el diagnóstico, pero solo Debian 13 tiene un adaptador de instalación activo. Arch, Ubuntu y Fedora quedan preparados como destinos futuros.
+La versión inicial prepara Debian 13 con el escritorio base del proyecto: Hyprland, SDDM, Wayland, audio, utilidades y Jugoo, además de los ajustes de GRUB y `cups-browsed` usados en el perfil de AidyC-OS.
 
-El módulo `desktop-runtime` instala dependencias de sesión Wayland y multimedia presentes en el bootstrap Debian de Jugoo. No instala Jugoo ni Hyprland. Hyprland se deja fuera porque el bootstrap actual de Jugoo lo obtiene de backports, una decisión de repositorios que debe diseñarse por separado.
+La instalación agrega fuentes oficiales de Debian solo cuando faltan paquetes esenciales, y usa `trixie-backports` para Hyprland. Si ya existe una configuración de Hyprland, AidyCOS hace una copia antes de añadir el inicio de Jugoo. También conserva el usuario, la contraseña, el gestor de sesión configurado y el autologin (no configura uno).
+
+El perfil replica la base funcional que se definió para la ISO, no los mecanismos propios de un sistema live. No instala live-boot, no crea usuarios temporales y no configura contraseñas. El equipo conserva su instalación Debian y los archivos personales.
 
 ## Probar desde el checkout
 
@@ -36,24 +38,21 @@ aidycos modules
 
 El instalador crea un entorno virtual en `~/.local/share/aidycos/venv` y enlaza `aidycos` en `~/.local/bin`; no instala paquetes del sistema. Si Debian no tiene soporte de `venv`, el script indica el paquete requerido.
 
-### Probar en otro Debian
+### Instalar el perfil con un comando
 
-Después de publicar el repositorio, el flujo en el segundo equipo será:
-
-```sh
-sudo apt install git python3 python3-venv
-git clone https://github.com/<cuenta>/aidycos.git
-cd aidycos
-./scripts/install-local.sh
-aidycos doctor
-aidycos plan desktop-runtime
-```
-
-Para aplicar los paquetes del módulo:
+Después de publicar estos cambios en la rama `main`, en Debian 13 basta ejecutar:
 
 ```sh
-aidycos install desktop-runtime --apply
+curl -fsSL https://raw.githubusercontent.com/aidycsolutions-ctrl/aidycos/main/install.sh | bash
 ```
+
+El instalador solicita `sudo` para paquetes y configuración del sistema. Se puede revisar la vista previa sin aplicar cambios:
+
+```sh
+bash <(curl -fsSL https://raw.githubusercontent.com/aidycsolutions-ctrl/aidycos/main/install.sh) --dry-run
+```
+
+Al terminar, reinicia y elige **Hyprland** en la pantalla de sesión. El primer inicio de Jugoo depende de que su configuración esté lista. Si las fuentes de APT del equipo están incompletas, AidyCOS agrega archivos dedicados y no reemplaza archivos de terceros.
 
 El nombre `aidycos` y la ruta se deben ajustar si se publica con otro nombre. Primero ejecuta `plan` en esa máquina y revisa la lista antes de usar `--apply`.
 
@@ -94,4 +93,4 @@ CLI → detección /etc/os-release → adaptador de paquetes
 
 ## Camino al repositorio público
 
-El proyecto está estructurado para publicarse como un repositorio Git y distribuir el comando mediante PyPI o un paquete de distribución en una fase posterior. Para una instalación remota con un solo comando, primero conviene publicar una versión etiquetada y verificable; no se propone ejecutar un `curl | sh` desde la rama principal.
+El instalador de una línea descarga el archivo fuente público de la rama `main` y ejecuta el perfil. Para instalaciones administradas o repetibles en muchos equipos, el siguiente paso recomendado es publicar versiones etiquetadas y sumar verificación criptográfica.

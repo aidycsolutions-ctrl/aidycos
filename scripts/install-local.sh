@@ -14,10 +14,10 @@ if ! command -v "${PYTHON}" >/dev/null 2>&1; then
   exit 127
 fi
 
-if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
+if [[ ! -x "${VENV_DIR}/bin/python" ]] || ! "${VENV_DIR}/bin/python" -m pip --version >/dev/null 2>&1; then
   mkdir -p "$(dirname "${VENV_DIR}")"
-  if ! "${PYTHON}" -m venv "${VENV_DIR}"; then
-    echo "No se pudo crear el entorno virtual. En Debian instala python3-venv y vuelve a ejecutar." >&2
+  if ! "${PYTHON}" -m venv --clear "${VENV_DIR}"; then
+    echo "No se pudo crear un entorno virtual funcional. En Debian revisa las fuentes APT y luego instala python3-venv." >&2
     exit 1
   fi
 fi
