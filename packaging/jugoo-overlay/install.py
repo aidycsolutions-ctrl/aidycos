@@ -391,6 +391,72 @@ def install_battery(root: Path) -> None:
         schema.write_text(schema_text, encoding="utf-8")
 
 
+def install_native_workspace_dispatch(root: Path) -> None:
+    """Use Hyprland's built-in workspace dispatcher for strip clicks."""
+    service = root / "shell/servicios/escritorio/hyprland.py"
+    text = service.read_text(encoding="utf-8")
+    marker = "# AidyCOS: standard Hyprland workspace dispatch."
+    if marker in text:
+        return
+    pattern = re.compile(
+        r"    def _dispatch_workspace\(\n.*?(?=    @staticmethod\n"
+        r"    def _special_workspace_expression)",
+        re.DOTALL,
+    )
+    match = pattern.search(text)
+    if match is None:
+        raise SystemExit(f"No se pudo ajustar el cambio de escritorio en Jugoo: {service}")
+    replacement = '''    def _dispatch_workspace(
+        self,
+        workspace_id: int,
+        workspace_name: str | None,
+        is_special: bool,
+    ) -> None:
+        def dispatch(dispatcher: str, argument: str | None = None) -> None:
+            command = ["hyprctl", "dispatch", dispatcher]
+            if argument:
+                command.append(argument)
+            try:
+                subprocess.run(
+                    command,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=2.0,
+                )
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+                stderr = ""
+                if isinstance(error, subprocess.CalledProcessError):
+                    stderr = (error.stderr or error.stdout or "").strip()
+                detail = f": {stderr}" if stderr else ""
+                raise HyprlandError(f"could not execute Hyprland workspace dispatch{detail}") from error
+
+        if is_special:
+            special_name = (workspace_name or "").partition(":")[2]
+            dispatch("togglespecialworkspace", special_name if special_name not in ("", "special") else None)
+            return
+
+        for special_name in self._get_visible_special_workspace_names():
+            dispatch("togglespecialworkspace", special_name.partition(":")[2] or None)
+
+        target = workspace_name or str(workspace_id)
+        if not target.isdecimal() and not target.startswith("name:"):
+            target = f"name:{target}"
+        dispatch("workspace", target)
+
+'''
+    backup = service.with_suffix(service.suffix + ".aidycos-backup")
+    if not backup.exists():
+        shutil.copy2(service, backup)
+    service.write_text(
+        text[:match.start()]
+        + "    " + marker + "\n"
+        + replacement
+        + text[match.end():],
+        encoding="utf-8",
+    )
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("Uso: install.py RUTA_DE_JUGOO")
@@ -407,6 +473,7 @@ def main() -> None:
 
     install_desktop_icons(root)
     install_battery(root)
+    install_native_workspace_dispatch(root)
 
     overlay_shell = Path(__file__).parent / "shell"
     for relative in (
