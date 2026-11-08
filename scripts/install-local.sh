@@ -35,8 +35,26 @@ else
 fi
 
 echo "AidyCOS quedó instalado en ${VENV_DIR}."
+
+install -m 0755 "${ROOT}/scripts/aidycos-update" "${BIN_DIR}/aidycos-update"
+install -D -m 0644 "${ROOT}/packaging/applications/aidycos-update.desktop" \
+  "${DATA_HOME}/applications/aidycos-update.desktop"
+install -D -m 0644 "${ROOT}/packaging/systemd/aidycos-update-check.service" \
+  "${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user/aidycos-update-check.service"
+install -D -m 0644 "${ROOT}/packaging/systemd/aidycos-update-check.timer" \
+  "${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user/aidycos-update-check.timer"
+if commit="$(git -C "${ROOT}" rev-parse HEAD 2>/dev/null)"; then
+  install -d "${DATA_HOME}/aidycos"
+  printf '%s\n' "${commit}" >"${DATA_HOME}/aidycos/github-commit"
+fi
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database "${DATA_HOME}/applications" >/dev/null 2>&1 || true
+fi
+systemctl --user daemon-reload >/dev/null 2>&1 || true
+
 if [[ ":${PATH}:" != *":${BIN_DIR}:"* ]]; then
   echo "Agrega ${BIN_DIR} a PATH o ejecuta: ${COMMAND_PATH} doctor"
 else
   echo "Prueba con: aidycos doctor"
 fi
+echo "El comprobador diario avisará si hay una revisión nueva en GitHub; también puedes usar el menú Actualizar AidyCOS o el atajo Super+Shift+U."

@@ -31,11 +31,14 @@ propio. En QEMU / ISO: `sudo ./scripts/actualizar-qemu.sh` copia
 `/opt/aidyc/aidylink`, `/usr/local/bin/aidylink` y el acceso. Atajo Hyprland:
 **Super+C**.
 
-Abrir: icono **AidyChat**, `aidylink ui`, o Super+C. La ventana nativa GTK
-usa el mismo bridge AidyChat. La primera vez ejecuta `aidylink init`; esto
-activa el daemon de usuario al iniciar sesión. La ventana puede cerrarse y el
-daemon continúa consultando mensajes y enviando notificaciones del escritorio.
-Al pulsar **Abrir AidyChat** en una notificación, se vuelve a abrir la ventana.
+Abrir: icono **AidyChat**, `aidylink ui`, o Super+C. La primera pantalla pide
+solo el nombre visible del computador; después puedes elegir un equipo cercano
+en una tarjeta o iniciar sesión con Google. El inicio de sesión ocurre en el
+navegador del sistema y vuelve automáticamente a AidyLink.
+
+La ventana puede cerrarse y el daemon continúa consultando mensajes y enviando
+notificaciones del escritorio. Al pulsar **Abrir AidyChat** en una notificación,
+se vuelve a abrir la ventana.
 
 Con una cuenta AidyChat vinculada, `aidylink ui` abre la nueva ventana nativa
 GTK: conversaciones a la izquierda, mensajes, búsqueda, adjuntos e imágenes en
@@ -51,17 +54,7 @@ vídeo, AidyC-OS instala los componentes GStreamer junto con la imagen.
 ## Uso rápido
 
 ```bash
-# Primera vez: identidad + equipo
-aidylink init --name "Caja-1" --team "mi-tienda"
-
-# Vincular AidyChat (token Bearer de una sesión web/login)
-aidylink cloud set --base-url https://angeljoc.pythonanywhere.com \
-  --token "<aidychat_auth Bearer>"
-
-# init habilita el servicio de usuario automáticamente; manualmente:
-systemctl --user enable --now aidylink
-
-# Ventana gráfica (también en el menú de aplicaciones: «AidyLink»)
+# Ventana gráfica: la primera apertura solicita solo el nombre del computador.
 aidylink ui
 
 # CLI opcional
@@ -85,31 +78,30 @@ aidylink send <peer-id|nombre> "¿Libre en caja?"
 | `47832/udp` | Beacons de presencia |
 | `47833/tcp` | Mensajes (JSON lines + team HMAC) |
 
+## Conectar equipos de la red local
+
+La ventana presenta los equipos compatibles en tarjetas; no es necesario
+escribir IP o puerto. Para que se descubran entre sí, ambos deben usar el mismo
+grupo y código local. Esa opción queda dentro de **Configuración avanzada de
+red local** al crear la identidad.
+
 ## Usar con el servidor (AidyChat cloud)
 
 Cuando el peer **no** está en la misma LAN, AidyLink enruta por AidyChat.
 
-1. Cada persona tiene cuenta en AidyChat (`https://www.aidycsolutions.com/aidychat/`).
-2. En cada PC, vincula el token:
+1. Cada persona inicia sesión con Google desde la ventana de AidyLink.
+2. Para abrir un chat nuevo, usa **+** y busca a la persona por su nombre.
+
+El mapeo de nombres a `user_id` queda disponible solo para el comando CLI
+opcional `aidylink send`; el chat gráfico usa la lista de conversaciones de
+AidyChat.
 
 ```bash
-# Token = cookie aidychat_auth (DevTools → Application → Cookies)
-# o el campo "token" del JSON de login (tras desplegar el cambio en AidyC-web)
-aidylink cloud set \
-  --base-url https://www.aidycsolutions.com \
-  --token "PEGAR_TOKEN_AQUI"
-aidylink cloud test
-```
-
-3. Mapea el nombre local del compañero → su `user_id` numérico de AidyChat:
-
-```bash
-aidylink cloud map Qemu 42          # en el Host
-aidylink cloud map Host 17          # en la VM / otra PC
+# Mapeo opcional para el comando aidylink send
+aidylink cloud map Qemu 42
+aidylink cloud map Host 17
 systemctl --user restart aidylink
 ```
-
-También desde la UI: botón **Servidor…**.
 
 Orden de envío: **LAN si el peer está online** → si no, **cloud** con el mapeo.
 

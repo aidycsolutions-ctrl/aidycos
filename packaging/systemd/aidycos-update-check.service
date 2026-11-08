@@ -1,0 +1,6 @@
+[Unit]
+Description=Comprobar actualizaciones de AidyCOS
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/aidycos-update --check

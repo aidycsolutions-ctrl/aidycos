@@ -33,7 +33,7 @@ Item {
         anchors.topMargin: Math.max(28, parent.height * 0.05)
         width: Math.min(280, parent.width * 0.26, parent.height * 0.30)
         height: width
-        source: "file:///usr/share/backgrounds/aidycos.png"
+        source: "aidycos.png"
         fillMode: Image.PreserveAspectFit
         asynchronous: true
         cache: true
@@ -77,12 +77,7 @@ Item {
                     border.color: usernameField.activeFocus ? root.accentColor : root.borderColor
                     border.width: 1
                 }
-                Keys.onPressed: function (event) {
-                    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                        passwordField.forceActiveFocus()
-                        event.accepted = true
-                    }
-                }
+                onAccepted: passwordField.forceActiveFocus()
             }
 
             TextField {
@@ -99,12 +94,7 @@ Item {
                     border.color: passwordField.activeFocus ? root.accentColor : root.borderColor
                     border.width: 1
                 }
-                Keys.onPressed: function (event) {
-                    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                        root.doLogin()
-                        event.accepted = true
-                    }
-                }
+                onAccepted: root.doLogin()
             }
 
             ComboBox {

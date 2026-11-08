@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import shutil
 import sys
+import re
 from pathlib import Path
 
 
@@ -35,12 +36,35 @@ def main() -> None:
             raise SystemExit(f"Checkout de Jugoo incompleto: falta {path}")
 
     config_text = config.read_text(encoding="utf-8")
-    if "DESKTOP_ICONS_ENABLED = True" not in config_text:
-        replace_once(
-            config,
-            "DESKTOP_ICONS_ENABLED = False",
-            "DESKTOP_ICONS_ENABLED = True",
-            "mostrar iconos del escritorio por defecto",
+    icon_setting = re.search(r"^\s*DESKTOP_ICONS_ENABLED\s*=\s*(True|False)\s*$", config_text, re.MULTILINE)
+    if icon_setting and icon_setting.group(1) == "False":
+        backup = config.with_suffix(config.suffix + ".aidycos-backup")
+        if not backup.exists():
+            shutil.copy2(config, backup)
+        config.write_text(
+            re.sub(
+                r"^(\s*DESKTOP_ICONS_ENABLED\s*=\s*)False(\s*)$",
+                r"\g<1>True\g<2>",
+                config_text,
+                count=1,
+                flags=re.MULTILINE,
+            ),
+            encoding="utf-8",
+        )
+    elif not icon_setting:
+        app_text = app.read_text(encoding="utf-8")
+        if "DesktopIconsLayer" not in app_text or "desktop_icons" not in app_text:
+            raise SystemExit(
+                "El checkout de Jugoo no incluye el soporte de iconos del escritorio. "
+                "Actualiza Jugoo y vuelve a aplicar el perfil."
+            )
+        backup = config.with_suffix(config.suffix + ".aidycos-backup")
+        if not backup.exists():
+            shutil.copy2(config, backup)
+        config.write_text(
+            config_text.rstrip() + "\n\n# AidyCOS: mostrar los iconos del escritorio por defecto.\n"
+            "DESKTOP_ICONS_ENABLED = True\n",
+            encoding="utf-8",
         )
     replace_once(
         app,

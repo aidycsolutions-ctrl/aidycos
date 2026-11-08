@@ -28,6 +28,7 @@ Vista previa del perfil AidyCOS para Debian 13:
   * Verificar fuentes oficiales de Debian y añadir trixie-backports si faltan paquetes.
   * Instalar el conjunto de paquetes del perfil Hyprland/SDDM/Wayland/Jugoo.
   * Instalar la CLI AidyCOS y Jugoo para el usuario actual.
+  * Configurar el comprobador diario de actualizaciones de AidyCOS, con confirmación antes de aplicar.
   * Quitar la versión anterior del paquete AidyC si está instalada (conservar sus datos).
   * Instalar AidyChat nativo, icono/acceso de escritorio y daemon de usuario para notificaciones.
   * Habilitar NetworkManager y UPower para los indicadores de Wi-Fi y batería de Jugoo.
@@ -135,6 +136,7 @@ sudo install -d -m 0755 "${SDDM_THEME_DIR}"
 sudo install -m 0644 "${ROOT}/packaging/sddm/aidycos/Main.qml" "${SDDM_THEME_DIR}/Main.qml"
 sudo install -m 0644 "${ROOT}/packaging/sddm/aidycos/metadata.desktop" "${SDDM_THEME_DIR}/metadata.desktop"
 sudo install -m 0644 "${ROOT}/packaging/sddm/aidycos/theme.conf" "${SDDM_THEME_DIR}/theme.conf"
+sudo install -m 0644 "${ROOT}/packaging/plymouth/AidyCOS.png" "${SDDM_THEME_DIR}/aidycos.png"
 
 install_jugoo() {
   local config_home="${XDG_CONFIG_HOME:-${HOME}/.config}"
@@ -145,6 +147,12 @@ install_jugoo() {
   elif [[ ! -d "${jugoo_dir}/.git" || ! -f "${jugoo_dir}/shell/__main__.py" ]]; then
     echo "${jugoo_dir} existe, pero no parece ser un checkout compatible de Jugoo. Se conserva; revisa esa ruta." >&2
     return 1
+  else
+    if [[ -z "$(git -C "${jugoo_dir}" status --porcelain)" ]]; then
+      git -C "${jugoo_dir}" pull --ff-only
+    else
+      echo "Jugoo tiene cambios locales; se conservarán y no se actualizará automáticamente." >&2
+    fi
   fi
   python3 "${ROOT}/packaging/jugoo-overlay/install.py" "${jugoo_dir}"
   install -D -m 0644 "${ROOT}/packaging/jugoo-overlay/aidyc.desktop" "${HOME}/.local/share/applications/aidyc.desktop"
@@ -159,11 +167,16 @@ install_jugoo
 sudo systemctl enable --now NetworkManager.service
 sudo systemctl enable --now upower.service
 
-# Replace the previously installed, broken AidyC package on the next profile apply.
+# Remove the previously installed, broken AidyC package once, on the first
+# successful profile apply. Later AidyCOS updates must not remove AidyC again.
 # `remove` leaves the user's application data in ~/.local/share/AidyC intact.
-if dpkg-query -W -f='${db:Status-Status}' aidyc 2>/dev/null | grep -qx 'installed'; then
-  sudo apt-get remove -y aidyc
-  echo "Se quitó el paquete AidyC anterior; sus datos de usuario se conservaron."
+AIDYC_CLEANUP_MARKER=/var/lib/aidycos/legacy-aidyc-cleaned
+if ! sudo test -e "${AIDYC_CLEANUP_MARKER}"; then
+  if dpkg-query -W -f='${db:Status-Status}' aidyc 2>/dev/null | grep -qx 'installed'; then
+    sudo apt-get remove -y aidyc
+    echo "Se quitó el paquete AidyC anterior; sus datos de usuario se conservaron."
+  fi
+  sudo install -D -m 0644 /dev/null "${AIDYC_CLEANUP_MARKER}"
 fi
 
 install_aidylink() {
@@ -221,6 +234,7 @@ input {
 }
 bind = SUPER, SPACE, exec, jugoo action launcher
 bind = SUPER, C, exec, aidylink ui
+bind = SUPER SHIFT, U, exec, aidycos-update --check
 source = ~/.config/hypr/config/jugoo_ventanas.conf
 exec-once = /usr/local/bin/aidycos-prefer-external-display
 EOF
@@ -231,6 +245,7 @@ else
   grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*C,[[:space:]]*exec,[[:space:]]*aidylink ui' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qF 'source = ~/.config/hypr/config/jugoo_ventanas.conf' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qF 'exec-once = /usr/local/bin/aidycos-prefer-external-display' "${HYPR_AIDYCOS_CONF}" || missing=1
+  grep -qF 'bind = SUPER SHIFT, U, exec, aidycos-update --check' "${HYPR_AIDYCOS_CONF}" || missing=1
   if [[ "${missing}" == 1 ]]; then
     cp -a "${HYPR_AIDYCOS_CONF}" "${HYPR_AIDYCOS_CONF}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
     if ! grep -qE '^[[:space:]]*numlock_by_default[[:space:]]*=[[:space:]]*true' "${HYPR_AIDYCOS_CONF}"; then
@@ -252,6 +267,9 @@ EOF
     fi
     if ! grep -qF 'exec-once = /usr/local/bin/aidycos-prefer-external-display' "${HYPR_AIDYCOS_CONF}"; then
       printf 'exec-once = /usr/local/bin/aidycos-prefer-external-display\n' >>"${HYPR_AIDYCOS_CONF}"
+    fi
+    if ! grep -qF 'bind = SUPER SHIFT, U, exec, aidycos-update --check' "${HYPR_AIDYCOS_CONF}"; then
+      printf 'bind = SUPER SHIFT, U, exec, aidycos-update --check\n' >>"${HYPR_AIDYCOS_CONF}"
     fi
   fi
 fi
@@ -436,6 +454,10 @@ configure_login() {
   echo "SDDM usa el tema AidyCOS con el logo y NumLock activo."
 }
 configure_login
+
+# Start the daily GitHub check only after the full profile install is complete.
+systemctl --user daemon-reload >/dev/null 2>&1 || true
+systemctl --user enable --now aidycos-update-check.timer >/dev/null 2>&1 || true
 
 cat <<EOF
 

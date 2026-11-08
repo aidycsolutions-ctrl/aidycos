@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO="aidycsolutions-ctrl/aidycos"
+BRANCH="main"
+DATA_HOME="${XDG_DATA_HOME:-${HOME}/.local/share}"
+MARKER="${DATA_HOME}/aidycos/github-commit"
+LOCK="${DATA_HOME}/aidycos/update-check.lock"
+ACTION="${1:---check}"
+
+case "${ACTION}" in
+  --check) ;;
+  -h|--help)
+    echo "Uso: aidycos-update [--check]"
+    echo "Comprueba GitHub y pregunta antes de aplicar un perfil nuevo."
+    exit 0
+    ;;
+  *) echo "Opción desconocida: ${ACTION}" >&2; exit 2 ;;
+esac
+
+mkdir -p "$(dirname "${LOCK}")"
+exec 9>"${LOCK}"
+if ! flock -n 9; then
+  echo "Ya hay una comprobación o actualización de AidyCOS en curso."
+  exit 0
+fi
+
+if ! command -v curl >/dev/null 2>&1; then
+  echo "No se encontró curl; instala curl para comprobar actualizaciones." >&2
+  exit 127
+fi
+
+release_json="$(curl --fail --silent --show-error --location \
+  --connect-timeout 10 --max-time 30 \
+  -H 'Accept: application/vnd.github+json' \
+  -H 'User-Agent: AidyCOS-updater' \
+  "https://api.github.com/repos/${REPO}/commits/${BRANCH}")" || {
+    echo "No se pudo consultar GitHub. Comprueba tu conexión e inténtalo de nuevo." >&2
+    exit 1
+  }
+latest="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])' <<<"${release_json}")"
+subject="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("commit",{}).get("message","").splitlines()[0])' <<<"${release_json}")"
+current=""
+[[ ! -r "${MARKER}" ]] || current="$(cat "${MARKER}")"
+
+if [[ -z "${latest}" ]]; then
+  echo "GitHub no devolvió el identificador de la versión actual." >&2
+  exit 1
+fi
+if [[ "${latest}" == "${current}" ]]; then
+  echo "AidyCOS está actualizado (${latest:0:8})."
+  exit 0
+fi
+
+message="Hay una actualización de AidyCOS disponible (${latest:0:8})."
+[[ -z "${subject}" ]] || message+=$'\n\n'"${subject}"
+message+=$'\n\n'"¿Quieres descargarla y aplicar el perfil ahora? Se solicitará la contraseña de administrador."
+accept=0
+if command -v zenity >/dev/null 2>&1 && [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+  zenity --question --title="Actualización de AidyCOS" --text="${message}" --width=460 && accept=1 || true
+elif [[ -t 0 ]]; then
+  printf '%s\n' "${message}" "Escribe S para actualizar: "
+  read -r answer
+  [[ "${answer,,}" == "s" || "${answer,,}" == "si" || "${answer,,}" == "sí" ]] && accept=1
+elif command -v notify-send >/dev/null 2>&1; then
+  notify-send -a AidyCOS "Actualización disponible" \
+    "Ejecuta aidycos-update para revisar ${latest:0:8}."
+  exit 0
+else
+  echo "${message}" >&2
+  echo "Ejecuta aidycos-update desde una terminal para confirmar." >&2
+  exit 0
+fi
+
+if [[ "${accept}" != 1 ]]; then
+  echo "Actualización pospuesta. Puedes iniciarla después con aidycos-update."
+  exit 0
+fi
+
+temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/aidycos-update.XXXXXX")"
+trap 'rm -rf "${temp_dir}"' EXIT
+archive="${temp_dir}/aidycos.tar.gz"
+curl --fail --silent --show-error --location \
+  --connect-timeout 10 --max-time 180 \
+  "https://codeload.github.com/${REPO}/tar.gz/${latest}" -o "${archive}"
+tar -xzf "${archive}" -C "${temp_dir}"
+source_dir="$(find "${temp_dir}" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+if [[ ! -x "${source_dir}/scripts/install-debian-profile.sh" ]]; then
+  echo "La revisión descargada no contiene el instalador del perfil." >&2
+  exit 1
+fi
+
+installer="${source_dir}/scripts/install-debian-profile.sh"
+if [[ -t 0 ]]; then
+  bash "${installer}" --no-reboot
+elif command -v foot >/dev/null 2>&1; then
+  foot bash -c 'bash "$1" --no-reboot; result=$?; echo; read -r -p "Pulsa Enter para cerrar esta ventana..." _; exit "$result"' \
+    aidycos-update "${installer}"
+else
+  echo "No se encontró foot para solicitar la contraseña en una terminal." >&2
+  echo "Abre una terminal y ejecuta aidycos-update para aplicar la actualización." >&2
+  exit 1
+fi
+mkdir -p "$(dirname "${MARKER}")"
+printf '%s\n' "${latest}" >"${MARKER}"
+if command -v zenity >/dev/null 2>&1 && [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+  zenity --info --title="AidyCOS actualizado" \
+    --text="El perfil de AidyCOS quedó actualizado. Cierra y vuelve a iniciar la sesión para cargar todos los cambios."
+elif command -v notify-send >/dev/null 2>&1; then
+  notify-send -a AidyCOS "AidyCOS actualizado" \
+    "Cierra y vuelve a iniciar la sesión para cargar todos los cambios."
+else
+  echo "AidyCOS quedó actualizado. Cierra y vuelve a iniciar la sesión para cargar todos los cambios."
+fi

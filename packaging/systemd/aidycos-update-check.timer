@@ -1,0 +1,11 @@
+[Unit]
+Description=Comprobar diariamente actualizaciones de AidyCOS
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1d
+Persistent=true
+Unit=aidycos-update-check.service
+
+[Install]
+WantedBy=timers.target

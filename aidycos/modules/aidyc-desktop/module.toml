@@ -27,6 +27,7 @@ apt = [
   "qml6-module-qtquick-virtualkeyboard",
   "sddm",
   "thunar",
+  "zenity",
   "wireplumber",
   "xwayland",
   "cups",

@@ -16,12 +16,13 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
 
-from .cloud import AidyChatBridge, apply_cloud_settings, test_cloud_connection
+from .cloud import AidyChatBridge
 try:
     from .calls import NativeCall
 except (ImportError, ValueError):  # GStreamer WebRTC is an optional desktop add-on.
     NativeCall = None  # type: ignore[assignment,misc]
 from .config import LinkConfig, load_config, save_config
+from .native_auth import start_google_login
 from .paths import data_dir
 
 
@@ -67,6 +68,7 @@ class AidyChatWindow(Gtk.Window):
         self._active_chat: dict[str, Any] | None = None
         self._last_id: dict[int, int] = {}
         self._busy = False
+        self._local_devices_window: Gtk.Window | None = None
         self._recorder: subprocess.Popen[bytes] | None = None
         self._record_path: Path | None = None
         self.call_engine = (
@@ -99,6 +101,10 @@ class AidyChatWindow(Gtk.Window):
         refresh.set_tooltip_text("Actualizar conversaciones")
         refresh.connect("clicked", lambda *_: self.refresh_chats())
         brand.pack_start(refresh, False, False, 0)
+        local_devices = Gtk.Button.new_from_icon_name("network-workgroup-symbolic", Gtk.IconSize.BUTTON)
+        local_devices.set_tooltip_text("Computadores en esta red")
+        local_devices.connect("clicked", lambda *_: self.open_local_devices())
+        brand.pack_start(local_devices, False, False, 0)
         new_chat = Gtk.Button.new_from_icon_name("list-add-symbolic", Gtk.IconSize.BUTTON)
         new_chat.set_tooltip_text("Nueva conversación")
         new_chat.connect("clicked", lambda *_: self.open_new_chat())
@@ -140,6 +146,17 @@ class AidyChatWindow(Gtk.Window):
         empty.get_style_context().add_class("link-status")
         self.conversation.pack_start(empty, True, True, 0)
         self.conversation.show_all()
+
+    def open_local_devices(self) -> None:
+        if self._local_devices_window is not None:
+            self._local_devices_window.present()
+            return
+        from .ui import AidylinkWindow
+
+        window = AidylinkWindow(standalone=False)
+        self._local_devices_window = window
+        window.connect("destroy", lambda *_: setattr(self, "_local_devices_window", None))
+        window.show_all()
 
     def _call(self, action: Callable[[], Any], done: Callable[[Any, Exception | None], None]) -> None:
         if self._busy:
@@ -584,47 +601,67 @@ class AidyChatWindow(Gtk.Window):
 
     def open_account_dialog(self) -> None:
         dialog = Gtk.Dialog(title="Cuenta AidyChat", transient_for=self, flags=0)
-        dialog.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, "Probar y guardar", Gtk.ResponseType.OK)
-        dialog.set_default_size(500, 220)
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            "Cambiar cuenta de Google", Gtk.ResponseType.OK,
+        )
+        dialog.set_default_size(460, 220)
         box = dialog.get_content_area()
         box.set_spacing(8)
         box.set_border_width(12)
-        url = Gtk.Entry()
-        url.set_text(self.cfg.cloud.base_url or "https://www.aidycsolutions.com")
-        token = Gtk.Entry()
-        token.set_visibility(False)
-        token.set_text(self.cfg.cloud.bearer_token)
+        box.pack_start(
+            Gtk.Label(
+                label="Tu cuenta está conectada. AidyLink usa el inicio de sesión seguro de Google en el navegador.",
+                xalign=0,
+            ),
+            False,
+            False,
+            0,
+        )
+        advanced = Gtk.Expander(label="Opciones avanzadas de llamadas")
+        advanced_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         turn = Gtk.Entry()
         turn.set_text(self.cfg.cloud.turn_server)
         turn.set_placeholder_text("turns://usuario:clave@servidor:5349 (opcional)")
-        box.pack_start(Gtk.Label(label="Servidor AidyChat", xalign=0), False, False, 0)
-        box.pack_start(url, False, False, 0)
-        box.pack_start(Gtk.Label(label="Token de acceso", xalign=0), False, False, 0)
-        box.pack_start(token, False, False, 0)
-        box.pack_start(Gtk.Label(label="Relay TURN para redes restrictivas (opcional)", xalign=0), False, False, 0)
-        box.pack_start(turn, False, False, 0)
+        advanced_box.pack_start(Gtk.Label(label="Relay TURN (opcional)", xalign=0), False, False, 0)
+        advanced_box.pack_start(turn, False, False, 0)
+        advanced.add(advanced_box)
+        box.pack_start(advanced, False, False, 0)
         dialog.show_all()
         response = dialog.run()
-        if response == Gtk.ResponseType.OK:
-            apply_cloud_settings(
-                self.cfg,
-                base_url=url.get_text(),
-                token=token.get_text(),
-                turn_server=turn.get_text(),
-            )
-            try:
-                result = test_cloud_connection(self.cfg)
-                if not result.get("ok"):
-                    raise RuntimeError(result.get("error") or "No se pudo validar la cuenta")
-                save_config(self.cfg)
-                self.bridge = AidyChatBridge(self.cfg)
-                if self.call_engine is not None:
-                    self.call_engine.bridge = self.bridge
-                self.sidebar_status.set_text(f"Conectado como {result.get('username')}")
-                self.refresh_chats()
-            except Exception as exc:
-                self.sidebar_status.set_text(f"Cuenta: {exc}")
+        if (turn.get_text() or "").strip() != self.cfg.cloud.turn_server:
+            self.cfg.cloud.turn_server = (turn.get_text() or "").strip()
+            save_config(self.cfg)
         dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
+        self.sidebar_status.set_text("Abriendo el navegador para cambiar de cuenta…")
+
+        def done(username: str | None, error: Exception | None) -> None:
+            GLib.idle_add(finish, username, error)
+
+        def finish(username: str | None, error: Exception | None) -> bool:
+            if error:
+                self.sidebar_status.set_text(f"No se pudo iniciar sesión: {error}")
+                return GLib.SOURCE_REMOVE
+            self.bridge = AidyChatBridge(self.cfg)
+            if self.call_engine is not None:
+                self.call_engine.bridge = self.bridge
+            self.sidebar_status.set_text(f"Conectado como {username or 'AidyChat'}")
+            self.refresh_chats()
+            try:
+                subprocess.run(
+                    ["systemctl", "--user", "restart", "aidylink.service"],
+                    check=False,
+                    timeout=8,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception:
+                pass
+            return GLib.SOURCE_REMOVE
+
+        start_google_login(self.cfg, done)
 
     def open_new_chat(self) -> None:
         dialog = Gtk.Dialog(title="Nueva conversación", transient_for=self, flags=0)

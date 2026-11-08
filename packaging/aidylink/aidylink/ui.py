@@ -14,10 +14,9 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk, Pango  # noqa: E402
 
-from .cloud import apply_cloud_settings, test_cloud_connection
-from .config import init_config, load_config, save_config
+from .config import init_config, load_config
 from .daemon import control_request
-from .netutil import is_qemu_slirp_ip
+from .native_auth import start_google_login
 from .paths import control_socket_path
 
 
@@ -70,18 +69,18 @@ def _first_run_setup() -> bool:
     if load_config() is not None:
         return True
 
-    dialog = Gtk.Dialog(title="Configurar AidyLink", flags=0)
+    dialog = Gtk.Dialog(title="Bienvenido a AidyLink", flags=0)
     dialog.add_buttons(
         Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
-        "Crear y abrir", Gtk.ResponseType.OK,
+        "Continuar", Gtk.ResponseType.OK,
     )
-    dialog.set_default_size(420, 200)
+    dialog.set_default_size(460, 340)
     box = dialog.get_content_area()
     box.set_spacing(8)
     box.set_border_width(12)
     box.pack_start(
         Gtk.Label(
-            label="Primera vez: elige un nombre y el equipo (mismo secreto en todas las PCs).",
+            label="¿Cómo llamamos a este computador? Después podrás iniciar sesión o elegir otro equipo de la red.",
             xalign=0,
         ),
         False,
@@ -89,26 +88,41 @@ def _first_run_setup() -> bool:
         0,
     )
     name_e = Gtk.Entry()
-    name_e.set_placeholder_text("Nombre (ej. Caja-1 o Host)")
+    name_e.set_placeholder_text("Por ejemplo: Caja, Recepción o Oficina")
+    name_e.set_activates_default(True)
+    dialog.set_default_response(Gtk.ResponseType.OK)
     team_e = Gtk.Entry()
-    team_e.set_placeholder_text("Equipo compartido")
+    team_e.set_text("AidyCOS")
+    team_e.set_placeholder_text("Nombre de la red local")
     secret_e = Gtk.Entry()
-    secret_e.set_text("")
+    secret_e.set_placeholder_text("Código compartido entre computadores (opcional)")
     secret_e.set_visibility(False)
-    for label, entry in (
-        ("Nombre visible", name_e),
-        ("Equipo / team", team_e),
-        ("Secreto compartido", secret_e),
-    ):
-        box.pack_start(Gtk.Label(label=label, xalign=0), False, False, 0)
-        box.pack_start(entry, False, False, 0)
+    box.pack_start(Gtk.Label(label="Nombre de este computador", xalign=0), False, False, 0)
+    box.pack_start(name_e, False, False, 0)
+    advanced = Gtk.Expander(label="Configuración avanzada de red local")
+    advanced_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+    advanced_box.pack_start(
+        Gtk.Label(
+            label="Para que dos computadores se encuentren en la red local, ambos usan el mismo grupo y código.",
+            xalign=0,
+        ),
+        False,
+        False,
+        0,
+    )
+    advanced_box.pack_start(Gtk.Label(label="Nombre del grupo", xalign=0), False, False, 0)
+    advanced_box.pack_start(team_e, False, False, 0)
+    advanced_box.pack_start(Gtk.Label(label="Código compartido del grupo", xalign=0), False, False, 0)
+    advanced_box.pack_start(secret_e, False, False, 0)
+    advanced.add(advanced_box)
+    box.pack_start(advanced, False, False, 0)
     dialog.show_all()
     response = dialog.run()
     if response != Gtk.ResponseType.OK:
         dialog.destroy()
         return False
     name = (name_e.get_text() or "").strip() or "AidyC-OS"
-    team = (team_e.get_text() or "").strip() or "default"
+    team = (team_e.get_text() or "").strip() or "AidyCOS"
     secret = (secret_e.get_text() or "").strip() or None
     dialog.destroy()
     init_config(display_name=name, team_id=team, team_secret=secret)
@@ -116,59 +130,50 @@ def _first_run_setup() -> bool:
 
 
 class AidylinkWindow(Gtk.Window):
-    def __init__(self) -> None:
-        super().__init__(title="AidyLink")
-        self.set_default_size(520, 560)
+    def __init__(self, *, standalone: bool = True) -> None:
+        super().__init__(title="AidyLink · Mensajería")
+        self.set_default_size(760, 680)
         self.set_border_width(10)
 
         self._peers: list[dict[str, Any]] = []
+        self._selected_peer_data: dict[str, Any] | None = None
         self._seen_ids: set[str] = set()
         self._status_ok = False
+        self._standalone = standalone
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.add(root)
 
-        self.status = Gtk.Label(xalign=0)
+        self.status = Gtk.Label(label="Listo para conectar", xalign=0)
         self.status.set_line_wrap(True)
         root.pack_start(self.status, False, False, 0)
 
-        dest_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        root.pack_start(dest_row, False, False, 0)
-
-        dest_row.pack_start(Gtk.Label(label="Para:"), False, False, 0)
-        self.peer_combo = Gtk.ComboBoxText()
-        self.peer_combo.set_hexpand(True)
-        dest_row.pack_start(self.peer_combo, True, True, 0)
-
+        title_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        root.pack_start(title_row, False, False, 0)
+        title_row.pack_start(Gtk.Label(label="Computadores disponibles", xalign=0), True, True, 0)
         self.refresh_btn = Gtk.Button(label="Actualizar")
         self.refresh_btn.connect("clicked", lambda *_: self.refresh_peers())
-        dest_row.pack_start(self.refresh_btn, False, False, 0)
-        cloud_btn = Gtk.Button(label="Servidor…")
-        cloud_btn.connect("clicked", lambda *_: self.open_cloud_dialog())
-        dest_row.pack_start(cloud_btn, False, False, 0)
+        title_row.pack_start(self.refresh_btn, False, False, 0)
+        cfg = load_config()
+        self.google_btn = Gtk.Button(label="Cuenta conectada" if cfg and cfg.cloud.enabled else "Iniciar sesión con Google")
+        self.google_btn.connect("clicked", lambda *_: self.open_cloud_dialog())
+        self.google_btn.set_sensitive(not bool(cfg and cfg.cloud.enabled))
+        title_row.pack_start(self.google_btn, False, False, 0)
 
-        host_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        root.pack_start(host_row, False, False, 0)
-        host_row.pack_start(Gtk.Label(label="IP directa:"), False, False, 0)
-        self.host_entry = Gtk.Entry()
-        self.host_entry.set_placeholder_text("ej. 10.0.2.2 (VM→host) o vacío si hay peer")
-        host_row.pack_start(self.host_entry, True, True, 0)
-        host_row.pack_start(Gtk.Label(label="puerto"), False, False, 0)
-        self.port_entry = Gtk.Entry()
-        self.port_entry.set_width_chars(6)
-        self.port_entry.set_text("47833")
-        host_row.pack_start(self.port_entry, False, False, 0)
-
-        tip = Gtk.Label(
-            label=(
-                "QEMU: elige el peer «Qemu» (el host reescribe solo a 127.0.0.1:47834). "
-                "Desde la VM: IP 10.0.2.2 puerto 47833."
-            ),
-            xalign=0,
-        )
-        tip.set_line_wrap(True)
-        tip.get_style_context().add_class("dim-label")
-        root.pack_start(tip, False, False, 0)
+        self.peer_cards = Gtk.FlowBox()
+        self.peer_cards.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.peer_cards.set_max_children_per_line(3)
+        self.peer_cards.set_row_spacing(8)
+        self.peer_cards.set_column_spacing(8)
+        self.peer_cards.set_homogeneous(True)
+        self.peer_cards_scroll = Gtk.ScrolledWindow()
+        self.peer_cards_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.peer_cards_scroll.set_min_content_height(100)
+        self.peer_cards_scroll.add(self.peer_cards)
+        root.pack_start(self.peer_cards_scroll, False, True, 0)
+        self.peer_empty = Gtk.Label(label="Buscando computadores de AidyLink en esta red…", xalign=0)
+        self.peer_empty.get_style_context().add_class("dim-label")
+        root.pack_start(self.peer_empty, False, False, 0)
 
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
@@ -179,9 +184,9 @@ class AidylinkWindow(Gtk.Window):
         self.chat_view.set_editable(False)
         self.chat_view.set_cursor_visible(False)
         self.chat_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self.chat_view.set_left_margin(12)
+        self.chat_view.set_right_margin(12)
         self.chat_buf = self.chat_view.get_buffer()
-        mono = Pango.FontDescription("Monospace 10")
-        self.chat_view.override_font(mono)
         scroll.add(self.chat_view)
 
         send_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -194,7 +199,8 @@ class AidylinkWindow(Gtk.Window):
         send_btn.connect("clicked", lambda *_: self.send_message())
         send_row.pack_start(send_btn, False, False, 0)
 
-        self.connect("destroy", Gtk.main_quit)
+        if self._standalone:
+            self.connect("destroy", Gtk.main_quit)
         self.refresh_status()
         self._apply_qemu_defaults()
         self.refresh_peers()
@@ -202,15 +208,8 @@ class AidylinkWindow(Gtk.Window):
         GLib.timeout_add_seconds(2, self._tick)
 
     def _apply_qemu_defaults(self) -> None:
-        """Si estamos dentro de QEMU NAT, prellenar destino al host."""
-        try:
-            resp = control_request({"cmd": "status"}, timeout=1.0)
-        except Exception:
-            return
-        lan = str(resp.get("lan_ip") or "")
-        if is_qemu_slirp_ip(lan) and not (self.host_entry.get_text() or "").strip():
-            self.host_entry.set_text("10.0.2.2")
-            self.port_entry.set_text("47833")
+        """Keep QEMU routing out of the user-facing interface."""
+        return
 
     def _tick(self) -> bool:
         self.refresh_status()
@@ -226,40 +225,67 @@ class AidylinkWindow(Gtk.Window):
     def refresh_status(self) -> None:
         try:
             resp = control_request({"cmd": "status"}, timeout=1.5)
-        except Exception as exc:
-            self._set_status(f"Daemon apagado — {exc}", ok=False)
+        except Exception:
+            self._set_status("No se pudo conectar con AidyLink", ok=False)
             return
         if not resp.get("ok"):
             self._set_status(resp.get("error") or "daemon error", ok=False)
             return
-        self._set_status(
-            f"{resp.get('display_name')} · equipo {resp.get('team_id')} · "
-            f"LAN {resp.get('lan_ip')} · peers {resp.get('peers')}"
-        )
+        self._set_status("Conectado · buscando equipos cercanos")
 
     def refresh_peers(self, silent: bool = False) -> None:
-        active = self.peer_combo.get_active_text()
+        selected_id = str((self._selected_peer_data or {}).get("node_id") or "")
         try:
             resp = control_request({"cmd": "peers"}, timeout=1.5)
         except Exception:
             if not silent:
-                self.peer_combo.remove_all()
-                self.peer_combo.append_text("(sin daemon)")
-                self.peer_combo.set_active(0)
+                self._set_peer_cards([])
+                self.peer_empty.set_text("No se pudo encontrar AidyLink en esta red.")
             return
         peers = resp.get("peers") or []
         self._peers = peers if isinstance(peers, list) else []
-        self.peer_combo.remove_all()
-        self.peer_combo.append_text("— elegir peer / o usa IP directa —")
-        labels: list[str] = []
-        for peer in self._peers:
-            label = f"{peer.get('display_name')} ({peer.get('host')})"
-            labels.append(label)
-            self.peer_combo.append_text(label)
-        if active and active in labels:
-            self.peer_combo.set_active(labels.index(active) + 1)
-        else:
-            self.peer_combo.set_active(0)
+        self._set_peer_cards(self._peers, selected_id=selected_id)
+
+    def _set_peer_cards(self, peers: list[dict[str, Any]], *, selected_id: str = "") -> None:
+        for child in self.peer_cards.get_children():
+            self.peer_cards.remove(child)
+        self._selected_peer_data = None
+        self.peer_empty.set_visible(not peers)
+        self.peer_empty.set_text(
+            "Aún no hay computadores disponibles. Revisa que ambos estén en la misma red, tengan AidyLink abierto y usen el mismo código local."
+            if not peers else ""
+        )
+        for peer in peers:
+            card = Gtk.Button()
+            card.set_relief(Gtk.ReliefStyle.NONE)
+            card.peer_data = peer
+            content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            content.set_border_width(12)
+            avatar = Gtk.Label(label="💻")
+            avatar.set_halign(Gtk.Align.START)
+            name = Gtk.Label(label=str(peer.get("display_name") or "Computador"), xalign=0)
+            name.set_ellipsize(Pango.EllipsizeMode.END)
+            hint = Gtk.Label(label="En esta red · Seleccionar", xalign=0)
+            hint.get_style_context().add_class("dim-label")
+            content.pack_start(avatar, False, False, 0)
+            content.pack_start(name, False, False, 0)
+            content.pack_start(hint, False, False, 0)
+            card.add(content)
+            card.connect("clicked", self._select_peer_card)
+            self.peer_cards.add(card)
+            if selected_id and str(peer.get("node_id") or "") == selected_id:
+                self._selected_peer_data = peer
+                hint.set_text("Seleccionado · listo para escribir")
+        self.peer_cards.show_all()
+
+    def _select_peer_card(self, card: Gtk.Button) -> None:
+        self._selected_peer_data = getattr(card, "peer_data", None)
+        if self._selected_peer_data:
+            self.peer_empty.set_text(
+                f"Listo para escribirle a {self._selected_peer_data.get('display_name')}."
+            )
+            self.peer_empty.show()
+            self.refresh_inbox(initial=True)
 
     def refresh_inbox(self, initial: bool = False) -> None:
         try:
@@ -271,9 +297,15 @@ class AidylinkWindow(Gtk.Window):
             return
         cfg = load_config()
         my_id = cfg.node_id if cfg else ""
+        selected_id = str((self._selected_peer_data or {}).get("node_id") or "")
         new_lines: list[str] = []
         for msg in messages:
             if not isinstance(msg, dict):
+                continue
+            if selected_id and selected_id not in (
+                str(msg.get("from_id") or ""),
+                str(msg.get("to_id") or ""),
+            ):
                 continue
             mid = str(msg.get("msg_id") or "")
             if mid and mid in self._seen_ids:
@@ -288,6 +320,11 @@ class AidylinkWindow(Gtk.Window):
             self.chat_buf.set_text("")
             for msg in messages:
                 if isinstance(msg, dict):
+                    if selected_id and selected_id not in (
+                        str(msg.get("from_id") or ""),
+                        str(msg.get("to_id") or ""),
+                    ):
+                        continue
                     mid = str(msg.get("msg_id") or "")
                     if mid:
                         self._seen_ids.add(mid)
@@ -299,17 +336,15 @@ class AidylinkWindow(Gtk.Window):
     def _format_msg(self, msg: dict[str, Any], my_id: str) -> str:
         ts = msg.get("ts")
         try:
-            stamp = datetime.fromtimestamp(float(ts)).strftime("%H:%M:%S")
+            stamp = datetime.fromtimestamp(float(ts)).strftime("%H:%M")
         except (TypeError, ValueError, OSError):
             stamp = "--:--:--"
         from_id = str(msg.get("from_id") or "")
         name = str(msg.get("from_name") or from_id[:8] or "?")
         text = str(msg.get("text") or "")
-        via = str(msg.get("via") or "")
         mine = from_id == my_id
         who = "Tú" if mine else name
-        suffix = f" [{via}]" if via else ""
-        return f"[{stamp}] {who}{suffix}: {text}"
+        return f"{stamp} · {who}: {text}"
 
     def _append_line(self, line: str) -> None:
         end = self.chat_buf.get_end_iter()
@@ -319,97 +354,39 @@ class AidylinkWindow(Gtk.Window):
         self.chat_view.scroll_to_mark(mark, 0.0, True, 0.0, 1.0)
 
     def _selected_peer(self) -> dict[str, Any] | None:
-        idx = self.peer_combo.get_active()
-        if idx <= 0 or idx - 1 >= len(self._peers):
-            return None
-        return self._peers[idx - 1]
+        return self._selected_peer_data
 
     def open_cloud_dialog(self) -> None:
         cfg = load_config()
         if cfg is None:
-            self._append_line("⚠ Sin configuración local.")
+            self._append_line("⚠ No se encontró la configuración de AidyLink.")
             return
-        dialog = Gtk.Dialog(title="Servidor AidyChat", transient_for=self, flags=0)
-        dialog.add_buttons(
-            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
-            "Probar y guardar", Gtk.ResponseType.OK,
-        )
-        dialog.set_default_size(480, 220)
-        box = dialog.get_content_area()
-        box.set_spacing(8)
-        box.set_border_width(12)
-        box.pack_start(
-            Gtk.Label(
-                label=(
-                    "URL del servidor + token Bearer de AidyChat.\n"
-                    "En el navegador: entra a /aidychat, inicia sesión, "
-                    "DevTools → Application → Cookies → aidychat_auth "
-                    "(o usa el campo token del JSON de login tras desplegar)."
-                ),
-                xalign=0,
-            ),
-            False,
-            False,
-            0,
-        )
-        url_e = Gtk.Entry()
-        url_e.set_text(cfg.cloud.base_url or "https://www.aidycsolutions.com")
-        tok_e = Gtk.Entry()
-        tok_e.set_text(cfg.cloud.bearer_token or "")
-        tok_e.set_visibility(False)
-        map_name = Gtk.Entry()
-        map_name.set_placeholder_text("Nombre peer local (ej. Qemu)")
-        map_id = Gtk.Entry()
-        map_id.set_placeholder_text("user_id AidyChat del peer (número)")
-        for label, entry in (
-            ("Base URL", url_e),
-            ("Token Bearer", tok_e),
-            ("Mapear peer → user_id (opcional)", map_name),
-            ("user_id del peer", map_id),
-        ):
-            box.pack_start(Gtk.Label(label=label, xalign=0), False, False, 0)
-            box.pack_start(entry, False, False, 0)
-        dialog.show_all()
-        response = dialog.run()
-        if response != Gtk.ResponseType.OK:
-            dialog.destroy()
-            return
-        apply_cloud_settings(
-            cfg,
-            base_url=url_e.get_text().strip(),
-            token=tok_e.get_text().strip(),
-        )
-        peer_name = (map_name.get_text() or "").strip()
-        peer_uid = (map_id.get_text() or "").strip()
-        if peer_name and peer_uid.isdigit():
-            cfg.cloud.peer_user_ids[peer_name] = int(peer_uid)
-        dialog.destroy()
-        try:
-            result = test_cloud_connection(cfg)
-        except Exception as exc:
-            self._append_line(f"⚠ Servidor: {exc}")
-            return
-        if not result.get("ok"):
-            self._append_line(f"⚠ Servidor: {result.get('error')}")
-            return
-        save_config(cfg)
-        self._append_line(
-            f"✓ Cloud OK como {result.get('username')} "
-            f"(id {result.get('user_id')}). Reinicia el daemon o cierra/abre AidyLink."
-        )
-        # Intentar reiniciar el servicio user sin molestar
-        try:
-            subprocess.run(
-                ["systemctl", "--user", "restart", "aidylink.service"],
-                check=False,
-                timeout=5,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            ensure_daemon_running()
-            self.refresh_status()
-        except Exception:
-            pass
+        self.google_btn.set_sensitive(False)
+        self._append_line("Se abrió AidyChat en tu navegador. Inicia sesión con Google para continuar.")
+
+        def done(username: str | None, error: Exception | None) -> None:
+            GLib.idle_add(finish, username, error)
+
+        def finish(username: str | None, error: Exception | None) -> bool:
+            self.google_btn.set_sensitive(True)
+            if error:
+                self._append_line(f"⚠ No se pudo iniciar sesión: {error}")
+                return GLib.SOURCE_REMOVE
+            self._append_line(f"✓ Sesión iniciada como {username or 'AidyChat'}.")
+            try:
+                subprocess.run(
+                    ["systemctl", "--user", "restart", "aidylink.service"],
+                    check=False,
+                    timeout=8,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception:
+                pass
+            self.destroy()
+            return GLib.SOURCE_REMOVE
+
+        start_google_login(cfg, done)
 
     def send_message(self) -> None:
         text = (self.msg_entry.get_text() or "").strip()
@@ -419,27 +396,15 @@ class AidylinkWindow(Gtk.Window):
             self._append_line("⚠ Arranca el daemon primero (aidylink daemon o systemd).")
             return
 
-        host = (self.host_entry.get_text() or "").strip()
-        port_txt = (self.port_entry.get_text() or "").strip()
         peer = self._selected_peer()
-        payload: dict[str, Any] = {"cmd": "send", "text": text}
-
-        if host:
-            payload["host"] = host
-            try:
-                payload["port"] = int(port_txt or "47833")
-            except ValueError:
-                self._append_line("⚠ Puerto inválido")
-                return
-        elif peer:
-            payload["to"] = peer.get("display_name") or peer.get("node_id")
-            # Prefer direct LAN to that peer host (más fiable que solo el nombre)
-            payload["host"] = peer.get("host")
-            payload["port"] = int(peer.get("message_port") or 47833)
-            payload["to"] = peer.get("node_id") or "*"
-        else:
-            self._append_line("⚠ Elige un peer o escribe una IP directa.")
+        if not peer:
+            self._append_line("⚠ Selecciona un computador disponible primero.")
             return
+        payload: dict[str, Any] = {
+            "cmd": "send",
+            "to": peer.get("node_id") or peer.get("display_name") or "",
+            "text": text,
+        }
 
         try:
             resp = control_request(payload, timeout=5.0)
@@ -452,9 +417,7 @@ class AidylinkWindow(Gtk.Window):
             # El daemon ya persistió; refrescar inbox
             self.refresh_inbox()
         else:
-            self._append_line(
-                f"⚠ No enviado: {resp.get('detail') or resp.get('error') or 'error'}"
-            )
+            self._append_line("⚠ No se pudo enviar. Revisa que el otro computador siga conectado.")
 
 
 def run_ui() -> int:
@@ -486,4 +449,9 @@ def run_ui() -> int:
     win = AidylinkWindow()
     win.show_all()
     Gtk.main()
+    cfg = load_config()
+    if cfg is not None and cfg.cloud.enabled:
+        from .chat_window import run_cloud_chat
+
+        return run_cloud_chat()
     return 0

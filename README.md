@@ -14,6 +14,8 @@ Hyprland incluye las acciones de ventanas del perfil Jugoo: `Super+Shift+Espacio
 
 Al aplicar este perfil, se quita la versión anterior de AidyC si está instalada como paquete Debian; sus datos de usuario se conservan. Para quitarla de inmediato sin volver a aplicar el perfil, ejecuta `sudo apt remove aidyc`. Instalar después el `.deb` más reciente con el icono del dock actualiza el paquete si ya estaba instalado. No uses `purge` si quieres conservar los datos de la aplicación.
 
+AidyCOS comprueba GitHub diariamente y muestra una ventana de confirmación cuando detecta un commit nuevo en `main`; solo descarga y reaplica el perfil si aceptas. También puedes iniciar la comprobación desde **Actualizar AidyCOS** en el menú o con `Super+Shift+U`. La actualización requiere conexión a Internet y pide la contraseña de administrador al aplicar los cambios.
+
 El perfil replica la base funcional que se definió para la ISO, no los mecanismos propios de un sistema live. No instala live-boot, no crea usuarios temporales y no configura contraseñas. El equipo conserva su instalación Debian y los archivos personales. Antes de añadir atajos de Hyprland, el instalador guarda una copia de la configuración existente.
 
 ## Probar desde el checkout

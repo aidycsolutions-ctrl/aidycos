@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Actualizar AidyCOS
+Comment=Comprobar y aplicar actualizaciones de AidyCOS
+Exec=aidycos-update --check
+Icon=system-software-update
+Terminal=false
+Categories=System;Settings;
+StartupNotify=true
