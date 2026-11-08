@@ -505,6 +505,7 @@ def main() -> None:
 
     overlay_shell = Path(__file__).parent / "shell"
     for relative in (
+        Path("widgets/barra/ethernet.py"),
         Path("widgets/barra/volume.py"),
         Path("widgets/audio/volume_slider.py"),
     ):
