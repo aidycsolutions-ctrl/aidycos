@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import shutil
+import subprocess
 import sys
 
 from . import __version__
@@ -12,6 +14,21 @@ from .cloud import apply_cloud_settings, test_cloud_connection
 from .config import init_config, load_config, save_config
 from .daemon import control_request, run_daemon
 from .paths import config_path
+
+
+def _start_background_service(*, restart: bool = False) -> None:
+    systemctl = shutil.which("systemctl")
+    if not systemctl:
+        print("No se encontró systemctl; inicia el daemon manualmente para recibir notificaciones.")
+        return
+    command = [systemctl, "--user", "enable", "--now", "aidylink"]
+    if restart:
+        command = [systemctl, "--user", "restart", "aidylink"]
+    result = subprocess.run(command, check=False, capture_output=True, text=True)
+    if result.returncode:
+        detail = (result.stderr or result.stdout or "").strip()
+        print(f"No se pudo iniciar el daemon en segundo plano: {detail or 'systemctl falló'}")
+        print("Cuando AidyLink esté instalado, ejecuta: systemctl --user enable --now aidylink")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -84,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"    team_secret={cfg.team_secret}")
         print(f"    config={config_path()}")
         print("Comparte el mismo --team y --team-secret en todos los equipos del local.")
+        _start_background_service()
         return 0
 
     if args.cmd == "cloud":
@@ -101,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             save_config(cfg)
             print(f"cloud enabled={cfg.cloud.enabled} base={cfg.cloud.base_url}")
+            _start_background_service(restart=True)
             return 0
         if args.cloud_cmd == "map":
             cfg.cloud.peer_user_ids[args.name] = args.user_id

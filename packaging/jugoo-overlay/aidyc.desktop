@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=AidyC
+Comment=Descargar o abrir AidyC
+Exec=aidyc
+Icon=aidyc
+Terminal=false
+Categories=Utility;
+StartupNotify=true

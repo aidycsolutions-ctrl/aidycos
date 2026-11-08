@@ -1,12 +1,12 @@
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=AidyLink
-GenericName=Chat interno
-Comment=Chat interno AidyC-OS (LAN + AidyChat)
+Name=AidyChat
+GenericName=Chat
+Comment=Chat de AidyCOS y AidyChat
 Exec=/usr/local/bin/aidylink ui
 TryExec=/usr/local/bin/aidylink
-Icon=mail-message-new
+Icon=aidychat
 Terminal=false
 Categories=Network;InstantMessaging;Office;
 StartupNotify=true

@@ -28,7 +28,11 @@ Vista previa del perfil AidyCOS para Debian 13:
   * Verificar fuentes oficiales de Debian y añadir trixie-backports si faltan paquetes.
   * Instalar el conjunto de paquetes del perfil Hyprland/SDDM/Wayland/Jugoo.
   * Instalar la CLI AidyCOS y Jugoo para el usuario actual.
-  * Instalar AidyLink, su acceso del menú y servicio de usuario opcional.
+  * Quitar la versión anterior del paquete AidyC si está instalada (conservar sus datos).
+  * Instalar AidyChat nativo, icono/acceso de escritorio y daemon de usuario para notificaciones.
+  * Habilitar NetworkManager y UPower para los indicadores de Wi-Fi y batería de Jugoo.
+  * Instalar los ajustes de Jugoo para el control de volumen y los iconos del escritorio.
+  * Instalar las acciones de Hyprland para mover, minimizar y restaurar ventanas.
   * Configurar GRUB sin menú prolongado, el splash de Plymouth con logo y el tema de inicio de sesión SDDM.
   * Seleccionar SDDM y habilitar el arranque gráfico.
   * Activar NumLock en la pantalla de acceso y en Hyprland.
@@ -142,28 +146,55 @@ install_jugoo() {
     echo "${jugoo_dir} existe, pero no parece ser un checkout compatible de Jugoo. Se conserva; revisa esa ruta." >&2
     return 1
   fi
+  python3 "${ROOT}/packaging/jugoo-overlay/install.py" "${jugoo_dir}"
+  install -D -m 0644 "${ROOT}/packaging/jugoo-overlay/aidyc.desktop" "${HOME}/.local/share/applications/aidyc.desktop"
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "${HOME}/.local/share/applications" >/dev/null 2>&1 || true
+  fi
   (cd "${jugoo_dir}" && python3 -m shell --install)
 }
 install_jugoo
+
+# Jugoo's network and battery indicators use NetworkManager and UPower.
+sudo systemctl enable --now NetworkManager.service
+sudo systemctl enable --now upower.service
+
+# Replace the previously installed, broken AidyC package on the next profile apply.
+# `remove` leaves the user's application data in ~/.local/share/AidyC intact.
+if dpkg-query -W -f='${db:Status-Status}' aidyc 2>/dev/null | grep -qx 'installed'; then
+  sudo apt-get remove -y aidyc
+  echo "Se quitó el paquete AidyC anterior; sus datos de usuario se conservaron."
+fi
 
 install_aidylink() {
   local aidylink_dir=/opt/aidyc/aidylink
   local config_home="${XDG_CONFIG_HOME:-${HOME}/.config}"
   local desktop_dir="${HOME}/.local/share/applications"
+  local desktop_entry="${ROOT}/packaging/aidylink/aidylink.desktop"
+  local user_desktop=""
   local service_dir="${config_home}/systemd/user"
   sudo install -d -m 0755 "${aidylink_dir}/aidylink" /usr/local/bin /usr/share/applications
   sudo install -m 0644 "${ROOT}/packaging/aidylink/aidylink/"*.py "${aidylink_dir}/aidylink/"
   sudo install -m 0644 "${ROOT}/packaging/aidylink/README.md" "${aidylink_dir}/README.md"
   sudo install -m 0755 "${ROOT}/packaging/aidylink/aidylink-wrapper" /usr/local/bin/aidylink
-  sudo install -m 0644 "${ROOT}/packaging/aidylink/aidylink.desktop" /usr/share/applications/aidylink.desktop
+  sudo install -m 0644 "${desktop_entry}" /usr/share/applications/aidychat.desktop
+  sudo install -D -m 0644 "${ROOT}/packaging/aidylink/aidychat.svg" /usr/share/icons/hicolor/scalable/apps/aidychat.svg
   install -d "${desktop_dir}" "${service_dir}"
-  install -m 0644 "${ROOT}/packaging/aidylink/aidylink.desktop" "${desktop_dir}/aidylink.desktop"
+  install -m 0644 "${desktop_entry}" "${desktop_dir}/aidychat.desktop"
   install -m 0644 "${ROOT}/packaging/aidylink/aidylink.service" "${service_dir}/aidylink.service"
+  if command -v xdg-user-dir >/dev/null 2>&1; then
+    user_desktop="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+  fi
+  if [[ -z "${user_desktop}" || "${user_desktop}" == "${HOME}" ]]; then
+    user_desktop="${HOME}/Desktop"
+  fi
+  mkdir -p "${user_desktop}"
+  install -m 0755 "${desktop_entry}" "${user_desktop}/AidyChat.desktop"
   systemctl --user daemon-reload >/dev/null 2>&1 || true
   if command -v update-desktop-database >/dev/null 2>&1; then
     sudo update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
   fi
-  echo "AidyLink instalado. Inicialízalo con 'aidylink init --name NOMBRE --team EQUIPO'; luego puedes activar el servicio con systemctl --user enable --now aidylink."
+  echo "AidyChat instalado. Abre el acceso del escritorio y ejecuta aidylink init --name NOMBRE --team EQUIPO para activar el daemon y las notificaciones en segundo plano."
 }
 install_aidylink
 
@@ -171,7 +202,17 @@ CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
 HYPR_DIR="${CONFIG_HOME}/hypr"
 HYPR_CONF="${HYPR_DIR}/hyprland.conf"
 HYPR_AIDYCOS_CONF="${HYPR_DIR}/aidycos.conf"
-mkdir -p "${HYPR_DIR}"
+HYPR_WINDOWS_CONF="${HYPR_DIR}/config/jugoo_ventanas.conf"
+mkdir -p "${HYPR_DIR}" "${HYPR_DIR}/config" "${HYPR_DIR}/scripts"
+install -m 0755 "${ROOT}/packaging/hyprland/scripts/ventanas" "${HYPR_DIR}/scripts/ventanas"
+install -m 0644 "${ROOT}/packaging/hyprland/scripts/ventanas.py" "${HYPR_DIR}/scripts/ventanas.py"
+if [[ ! -e "${HYPR_WINDOWS_CONF}" ]] || ! cmp -s "${ROOT}/packaging/hyprland/config/jugoo_ventanas.conf" "${HYPR_WINDOWS_CONF}"; then
+  if [[ -e "${HYPR_WINDOWS_CONF}" ]]; then
+    cp -a "${HYPR_WINDOWS_CONF}" "${HYPR_WINDOWS_CONF}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
+  fi
+  install -m 0644 "${ROOT}/packaging/hyprland/config/jugoo_ventanas.conf" "${HYPR_WINDOWS_CONF}"
+fi
+sudo install -m 0755 "${ROOT}/packaging/hyprland/aidycos-prefer-external-display" /usr/local/bin/aidycos-prefer-external-display
 if [[ ! -e "${HYPR_AIDYCOS_CONF}" ]]; then
   cat >"${HYPR_AIDYCOS_CONF}" <<'EOF'
 # AidyCOS keyboard and Jugoo defaults.
@@ -180,12 +221,16 @@ input {
 }
 bind = SUPER, SPACE, exec, jugoo action launcher
 bind = SUPER, C, exec, aidylink ui
+source = ~/.config/hypr/config/jugoo_ventanas.conf
+exec-once = /usr/local/bin/aidycos-prefer-external-display
 EOF
 else
   missing=0
   grep -qE '^[[:space:]]*numlock_by_default[[:space:]]*=[[:space:]]*true' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*SPACE,[[:space:]]*exec,[[:space:]]*jugoo action launcher' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*C,[[:space:]]*exec,[[:space:]]*aidylink ui' "${HYPR_AIDYCOS_CONF}" || missing=1
+  grep -qF 'source = ~/.config/hypr/config/jugoo_ventanas.conf' "${HYPR_AIDYCOS_CONF}" || missing=1
+  grep -qF 'exec-once = /usr/local/bin/aidycos-prefer-external-display' "${HYPR_AIDYCOS_CONF}" || missing=1
   if [[ "${missing}" == 1 ]]; then
     cp -a "${HYPR_AIDYCOS_CONF}" "${HYPR_AIDYCOS_CONF}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
     if ! grep -qE '^[[:space:]]*numlock_by_default[[:space:]]*=[[:space:]]*true' "${HYPR_AIDYCOS_CONF}"; then
@@ -201,6 +246,12 @@ EOF
     fi
     if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*C,[[:space:]]*exec,[[:space:]]*aidylink ui' "${HYPR_AIDYCOS_CONF}"; then
       printf 'bind = SUPER, C, exec, aidylink ui\n' >>"${HYPR_AIDYCOS_CONF}"
+    fi
+    if ! grep -qF 'source = ~/.config/hypr/config/jugoo_ventanas.conf' "${HYPR_AIDYCOS_CONF}"; then
+      printf 'source = ~/.config/hypr/config/jugoo_ventanas.conf\n' >>"${HYPR_AIDYCOS_CONF}"
+    fi
+    if ! grep -qF 'exec-once = /usr/local/bin/aidycos-prefer-external-display' "${HYPR_AIDYCOS_CONF}"; then
+      printf 'exec-once = /usr/local/bin/aidycos-prefer-external-display\n' >>"${HYPR_AIDYCOS_CONF}"
     fi
   fi
 fi
@@ -371,7 +422,8 @@ configure_login() {
   local sddm_conf=/etc/sddm.conf.d/99-aidycos.conf
   local sddm_needs_update=0
   if [[ ! -e "${sddm_conf}" ]] || ! sudo grep -qF 'Current=aidycos' "${sddm_conf}" \
-     || ! sudo grep -qiE '^Numlock[[:space:]]*=[[:space:]]*on$' "${sddm_conf}"; then
+     || ! sudo grep -qiE '^Numlock[[:space:]]*=[[:space:]]*on$' "${sddm_conf}" \
+     || ! sudo grep -q '^InputMethod=$' "${sddm_conf}"; then
     sddm_needs_update=1
   fi
   if [[ -e "${sddm_conf}" && "${sddm_needs_update}" == 1 ]]; then
@@ -379,7 +431,7 @@ configure_login() {
     echo "Se respaldó la configuración SDDM existente: ${sddm_conf}"
   fi
   if [[ "${sddm_needs_update}" == 1 ]]; then
-    printf '[General]\nNumlock=on\n\n[Theme]\nCurrent=aidycos\n' | sudo tee "${sddm_conf}" >/dev/null
+    printf '[General]\nNumlock=on\nInputMethod=\n\n[Theme]\nCurrent=aidycos\n' | sudo tee "${sddm_conf}" >/dev/null
   fi
   echo "SDDM usa el tema AidyCOS con el logo y NumLock activo."
 }

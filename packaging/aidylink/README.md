@@ -15,7 +15,7 @@ Cada equipo corre un daemon de usuario. Los pares se anuncian en la LAN;
 si el destinatario no está online localmente y hay token AidyChat, el
 mensaje se enruta por la API `/aidychat`.
 
-## Instalar como aplicación (menú + comando)
+## Aplicación de escritorio y notificaciones
 
 En el PC de desarrollo (o una máquina ya instalada):
 
@@ -26,10 +26,16 @@ sudo ./scripts/instalar-aidylink.sh
 Sin sudo (solo tu usuario): el wrapper queda en `~/.local/bin/aidylink` y el
 acceso en `~/.local/share/applications/aidylink.desktop`.
 
-En QEMU / ISO: `sudo ./scripts/actualizar-qemu.sh` copia `/opt/aidyc/aidylink`,
-`/usr/local/bin/aidylink` y el `.desktop` del menú. Atajo Hyprland: **Super+C**.
+El instalador de AidyCOS añade **AidyChat** al menú y al escritorio, con icono
+propio. En QEMU / ISO: `sudo ./scripts/actualizar-qemu.sh` copia
+`/opt/aidyc/aidylink`, `/usr/local/bin/aidylink` y el acceso. Atajo Hyprland:
+**Super+C**.
 
-Abrir: menú «AidyLink», `aidylink ui`, o Super+C. La UI arranca el daemon sola.
+Abrir: icono **AidyChat**, `aidylink ui`, o Super+C. La ventana nativa GTK
+usa el mismo bridge AidyChat. La primera vez ejecuta `aidylink init`; esto
+activa el daemon de usuario al iniciar sesión. La ventana puede cerrarse y el
+daemon continúa consultando mensajes y enviando notificaciones del escritorio.
+Al pulsar **Abrir AidyChat** en una notificación, se vuelve a abrir la ventana.
 
 Con una cuenta AidyChat vinculada, `aidylink ui` abre la nueva ventana nativa
 GTK: conversaciones a la izquierda, mensajes, búsqueda, adjuntos e imágenes en
@@ -52,9 +58,8 @@ aidylink init --name "Caja-1" --team "mi-tienda"
 aidylink cloud set --base-url https://angeljoc.pythonanywhere.com \
   --token "<aidychat_auth Bearer>"
 
-# Daemon en segundo plano (también: systemctl --user enable --now aidylink)
-aidylink daemon &
-# o: systemctl --user start aidylink
+# init habilita el servicio de usuario automáticamente; manualmente:
+systemctl --user enable --now aidylink
 
 # Ventana gráfica (también en el menú de aplicaciones: «AidyLink»)
 aidylink ui

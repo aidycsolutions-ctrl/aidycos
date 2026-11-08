@@ -1,0 +1,56 @@
+#!/bin/sh
+# Si hay un monitor externo, desactiva el panel interno (eDP/LVDS) para que
+# Jugoo y el escritorio no queden en la pantalla del portátil cerrada/oculta.
+set -eu
+
+i=0
+while [ "$i" -lt 50 ]; do
+    if hyprctl monitors -j >/dev/null 2>&1; then
+        break
+    fi
+    i=$((i + 1))
+    sleep 0.1
+done
+
+python3 - <<'PY'
+import json
+import subprocess
+import sys
+
+try:
+    monitors = json.loads(
+        subprocess.check_output(["hyprctl", "-j", "monitors"], text=True, timeout=3)
+    )
+except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+    sys.exit(0)
+
+if len(monitors) < 2:
+    sys.exit(0)
+
+internal_tokens = ("edp", "lvds")
+internal = []
+external = []
+for mon in monitors:
+    name = str(mon.get("name") or "")
+    lowered = name.lower()
+    if any(token in lowered for token in internal_tokens):
+        internal.append(name)
+    else:
+        external.append(name)
+
+if not internal or not external:
+    sys.exit(0)
+
+# Enfocar un externo antes de apagar el interno.
+subprocess.run(
+    ["hyprctl", "dispatch", "focusmonitor", external[0]],
+    check=False,
+    timeout=3,
+)
+for name in internal:
+    subprocess.run(
+        ["hyprctl", "keyword", "monitor", f"{name},disable"],
+        check=False,
+        timeout=3,
+    )
+PY
