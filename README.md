@@ -8,7 +8,7 @@ La versión inicial prepara Debian 13 con el escritorio base del proyecto: Hyprl
 
 La instalación agrega fuentes oficiales de Debian solo cuando faltan paquetes esenciales, y usa `trixie-backports` para Hyprland. Selecciona SDDM como pantalla de acceso para que el usuario pueda iniciar Hyprland y Jugoo; guarda el nombre del gestor anterior en `/var/lib/aidycos/previous-display-manager`. Mantiene el usuario, la contraseña y el autologin existentes (no configura autologin). Hace una copia de la configuración Hyprland antes de añadir sus ajustes.
 
-NumLock se activa en la pantalla SDDM y en la sesión Hyprland. El perfil de arranque conserva el menú GRUB de 2 segundos y retrasa la búsqueda de impresoras hasta el entorno gráfico. El repositorio de la ISO no incluye actualmente un splash gráfico ni un logo Plymouth de AidyCOS, y el inicio rápido del BIOS/UEFI depende del equipo.
+NumLock se activa en la pantalla SDDM y en la sesión Hyprland. El perfil coloca el logo de `packaging/plymouth/AidyCOS.png` como fondo del menú GRUB y crea un tema Plymouth estático para la carga de Linux. El menú GRUB espera 2 segundos y la búsqueda de impresoras empieza después de llegar al entorno gráfico. La pantalla del firmware BIOS/UEFI ocurre antes de GRUB y depende del fabricante.
 
 El perfil replica la base funcional que se definió para la ISO, no los mecanismos propios de un sistema live. No instala live-boot, no crea usuarios temporales y no configura contraseñas. El equipo conserva su instalación Debian y los archivos personales.
 

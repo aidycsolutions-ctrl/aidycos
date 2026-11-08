@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=AidyCOS
+Description=AidyCOS boot splash
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/aidycos
+ScriptFile=/usr/share/plymouth/themes/aidycos/aidycos.script

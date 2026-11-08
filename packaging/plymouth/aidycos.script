@@ -1,0 +1,17 @@
+Window.SetBackgroundTopColor(0.015, 0.055, 0.065);
+Window.SetBackgroundBottomColor(0.015, 0.055, 0.065);
+
+logo_source = Image("/usr/share/plymouth/themes/aidycos/AidyCOS.png");
+screen_width = Window.GetWidth();
+screen_height = Window.GetHeight();
+logo_size = screen_height * 0.68;
+if (logo_size > screen_width * 0.85) {
+    logo_size = screen_width * 0.85;
+}
+logo_image = logo_source.Scale(logo_size, logo_size);
+logo_sprite = Sprite(logo_image);
+logo_sprite.SetPosition(
+    screen_width / 2 - logo_image.GetWidth() / 2,
+    screen_height / 2 - logo_image.GetHeight() / 2,
+    0
+);

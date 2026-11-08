@@ -29,7 +29,8 @@ Vista previa del perfil AidyCOS para Debian 13:
   * Seleccionar SDDM y habilitar el arranque gráfico.
   * Activar NumLock en la pantalla de acceso y en Hyprland.
   * Crear configuración inicial de Hyprland si no existe.
-  * Ajustar GRUB a 2 segundos y programar cups-browsed después del entorno gráfico.
+  * Mostrar el logo AidyCOS en GRUB y durante la carga de Linux.
+  * Mantener GRUB en 2 segundos y retrasar cups-browsed hasta el entorno gráfico.
   * Mantener usuario, contraseña y autologin actuales; cambiar el gestor de sesión a SDDM y respaldar los ajustes Hyprland tocados.
 No se hicieron cambios.
 EOF
@@ -95,6 +96,14 @@ sudo apt-get install -y --no-install-recommends "${BOOTSTRAP[@]}"
 "${HOME}/.local/bin/aidycos" install aidyc-desktop --apply
 sudo apt-get install -y --no-install-recommends -t trixie-backports \
   hyprland xdg-desktop-portal-hyprland hyprland-guiutils
+sudo apt-get install -y --no-install-recommends plymouth plymouth-themes
+
+PLYMOUTH_DIR=/usr/share/plymouth/themes/aidycos
+sudo install -D -m 0644 "${ROOT}/packaging/plymouth/AidyCOS.png" "${PLYMOUTH_DIR}/AidyCOS.png"
+sudo install -m 0644 "${ROOT}/packaging/plymouth/aidycos.plymouth" "${PLYMOUTH_DIR}/aidycos.plymouth"
+sudo install -m 0644 "${ROOT}/packaging/plymouth/aidycos.script" "${PLYMOUTH_DIR}/aidycos.script"
+sudo plymouth-set-default-theme aidycos
+sudo update-initramfs -u -k all
 
 install_jugoo() {
   local config_home="${XDG_CONFIG_HOME:-${HOME}/.config}"
@@ -186,21 +195,55 @@ apply_grub_profile() {
     echo "GRUB no está instalado; se omite su perfil."
     return
   fi
-  if sudo grep -qE '^GRUB_TIMEOUT=2$' "${grub}" && sudo grep -qE '^GRUB_TIMEOUT_STYLE=menu$' "${grub}"; then
+  sudo install -D -m 0644 "${ROOT}/packaging/plymouth/AidyCOS.png" /boot/grub/AidyCOS.png
+  if sudo grep -qE '^GRUB_TIMEOUT=2$' "${grub}" \
+     && sudo grep -qE '^GRUB_TIMEOUT_STYLE=menu$' "${grub}" \
+     && sudo grep -qF 'GRUB_BACKGROUND="/boot/grub/AidyCOS.png"' "${grub}" \
+     && sudo grep -qE '^GRUB_GFXMODE=auto$' "${grub}" \
+     && sudo grep -qE '^GRUB_CMDLINE_LINUX_DEFAULT=.*quiet' "${grub}" \
+     && sudo grep -qE '^GRUB_CMDLINE_LINUX_DEFAULT=.*splash' "${grub}"; then
     echo "GRUB ya tiene el perfil AidyCOS."
     return
   fi
   sudo cp -a "${grub}" "${grub}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
   tmp="$(mktemp)"
   sudo awk '
-    BEGIN { timeout=0; style=0 }
+    BEGIN { timeout=0; style=0; background=0; gfxmode=0 }
     /^GRUB_TIMEOUT=/ { print "GRUB_TIMEOUT=2"; timeout=1; next }
     /^GRUB_TIMEOUT_STYLE=/ { print "GRUB_TIMEOUT_STYLE=menu"; style=1; next }
+    /^GRUB_BACKGROUND=/ { print "GRUB_BACKGROUND=\"/boot/grub/AidyCOS.png\""; background=1; next }
+    /^GRUB_GFXMODE=/ { print "GRUB_GFXMODE=auto"; gfxmode=1; next }
     { print }
-    END { if (!timeout) print "GRUB_TIMEOUT=2"; if (!style) print "GRUB_TIMEOUT_STYLE=menu" }
+    END {
+      if (!timeout) print "GRUB_TIMEOUT=2"
+      if (!style) print "GRUB_TIMEOUT_STYLE=menu"
+      if (!background) print "GRUB_BACKGROUND=\"/boot/grub/AidyCOS.png\""
+      if (!gfxmode) print "GRUB_GFXMODE=auto"
+    }
   ' "${grub}" >"${tmp}"
   sudo install -m 0644 "${tmp}" "${grub}"
   rm -f "${tmp}"
+  sudo python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path('/etc/default/grub')
+lines = path.read_text().splitlines()
+prefix = 'GRUB_CMDLINE_LINUX_DEFAULT='
+for index, line in enumerate(lines):
+    if line.startswith(prefix):
+        match = re.fullmatch(r"GRUB_CMDLINE_LINUX_DEFAULT=([\"'])(.*)\1", line)
+        if match:
+            options = match.group(2).split()
+            for option in ('quiet', 'splash'):
+                if option not in options:
+                    options.append(option)
+            lines[index] = prefix + match.group(1) + ' '.join(options) + match.group(1)
+        break
+else:
+    lines.append(prefix + '"quiet splash"')
+path.write_text('\n'.join(lines) + '\n')
+PY
   sudo update-grub
 }
 apply_grub_profile
