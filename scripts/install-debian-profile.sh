@@ -4,10 +4,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DRY_RUN=0
+NO_REBOOT=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
-    -h|--help) echo "Uso: install-debian-profile.sh [--dry-run]"; exit 0 ;;
+    --no-reboot) NO_REBOOT=1 ;;
+    -h|--help) echo "Uso: install-debian-profile.sh [--dry-run] [--no-reboot]"; exit 0 ;;
     *) echo "Opción desconocida: $arg" >&2; exit 2 ;;
   esac
 done
@@ -386,6 +388,15 @@ configure_login
 cat <<EOF
 
 AidyCOS quedó aplicado sobre Debian 13.
-Reinicia el equipo. GRUB queda oculto con espera breve; Plymouth muestra el logo AidyCOS y SDDM presenta la pantalla de acceso personalizada.
+GRUB queda oculto con espera breve; Plymouth muestra el logo AidyCOS y SDDM presenta la pantalla de acceso personalizada.
 En SDDM selecciona la sesión Hyprland la primera vez; luego se recordará. NumLock queda activo en SDDM y Hyprland. Si se modificó tu configuración de Hyprland, revisa el respaldo indicado arriba.
 EOF
+
+if [[ "${NO_REBOOT}" == 1 ]]; then
+  echo "Reinicio omitido por --no-reboot."
+  exit 0
+fi
+
+echo "La instalación terminó correctamente. El equipo se reiniciará en 15 segundos; pulsa Ctrl+C para cancelar."
+sleep 15
+sudo systemctl reboot

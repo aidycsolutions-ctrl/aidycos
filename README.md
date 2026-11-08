@@ -54,7 +54,13 @@ El instalador solicita `sudo` para paquetes y configuración del sistema. Se pue
 bash <(curl -fsSL https://raw.githubusercontent.com/aidycsolutions-ctrl/aidycos/main/install.sh) --dry-run
 ```
 
-Al terminar, reinicia. En SDDM elige **Hyprland** como sesión; normalmente quedará recordada para los siguientes inicios. Si las fuentes de APT del equipo están incompletas, AidyCOS agrega archivos dedicados y no reemplaza archivos de terceros.
+Al completar correctamente, el equipo se reinicia automáticamente tras una cuenta regresiva de 15 segundos; pulsa `Ctrl+C` durante la cuenta para cancelarlo. Para posponer el reinicio, ejecuta:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/aidycsolutions-ctrl/aidycos/main/install.sh | bash -s -- --no-reboot
+```
+
+En SDDM elige **Hyprland** como sesión; normalmente quedará recordada para los siguientes inicios. Si las fuentes de APT del equipo están incompletas, AidyCOS agrega archivos dedicados y no reemplaza archivos de terceros.
 
 El nombre `aidycos` y la ruta se deben ajustar si se publica con otro nombre. Primero ejecuta `plan` en esa máquina y revisa la lista antes de usar `--apply`.
 
