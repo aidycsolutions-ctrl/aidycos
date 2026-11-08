@@ -21,6 +21,28 @@ def replace_once(path: Path, old: str, new: str, description: str) -> None:
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
+def replace_desktop_icons_editor(root: Path, overlay: Path) -> None:
+    pages = root / "shell/widgets/configuraciones/pages.py"
+    editor_file = overlay / "widgets/configuraciones/desktop_icons_editor.py"
+    editor = editor_file.read_text(encoding="utf-8")
+    page_text = pages.read_text(encoding="utf-8")
+    editor_start = page_text.find("\ndef _desktop_icons_editor(")
+    if editor_start < 0 and page_text.startswith("def _desktop_icons_editor("):
+        editor_start = 0
+    if editor_start >= 0:
+        editor_end = page_text.find("\ndef _wallpaper_editor(", editor_start)
+        suffix = page_text[editor_end:] if editor_end >= 0 else ""
+        updated_pages = page_text[:editor_start].rstrip() + "\n\n" + editor.rstrip() + "\n" + suffix
+        if updated_pages != page_text:
+            backup = pages.with_suffix(pages.suffix + ".aidycos-backup")
+            if not backup.exists():
+                shutil.copy2(pages, backup)
+            pages.write_text(updated_pages, encoding="utf-8")
+    else:
+        with pages.open("a", encoding="utf-8") as stream:
+            stream.write("\n\n" + editor.rstrip() + "\n")
+
+
 def install_desktop_icons(root: Path) -> None:
     """Backport Jugoo's desktop-icon support when the published checkout is older."""
     overlay = Path(__file__).parent / "shell"
@@ -107,6 +129,7 @@ def install_desktop_icons(root: Path) -> None:
         "self.desktop_icons = DesktopIconsService(" in app_text
         and "self.desktop_icons_layer = DesktopIconsLayer(" in app_text
     ):
+        replace_desktop_icons_editor(root, overlay)
         return
     replace_once(
         app,
@@ -260,22 +283,7 @@ def install_desktop_icons(root: Path) -> None:
         "                page.pack_start(_desktop_icons_editor(manager), False, False, 0)\n",
         "mostrar el editor de iconos en configuración",
     )
-    page_text = pages.read_text(encoding="utf-8")
-    editor_start = page_text.find("\ndef _desktop_icons_editor(")
-    if editor_start < 0 and page_text.startswith("def _desktop_icons_editor("):
-        editor_start = 0
-    if editor_start >= 0:
-        editor_end = page_text.find("\ndef _wallpaper_editor(", editor_start)
-        suffix = page_text[editor_end:] if editor_end >= 0 else ""
-        updated_pages = page_text[:editor_start].rstrip() + "\n\n" + editor.rstrip() + "\n" + suffix
-        if updated_pages != page_text:
-            backup = pages.with_suffix(pages.suffix + ".aidycos-backup")
-            if not backup.exists():
-                shutil.copy2(pages, backup)
-            pages.write_text(updated_pages, encoding="utf-8")
-    else:
-        with pages.open("a", encoding="utf-8") as stream:
-            stream.write("\n\n" + editor.rstrip() + "\n")
+    replace_desktop_icons_editor(root, overlay)
 
 
 def install_overlay_file(source: Path, destination: Path) -> None:
