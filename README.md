@@ -6,7 +6,9 @@ AidyCOS adapta una instalación Linux existente al perfil de escritorio del proy
 
 La versión inicial prepara Debian 13 con el escritorio base del proyecto: Hyprland, SDDM, Wayland, audio, utilidades y Jugoo, además de los ajustes de GRUB y `cups-browsed` usados en el perfil de AidyC-OS.
 
-La instalación agrega fuentes oficiales de Debian solo cuando faltan paquetes esenciales, y usa `trixie-backports` para Hyprland. Si ya existe una configuración de Hyprland, AidyCOS hace una copia antes de añadir el inicio de Jugoo. También conserva el usuario, la contraseña, el gestor de sesión configurado y el autologin (no configura uno).
+La instalación agrega fuentes oficiales de Debian solo cuando faltan paquetes esenciales, y usa `trixie-backports` para Hyprland. Selecciona SDDM como pantalla de acceso para que el usuario pueda iniciar Hyprland y Jugoo; guarda el nombre del gestor anterior en `/var/lib/aidycos/previous-display-manager`. Mantiene el usuario, la contraseña y el autologin existentes (no configura autologin). Hace una copia de la configuración Hyprland antes de añadir sus ajustes.
+
+NumLock se activa en la pantalla SDDM y en la sesión Hyprland. El perfil de arranque conserva el menú GRUB de 2 segundos y retrasa la búsqueda de impresoras hasta el entorno gráfico. El repositorio de la ISO no incluye actualmente un splash gráfico ni un logo Plymouth de AidyCOS, y el inicio rápido del BIOS/UEFI depende del equipo.
 
 El perfil replica la base funcional que se definió para la ISO, no los mecanismos propios de un sistema live. No instala live-boot, no crea usuarios temporales y no configura contraseñas. El equipo conserva su instalación Debian y los archivos personales.
 
@@ -52,7 +54,7 @@ El instalador solicita `sudo` para paquetes y configuración del sistema. Se pue
 bash <(curl -fsSL https://raw.githubusercontent.com/aidycsolutions-ctrl/aidycos/main/install.sh) --dry-run
 ```
 
-Al terminar, reinicia y elige **Hyprland** en la pantalla de sesión. El primer inicio de Jugoo depende de que su configuración esté lista. Si las fuentes de APT del equipo están incompletas, AidyCOS agrega archivos dedicados y no reemplaza archivos de terceros.
+Al terminar, reinicia. En SDDM elige **Hyprland** como sesión; normalmente quedará recordada para los siguientes inicios. Si las fuentes de APT del equipo están incompletas, AidyCOS agrega archivos dedicados y no reemplaza archivos de terceros.
 
 El nombre `aidycos` y la ruta se deben ajustar si se publica con otro nombre. Primero ejecuta `plan` en esa máquina y revisa la lista antes de usar `--apply`.
 

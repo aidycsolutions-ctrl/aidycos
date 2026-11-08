@@ -26,9 +26,11 @@ Vista previa del perfil AidyCOS para Debian 13:
   * Verificar fuentes oficiales de Debian y añadir trixie-backports si faltan paquetes.
   * Instalar el conjunto de paquetes del perfil Hyprland/SDDM/Wayland/Jugoo.
   * Instalar la CLI AidyCOS y Jugoo para el usuario actual.
+  * Seleccionar SDDM y habilitar el arranque gráfico.
+  * Activar NumLock en la pantalla de acceso y en Hyprland.
   * Crear configuración inicial de Hyprland si no existe.
   * Ajustar GRUB a 2 segundos y programar cups-browsed después del entorno gráfico.
-  * Mantener intactos el usuario, contraseña, autologin, gestor de pantalla existente y configuraciones personalizadas.
+  * Mantener usuario, contraseña y autologin actuales; cambiar el gestor de sesión a SDDM y respaldar los ajustes Hyprland tocados.
 No se hicieron cambios.
 EOF
   exit 0
@@ -111,29 +113,71 @@ install_jugoo
 CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
 HYPR_DIR="${CONFIG_HOME}/hypr"
 HYPR_CONF="${HYPR_DIR}/hyprland.conf"
+HYPR_AIDYCOS_CONF="${HYPR_DIR}/aidycos.conf"
 mkdir -p "${HYPR_DIR}"
+if [[ ! -e "${HYPR_AIDYCOS_CONF}" ]]; then
+  cat >"${HYPR_AIDYCOS_CONF}" <<'EOF'
+# AidyCOS keyboard defaults.
+input {
+    numlock_by_default = true
+}
+EOF
+elif ! grep -qE '^[[:space:]]*numlock_by_default[[:space:]]*=[[:space:]]*true' "${HYPR_AIDYCOS_CONF}"; then
+  cp -a "${HYPR_AIDYCOS_CONF}" "${HYPR_AIDYCOS_CONF}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
+  cat >>"${HYPR_AIDYCOS_CONF}" <<'EOF'
+
+input {
+    numlock_by_default = true
+}
+EOF
+fi
+
 if [[ ! -e "${HYPR_CONF}" ]]; then
   cat >"${HYPR_CONF}" <<'EOF'
 # AidyCOS: configuración base compatible con el perfil inicial.
 monitor = , preferred, auto, 1
-input { kb_layout = latam }
-general { border_size = 2; gaps_in = 4; gaps_out = 8 }
-decoration { rounding = 8 }
+input {
+    kb_layout = latam
+    numlock_by_default = true
+}
+general {
+    border_size = 2
+    gaps_in = 4
+    gaps_out = 8
+}
+decoration {
+    rounding = 8
+}
 exec-once = ~/.local/bin/jugoo
 bind = SUPER, Q, killactive
 bind = SUPER, RETURN, exec, foot
 bind = SUPER, M, exit
 EOF
   echo "Configuración base creada en ${HYPR_CONF}"
-elif ! grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*jugoo' "${HYPR_CONF}"; then
-  backup="${HYPR_CONF}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
-  cp -a "${HYPR_CONF}" "${backup}"
-  cat >>"${HYPR_CONF}" <<'EOF'
+else
+  changed=0
+  if ! grep -qE '^[[:space:]]*source[[:space:]]*=.*aidycos\.conf' "${HYPR_CONF}" \
+     && ! grep -qE '^[[:space:]]*numlock_by_default[[:space:]]*=[[:space:]]*true' "${HYPR_CONF}"; then
+    changed=1
+  fi
+  if ! grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*jugoo' "${HYPR_CONF}"; then
+    changed=1
+  fi
+  if [[ "${changed}" == 1 ]]; then
+    backup="${HYPR_CONF}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
+    cp -a "${HYPR_CONF}" "${backup}"
+    if ! grep -qE '^[[:space:]]*source[[:space:]]*=.*aidycos\.conf' "${HYPR_CONF}"; then
+      printf '\n# AidyCOS keyboard defaults.\nsource = ~/.config/hypr/aidycos.conf\n' >>"${HYPR_CONF}"
+    fi
+    if ! grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*jugoo' "${HYPR_CONF}"; then
+      cat >>"${HYPR_CONF}" <<'EOF'
 
 # AidyCOS: iniciar Jugoo al entrar en Hyprland.
 exec-once = ~/.local/bin/jugoo
 EOF
-  echo "Se agregó el inicio de Jugoo; respaldo previo: ${backup}"
+    fi
+    echo "Se agregaron los ajustes AidyCOS; respaldo previo: ${backup}"
+  fi
 fi
 
 apply_grub_profile() {
@@ -178,16 +222,42 @@ if command -v systemctl >/dev/null && systemctl list-unit-files cups-browsed.ser
   fi
 fi
 
-if [[ ! -e /etc/systemd/system/display-manager.service ]]; then
+configure_login() {
+  local dm_link=/etc/systemd/system/display-manager.service current_target old_unit
+  if [[ -e "${dm_link}" && ! -L "${dm_link}" ]]; then
+    echo "${dm_link} es un archivo regular; se conserva. No se puede seleccionar SDDM automáticamente." >&2
+    return 1
+  fi
+  if [[ -L "${dm_link}" ]]; then
+    current_target="$(readlink "${dm_link}")"
+    if [[ "${current_target}" != *sddm.service ]]; then
+      old_unit="$(basename "${current_target}")"
+      sudo install -d /var/lib/aidycos
+      if [[ ! -e /var/lib/aidycos/previous-display-manager ]]; then
+        printf '%s\n' "${old_unit}" | sudo tee /var/lib/aidycos/previous-display-manager >/dev/null
+      fi
+      sudo systemctl disable "${old_unit}" >/dev/null 2>&1 || true
+      sudo rm -f "${dm_link}"
+    fi
+  fi
   sudo systemctl enable sddm.service
-  echo "SDDM quedó habilitado como gestor de sesión."
-else
-  echo "Se conserva el gestor de sesión actual. Elige Hyprland desde su selector de sesión si está disponible."
-fi
+  if [[ "$(systemctl get-default)" != graphical.target ]]; then
+    sudo systemctl set-default graphical.target
+  fi
+  sudo install -d /etc/sddm.conf.d
+  local sddm_conf=/etc/sddm.conf.d/90-aidycos.conf
+  if [[ ! -e "${sddm_conf}" ]]; then
+    printf '[General]\nNumlock=on\n' | sudo tee "${sddm_conf}" >/dev/null
+  elif ! sudo grep -qiE '^Numlock[[:space:]]*=[[:space:]]*on$' "${sddm_conf}"; then
+    echo "Se conserva ${sddm_conf}; configura Numlock=on manualmente si quieres NumLock en la pantalla de acceso."
+  fi
+  echo "SDDM quedó seleccionado y NumLock se activa en la pantalla de acceso."
+}
+configure_login
 
 cat <<EOF
 
 AidyCOS quedó aplicado sobre Debian 13.
-Reinicia el equipo y selecciona Hyprland en la pantalla de inicio de sesión.
-Se conservaron los archivos de configuración existentes; cuando fue necesario añadir un ajuste, se creó un respaldo.
+Reinicia el equipo. En SDDM selecciona la sesión Hyprland la primera vez; luego se recordará.
+NumLock queda activo en SDDM y Hyprland. Si se modificó tu configuración de Hyprland, revisa el respaldo indicado arriba.
 EOF
