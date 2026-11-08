@@ -21,6 +21,250 @@ def replace_once(path: Path, old: str, new: str, description: str) -> None:
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
+def install_desktop_icons(root: Path) -> None:
+    """Backport Jugoo's desktop-icon support when the published checkout is older."""
+    overlay = Path(__file__).parent / "shell"
+    for relative in (
+        "servicios/escritorio/desktop_icons",
+        "widgets/escritorio",
+    ):
+        source = overlay / relative
+        target = root / "shell" / relative
+        target.mkdir(parents=True, exist_ok=True)
+        for item in source.glob("*.py"):
+            destination = target / item.name
+            if not destination.exists() or destination.read_bytes() != item.read_bytes():
+                if destination.exists():
+                    backup = destination.with_suffix(destination.suffix + ".aidycos-backup")
+                    if not backup.exists():
+                        shutil.copy2(destination, backup)
+                shutil.copy2(item, destination)
+
+    runtime_paths = root / "shell/runtime_paths.py"
+    replace_once(
+        runtime_paths,
+        "from .config import CLIPBOARD_HISTORY_PATH, CLIPBOARD_IMAGES_DIR, PINNED_APPS_PATH, TASKS_PATH\n",
+        "from .config import CLIPBOARD_HISTORY_PATH, CLIPBOARD_IMAGES_DIR, PINNED_APPS_PATH, TASKS_PATH, DESKTOP_ICONS_PATH\n",
+        "importar la ruta de iconos del escritorio",
+    )
+    replace_once(
+        runtime_paths,
+        "def tasks_path() -> Path:\n",
+        "def desktop_icons_path() -> Path:\n"
+        "    return xdg_data_dir() / DESKTOP_ICONS_PATH\n\n\n"
+        "def tasks_path() -> Path:\n",
+        "definir almacenamiento de iconos del escritorio",
+    )
+    identity = root / "shell/identity.py"
+    replace_once(
+        identity,
+        "TITLE_PINNED_OVERFLOW = f\"{APPLICATION_NAME} Pinned Overflow\"\n",
+        "TITLE_PINNED_OVERFLOW = f\"{APPLICATION_NAME} Pinned Overflow\"\n"
+        "TITLE_DESKTOP = f\"{APPLICATION_NAME} Desktop Icons\"\n",
+        "identificar la capa de iconos del escritorio",
+    )
+
+    config = root / "shell/config.py"
+    config_text = config.read_text(encoding="utf-8")
+    if "DESKTOP_ICONS_ENABLED" not in config_text:
+        config_text = config_text.rstrip() + (
+            "\n\n# AidyCOS: escritorio con accesos directos habilitados.\n"
+            "DESKTOP_ICONS_ENABLED = True\n"
+            "DESKTOP_ICONS_PATH = \"desktop-icons.json\"\n"
+            "DESKTOP_ICON_SIZE = 48\n"
+            "DESKTOP_ICON_LABEL_WIDTH = 96\n"
+            "DESKTOP_ICON_CELL_WIDTH = 104\n"
+            "DESKTOP_ICON_CELL_HEIGHT = 96\n"
+            "DESKTOP_ICON_DRAG_THRESHOLD_PX = 6\n"
+        )
+    else:
+        config_text = re.sub(
+            r"^(\s*DESKTOP_ICONS_ENABLED\s*=\s*)False(\s*)$",
+            r"\g<1>True\g<2>",
+            config_text,
+            count=1,
+            flags=re.MULTILINE,
+        )
+        defaults = {
+            "DESKTOP_ICONS_PATH": '"desktop-icons.json"',
+            "DESKTOP_ICON_SIZE": "48",
+            "DESKTOP_ICON_LABEL_WIDTH": "96",
+            "DESKTOP_ICON_CELL_WIDTH": "104",
+            "DESKTOP_ICON_CELL_HEIGHT": "96",
+            "DESKTOP_ICON_DRAG_THRESHOLD_PX": "6",
+        }
+        for key, value in defaults.items():
+            if not re.search(rf"^\s*{key}\s*=", config_text, re.MULTILINE):
+                config_text += f"\n{key} = {value}\n"
+    backup = config.with_suffix(config.suffix + ".aidycos-backup")
+    if not backup.exists():
+        shutil.copy2(config, backup)
+    config.write_text(config_text, encoding="utf-8")
+
+    app = root / "shell/app.py"
+    app_text = app.read_text(encoding="utf-8")
+    if (
+        "self.desktop_icons = DesktopIconsService(" in app_text
+        and "self.desktop_icons_layer = DesktopIconsLayer(" in app_text
+    ):
+        return
+    replace_once(
+        app,
+        "from .config import (\n",
+        "from .actions import dispatch_action\nfrom .config import (\n",
+        "importar acciones para los accesos del escritorio",
+    )
+    replace_once(
+        app,
+        "from .servicios.escritorio.hyprland import HyprlandService\n",
+        "from .servicios.escritorio.hyprland import HyprlandService\n"
+        "from .servicios.escritorio.desktop_icons import DesktopIconsService\n",
+        "importar servicio de iconos del escritorio",
+    )
+    replace_once(
+        app,
+        "from .widgets.barra.workspace import WorkspaceWidget\n",
+        "from .widgets.barra.workspace import WorkspaceWidget\n"
+        "from .widgets.escritorio.layer import DesktopIconsLayer\n",
+        "importar capa de iconos del escritorio",
+    )
+    replace_once(
+        app,
+        "        self.applications = ApplicationsService(self.event_bus)\n",
+        "        self.applications = ApplicationsService(self.event_bus)\n"
+        "        self.desktop_icons = DesktopIconsService(\n"
+        "            self.event_bus,\n"
+        "            launch_application=self.applications.launch,\n"
+        "            dispatch_action=lambda name: dispatch_action(name, self),\n"
+        "        )\n"
+        "        self.settings_manager.set_desktop_icons_service(self.desktop_icons)\n",
+        "crear servicio de iconos del escritorio",
+    )
+
+    manager = root / "shell/settings/manager.py"
+    replace_once(
+        manager,
+        "        self._workspace_hover_setter: Callable[[int], None] | None = None\n",
+        "        self._workspace_hover_setter: Callable[[int], None] | None = None\n"
+        "        self._desktop_icons = None\n"
+        "        self._desktop_icons_enabled_setter: Callable[[bool], None] | None = None\n",
+        "guardar referencias del servicio de iconos",
+    )
+    replace_once(
+        manager,
+        "    @property\n    def path(self) -> Path:\n",
+        "    @property\n    def desktop_icons(self):\n"
+        "        return self._desktop_icons\n\n"
+        "    def set_desktop_icons_service(self, service) -> None:\n"
+        "        self._desktop_icons = service\n\n"
+        "    def set_desktop_icons_enabled_hook(self, callback: Callable[[bool], None]) -> None:\n"
+        "        self._desktop_icons_enabled_setter = callback\n"
+        "        self._hooks[\"escritorio.icons_enabled\"] = self._apply_desktop_icons_enabled\n\n"
+        "    @property\n    def path(self) -> Path:\n",
+        "exponer el servicio de iconos a configuración",
+    )
+    replace_once(
+        manager,
+        "    def _register_builtin_hooks(self) -> None:\n",
+        "    def _apply_desktop_icons_enabled(\n"
+        "        self, _manager: SettingsManager, _definition: SettingDef, value: Any\n"
+        "    ) -> None:\n"
+        "        if self._desktop_icons_enabled_setter is not None:\n"
+        "            self._desktop_icons_enabled_setter(bool(value))\n\n"
+        "    def _register_builtin_hooks(self) -> None:\n",
+        "aplicar el ajuste de visibilidad de iconos",
+    )
+
+    app_icons = (
+        "        self.settings_manager.start()\n\n"
+        "        self.desktop_icons_layer = DesktopIconsLayer(\n"
+        "            application, self.event_bus, self.desktop_icons\n"
+        "        )\n"
+        "        self.settings_manager.set_desktop_icons_enabled_hook(\n"
+        "            self.desktop_icons_layer.set_enabled\n"
+        "        )\n"
+        "        self.desktop_icons.start()\n"
+        "        enabled = bool(self.settings_manager.get(\"escritorio.icons_enabled\"))\n"
+        "        self.desktop_icons_layer.set_enabled(enabled)\n"
+        "        if enabled:\n"
+        "            self.desktop_icons_layer.show_all()\n\n"
+    )
+    replace_once(
+        app,
+        "        self.settings_manager.start()\n\n",
+        app_icons,
+        "iniciar iconos del escritorio",
+    )
+    replace_once(
+        app,
+        "        self.applications.close()\n",
+        "        self.applications.close()\n"
+        "        self.desktop_icons.close()\n"
+        "        if getattr(self, \"desktop_icons_layer\", None) is not None:\n"
+        "            self.desktop_icons_layer.destroy()\n",
+        "cerrar iconos del escritorio correctamente",
+    )
+
+    schema = root / "shell/settings/schema.py"
+    schema_block = '''        SettingDef(
+            key="escritorio.icons_enabled",
+            category=CategoryId.TEMA,
+            label="Mostrar iconos del escritorio",
+            description="Capa de accesos sobre el fondo del escritorio.",
+            value_type="bool",
+            default=shell_config.DESKTOP_ICONS_ENABLED,
+            config_attr="DESKTOP_ICONS_ENABLED",
+            apply=APPLY_LIVE,
+            tier="A",
+            section="Escritorio",
+        ),
+        SettingDef(
+            key="escritorio.icons_editor",
+            category=CategoryId.TEMA,
+            label="Accesos directos",
+            description="Crear, mover o eliminar iconos del escritorio.",
+            value_type="string",
+            default="",
+            apply=APPLY_LIVE,
+            tier="A",
+            section="Escritorio",
+        ),
+'''
+    schema_text = schema.read_text(encoding="utf-8")
+    if 'key="escritorio.icons_enabled"' not in schema_text:
+        anchor = "    )\n\n\ndef settings_by_key"
+        if anchor not in schema_text:
+            raise SystemExit(f"No se pudo registrar la configuración de iconos: {schema}")
+        schema_text = schema_text.replace(anchor, schema_block + anchor, 1)
+        backup = schema.with_suffix(schema.suffix + ".aidycos-backup")
+        if not backup.exists():
+            shutil.copy2(schema, backup)
+        schema.write_text(schema_text, encoding="utf-8")
+
+    pages = root / "shell/widgets/configuraciones/pages.py"
+    editor_file = overlay / "widgets/configuraciones/desktop_icons_editor.py"
+    editor = editor_file.read_text(encoding="utf-8")
+    replace_once(
+        pages,
+        "_CUSTOM_EDITOR_KEYS = frozenset(\n    {\n",
+        "_CUSTOM_EDITOR_KEYS = frozenset(\n    {\n        \"escritorio.icons_editor\",\n",
+        "registrar el editor de iconos",
+    )
+    replace_once(
+        pages,
+        "            elif definition.key == \"widgets.task_priorities_json\":\n"
+        "                page.pack_start(_task_priorities_editor(manager, on_change), False, False, 0)\n",
+        "            elif definition.key == \"widgets.task_priorities_json\":\n"
+        "                page.pack_start(_task_priorities_editor(manager, on_change), False, False, 0)\n"
+        "            elif definition.key == \"escritorio.icons_editor\":\n"
+        "                page.pack_start(_desktop_icons_editor(manager), False, False, 0)\n",
+        "mostrar el editor de iconos en configuración",
+    )
+    if "def _desktop_icons_editor(" not in pages.read_text(encoding="utf-8"):
+        with pages.open("a", encoding="utf-8") as stream:
+            stream.write("\n\n" + editor.rstrip() + "\n")
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("Uso: install.py RUTA_DE_JUGOO")
@@ -35,37 +279,8 @@ def main() -> None:
         if not path.is_file():
             raise SystemExit(f"Checkout de Jugoo incompleto: falta {path}")
 
-    config_text = config.read_text(encoding="utf-8")
-    icon_setting = re.search(r"^\s*DESKTOP_ICONS_ENABLED\s*=\s*(True|False)\s*$", config_text, re.MULTILINE)
-    if icon_setting and icon_setting.group(1) == "False":
-        backup = config.with_suffix(config.suffix + ".aidycos-backup")
-        if not backup.exists():
-            shutil.copy2(config, backup)
-        config.write_text(
-            re.sub(
-                r"^(\s*DESKTOP_ICONS_ENABLED\s*=\s*)False(\s*)$",
-                r"\g<1>True\g<2>",
-                config_text,
-                count=1,
-                flags=re.MULTILINE,
-            ),
-            encoding="utf-8",
-        )
-    elif not icon_setting:
-        app_text = app.read_text(encoding="utf-8")
-        if "DesktopIconsLayer" not in app_text or "desktop_icons" not in app_text:
-            raise SystemExit(
-                "El checkout de Jugoo no incluye el soporte de iconos del escritorio. "
-                "Actualiza Jugoo y vuelve a aplicar el perfil."
-            )
-        backup = config.with_suffix(config.suffix + ".aidycos-backup")
-        if not backup.exists():
-            shutil.copy2(config, backup)
-        config.write_text(
-            config_text.rstrip() + "\n\n# AidyCOS: mostrar los iconos del escritorio por defecto.\n"
-            "DESKTOP_ICONS_ENABLED = True\n",
-            encoding="utf-8",
-        )
+    install_desktop_icons(root)
+
     replace_once(
         app,
         "from .widgets.barra.ethernet import EthernetWidget\n",
