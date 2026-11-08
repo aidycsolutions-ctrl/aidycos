@@ -45,7 +45,10 @@ STANDARD_SOURCE="${APT_SOURCES_DIR}/aidycos-debian.sources"
 BACKPORT_SOURCE="${APT_SOURCES_DIR}/aidycos-backports.sources"
 
 apt_has_candidate() {
-  apt-cache policy "$1" 2>/dev/null | awk '/Candidate:/ { if ($2 != "(none)") found=1 } END { exit !found }'
+  # apt-cache localizes its headings (for example, "Candidato:" in Spanish).
+  # Force the stable English field name so source detection works on every locale.
+  LC_ALL=C apt-cache policy "$1" 2>/dev/null \
+    | awk '/Candidate:/ { if ($2 != "(none)") found=1 } END { exit !found }'
 }
 
 ensure_source() {
