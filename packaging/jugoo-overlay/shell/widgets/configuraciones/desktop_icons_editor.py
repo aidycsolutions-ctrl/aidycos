@@ -152,3 +152,4 @@ def _desktop_icons_editor(manager: SettingsManager) -> Gtk.Widget:
 
     add_button.connect("clicked", _add)
     _rebuild_list()
+    return box

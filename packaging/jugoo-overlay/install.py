@@ -260,7 +260,20 @@ def install_desktop_icons(root: Path) -> None:
         "                page.pack_start(_desktop_icons_editor(manager), False, False, 0)\n",
         "mostrar el editor de iconos en configuración",
     )
-    if "def _desktop_icons_editor(" not in pages.read_text(encoding="utf-8"):
+    page_text = pages.read_text(encoding="utf-8")
+    editor_start = page_text.find("\ndef _desktop_icons_editor(")
+    if editor_start < 0 and page_text.startswith("def _desktop_icons_editor("):
+        editor_start = 0
+    if editor_start >= 0:
+        editor_end = page_text.find("\ndef _wallpaper_editor(", editor_start)
+        suffix = page_text[editor_end:] if editor_end >= 0 else ""
+        updated_pages = page_text[:editor_start].rstrip() + "\n\n" + editor.rstrip() + "\n" + suffix
+        if updated_pages != page_text:
+            backup = pages.with_suffix(pages.suffix + ".aidycos-backup")
+            if not backup.exists():
+                shutil.copy2(pages, backup)
+            pages.write_text(updated_pages, encoding="utf-8")
+    else:
         with pages.open("a", encoding="utf-8") as stream:
             stream.write("\n\n" + editor.rstrip() + "\n")
 
@@ -474,6 +487,13 @@ def main() -> None:
     install_desktop_icons(root)
     install_battery(root)
     install_native_workspace_dispatch(root)
+    assistant_card = root / "shell/widgets/notificaciones/assistant_card.py"
+    replace_once(
+        assistant_card,
+        "is_pointer_leaving_surface(self, event)",
+        "is_pointer_leaving_surface(event)",
+        "corregir compatibilidad del evento de salida del asistente",
+    )
 
     overlay_shell = Path(__file__).parent / "shell"
     for relative in (
