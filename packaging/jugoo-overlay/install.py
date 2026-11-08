@@ -265,6 +265,17 @@ def install_desktop_icons(root: Path) -> None:
             stream.write("\n\n" + editor.rstrip() + "\n")
 
 
+def install_overlay_file(source: Path, destination: Path) -> None:
+    if destination.exists() and destination.read_bytes() == source.read_bytes():
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        backup = destination.with_suffix(destination.suffix + ".aidycos-backup")
+        if not backup.exists():
+            shutil.copy2(destination, backup)
+    shutil.copy2(source, destination)
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("Uso: install.py RUTA_DE_JUGOO")
@@ -281,26 +292,53 @@ def main() -> None:
 
     install_desktop_icons(root)
 
+    overlay_shell = Path(__file__).parent / "shell"
+    for relative in (
+        Path("widgets/barra/volume.py"),
+        Path("widgets/audio/volume_slider.py"),
+    ):
+        install_overlay_file(overlay_shell / relative, root / "shell" / relative)
+
     replace_once(
         app,
         "from .widgets.barra.ethernet import EthernetWidget\n",
         "from .widgets.barra.ethernet import EthernetWidget\nfrom .widgets.barra.volume import VolumeWidget\n",
         "importar control de volumen",
     )
-    replace_once(
-        app,
-        "        self.battery_widget = BatteryWidget(self.event_bus, self.battery_service)\n",
-        "        self.battery_widget = BatteryWidget(self.event_bus, self.battery_service)\n"
-        "        self.volume_widget = VolumeWidget(self.event_bus, self.audio_service)\n",
-        "crear control de volumen",
-    )
-    replace_once(
-        app,
-        "        self.layout.right.add(self.ethernet_widget)\n",
-        "        self.layout.right.add(self.ethernet_widget)\n"
-        "        self.layout.right.add(self.volume_widget)\n",
-        "mostrar control de volumen",
-    )
+    app_text = app.read_text(encoding="utf-8")
+    if "self.volume_widget = VolumeWidget(" not in app_text:
+        battery_anchor = "        self.battery_widget = BatteryWidget(self.event_bus, self.battery_service)\n"
+        ethernet_anchor = "        self.ethernet_widget = EthernetWidget(self.event_bus, self.network_service)\n"
+        if battery_anchor in app_text:
+            app_text = app_text.replace(
+                battery_anchor,
+                battery_anchor
+                + "        self.volume_widget = VolumeWidget(self.event_bus, self.audio_service)\n",
+                1,
+            )
+        elif ethernet_anchor in app_text:
+            app_text = app_text.replace(
+                ethernet_anchor,
+                ethernet_anchor
+                + "        self.volume_widget = VolumeWidget(self.event_bus, self.audio_service)\n",
+                1,
+            )
+        else:
+            raise SystemExit(f"No se pudo aplicar el ajuste Jugoo (crear control de volumen): {app}")
+        backup = app.with_suffix(app.suffix + ".aidycos-backup")
+        if not backup.exists():
+            shutil.copy2(app, backup)
+        app.write_text(app_text, encoding="utf-8")
+
+    app_text = app.read_text(encoding="utf-8")
+    if "self.layout.right.add(self.volume_widget)" not in app_text:
+        replace_once(
+            app,
+            "        self.layout.right.add(self.ethernet_widget)\n",
+            "        self.layout.right.add(self.ethernet_widget)\n"
+            "        self.layout.right.add(self.volume_widget)\n",
+            "mostrar control de volumen",
+        )
 
     replace_once(
         applications,
