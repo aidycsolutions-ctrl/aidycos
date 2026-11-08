@@ -51,6 +51,14 @@ apt_has_candidate() {
     | awk '/Candidate:/ { if ($2 != "(none)") found=1 } END { exit !found }'
 }
 
+apt_has_suite() {
+  local package="$1" suite="$2"
+  # A package can look available only because it is already installed. Verify
+  # that APT has an index entry from the suite needed by the profile.
+  LC_ALL=C apt-cache policy "${package}" 2>/dev/null \
+    | awk -v suite="${suite}/" 'index($0, suite) { found=1 } END { exit !found }'
+}
+
 ensure_source() {
   local path="$1" content="$2"
   if [[ -e "${path}" ]]; then
@@ -62,7 +70,7 @@ ensure_source() {
 }
 
 sudo apt-get update
-if ! apt_has_candidate python3-venv; then
+if ! apt_has_suite python3-venv trixie || ! apt_has_suite libonnxruntime1.21 trixie; then
   ensure_source "${STANDARD_SOURCE}" 'Types: deb
 URIs: http://deb.debian.org/debian
 Suites: trixie trixie-updates
@@ -75,7 +83,7 @@ Suites: trixie-security
 Components: main contrib non-free non-free-firmware
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg'
 fi
-if ! apt_has_candidate hyprland || ! apt_has_candidate xdg-desktop-portal-hyprland; then
+if ! apt_has_suite hyprland trixie-backports || ! apt_has_suite xdg-desktop-portal-hyprland trixie-backports; then
   ensure_source "${BACKPORT_SOURCE}" 'Types: deb
 URIs: http://deb.debian.org/debian
 Suites: trixie-backports
@@ -83,11 +91,16 @@ Components: main contrib non-free non-free-firmware
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg'
 fi
 sudo apt-get update
-if ! apt_has_candidate python3-venv; then
+if ! apt_has_suite python3-venv trixie || ! apt_has_candidate python3-venv; then
   echo "APT aún no encuentra python3-venv. Revisa la conectividad y las fuentes de Debian 13." >&2
   exit 1
 fi
-if ! apt_has_candidate hyprland || ! apt_has_candidate xdg-desktop-portal-hyprland; then
+if ! apt_has_suite libonnxruntime1.21 trixie; then
+  echo "APT no encuentra libonnxruntime1.21 en Debian 13, requerido por PipeWire de backports. Revisa las fuentes oficiales trixie/main." >&2
+  exit 1
+fi
+if ! apt_has_suite hyprland trixie-backports || ! apt_has_suite xdg-desktop-portal-hyprland trixie-backports \
+   || ! apt_has_candidate hyprland || ! apt_has_candidate xdg-desktop-portal-hyprland; then
   echo "APT aún no encuentra Hyprland en trixie-backports. Revisa las fuentes de Debian 13." >&2
   exit 1
 fi
