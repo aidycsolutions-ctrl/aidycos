@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+export PYTHONPATH=/opt/aidyc/aidylink${PYTHONPATH:+:$PYTHONPATH}
+cd /opt/aidyc/aidylink
+exec python3 -m aidylink "$@"

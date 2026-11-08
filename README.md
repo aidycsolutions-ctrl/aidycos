@@ -4,13 +4,13 @@ AidyCOS adapta una instalación Linux existente al perfil de escritorio del proy
 
 ## Estado
 
-La versión inicial prepara Debian 13 con el escritorio base del proyecto: Hyprland, SDDM, Wayland, audio, utilidades y Jugoo, además de los ajustes de GRUB y `cups-browsed` usados en el perfil de AidyC-OS.
+La versión inicial prepara Debian 13 con Hyprland, SDDM, Wayland, NetworkManager, PipeWire, utilidades y Jugoo. La barra de Jugoo incluye los indicadores de red y volumen; `Super+Space` abre el cajón de aplicaciones. También instala AidyLink y su acceso en el menú, y asigna `Super+C` para abrirlo. El perfil conserva los ajustes de GRUB y `cups-browsed` usados en AidyC-OS.
 
 La instalación agrega fuentes oficiales de Debian solo cuando faltan paquetes esenciales, y usa `trixie-backports` para Hyprland. Selecciona SDDM como pantalla de acceso para que el usuario pueda iniciar Hyprland y Jugoo; guarda el nombre del gestor anterior en `/var/lib/aidycos/previous-display-manager`. Mantiene el usuario, la contraseña y el autologin existentes (no configura autologin). Hace una copia de la configuración Hyprland antes de añadir sus ajustes.
 
-NumLock se activa en la pantalla SDDM y en la sesión Hyprland. El perfil coloca el logo de `packaging/plymouth/AidyCOS.png` como fondo del menú GRUB y crea un tema Plymouth estático para la carga de Linux. El menú GRUB espera 2 segundos y la búsqueda de impresoras empieza después de llegar al entorno gráfico. La pantalla del firmware BIOS/UEFI ocurre antes de GRUB y depende del fabricante.
+NumLock se activa en SDDM y en Hyprland. SDDM muestra el logo AidyCOS y un formulario de acceso personalizado; Hyprland queda como sesión para elegir en el primer inicio. AidyLink queda instalado como aplicación; para activar su daemon de usuario, inicialízalo con `aidylink init --name NOMBRE --team EQUIPO` y luego ejecuta `systemctl --user enable --now aidylink`. GRUB oculta su menú con una espera breve y pasa opciones silenciosas al kernel; Plymouth muestra el logo AidyCOS sobre fondo negro. La pantalla del firmware BIOS/UEFI ocurre antes de GRUB y depende del fabricante.
 
-El perfil replica la base funcional que se definió para la ISO, no los mecanismos propios de un sistema live. No instala live-boot, no crea usuarios temporales y no configura contraseñas. El equipo conserva su instalación Debian y los archivos personales.
+El perfil replica la base funcional que se definió para la ISO, no los mecanismos propios de un sistema live. No instala live-boot, no crea usuarios temporales y no configura contraseñas. El equipo conserva su instalación Debian y los archivos personales. Antes de añadir atajos de Hyprland, el instalador guarda una copia de la configuración existente.
 
 ## Probar desde el checkout
 

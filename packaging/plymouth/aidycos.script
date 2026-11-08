@@ -1,10 +1,10 @@
-Window.SetBackgroundTopColor(0.015, 0.055, 0.065);
-Window.SetBackgroundBottomColor(0.015, 0.055, 0.065);
+Window.SetBackgroundTopColor(0, 0, 0);
+Window.SetBackgroundBottomColor(0, 0, 0);
 
 logo_source = Image("/usr/share/plymouth/themes/aidycos/AidyCOS.png");
 screen_width = Window.GetWidth();
 screen_height = Window.GetHeight();
-logo_size = screen_height * 0.68;
+logo_size = screen_height * 0.56;
 if (logo_size > screen_width * 0.85) {
     logo_size = screen_width * 0.85;
 }
@@ -13,11 +13,3 @@ logo_sprite = Sprite(logo_image);
 logo_x = screen_width / 2 - logo_image.GetWidth() / 2;
 logo_y = screen_height / 2 - logo_image.GetHeight() / 2;
 logo_sprite.SetPosition(logo_x, logo_y, 0);
-
-status_image = Image.Text("La prueba va bien", 0.9, 0.95, 0.95);
-status_sprite = Sprite(status_image);
-status_sprite.SetPosition(
-    screen_width / 2 - status_image.GetWidth() / 2,
-    logo_y + logo_image.GetHeight() + 12,
-    1
-);

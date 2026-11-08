@@ -26,11 +26,13 @@ Vista previa del perfil AidyCOS para Debian 13:
   * Verificar fuentes oficiales de Debian y añadir trixie-backports si faltan paquetes.
   * Instalar el conjunto de paquetes del perfil Hyprland/SDDM/Wayland/Jugoo.
   * Instalar la CLI AidyCOS y Jugoo para el usuario actual.
+  * Instalar AidyLink, su acceso del menú y servicio de usuario opcional.
+  * Configurar GRUB sin menú prolongado, el splash de Plymouth con logo y el tema de inicio de sesión SDDM.
   * Seleccionar SDDM y habilitar el arranque gráfico.
   * Activar NumLock en la pantalla de acceso y en Hyprland.
   * Crear configuración inicial de Hyprland si no existe.
-  * Mostrar el logo AidyCOS en GRUB y durante la carga de Linux.
-  * Mantener GRUB en 2 segundos y retrasar cups-browsed hasta el entorno gráfico.
+  * Ocultar GRUB y los mensajes de arranque; mostrar el logo en Plymouth y SDDM.
+  * Retrasar cups-browsed hasta el entorno gráfico.
   * Mantener usuario, contraseña y autologin actuales; cambiar el gestor de sesión a SDDM y respaldar los ajustes Hyprland tocados.
 No se hicieron cambios.
 EOF
@@ -118,8 +120,15 @@ PLYMOUTH_DIR=/usr/share/plymouth/themes/aidycos
 sudo install -D -m 0644 "${ROOT}/packaging/plymouth/AidyCOS.png" "${PLYMOUTH_DIR}/AidyCOS.png"
 sudo install -m 0644 "${ROOT}/packaging/plymouth/aidycos.plymouth" "${PLYMOUTH_DIR}/aidycos.plymouth"
 sudo install -m 0644 "${ROOT}/packaging/plymouth/aidycos.script" "${PLYMOUTH_DIR}/aidycos.script"
+sudo install -D -m 0644 "${ROOT}/packaging/plymouth/AidyCOS.png" /usr/share/backgrounds/aidycos.png
 sudo plymouth-set-default-theme aidycos
 sudo update-initramfs -u -k all
+
+SDDM_THEME_DIR=/usr/share/sddm/themes/aidycos
+sudo install -d -m 0755 "${SDDM_THEME_DIR}"
+sudo install -m 0644 "${ROOT}/packaging/sddm/aidycos/Main.qml" "${SDDM_THEME_DIR}/Main.qml"
+sudo install -m 0644 "${ROOT}/packaging/sddm/aidycos/metadata.desktop" "${SDDM_THEME_DIR}/metadata.desktop"
+sudo install -m 0644 "${ROOT}/packaging/sddm/aidycos/theme.conf" "${SDDM_THEME_DIR}/theme.conf"
 
 install_jugoo() {
   local config_home="${XDG_CONFIG_HOME:-${HOME}/.config}"
@@ -135,6 +144,27 @@ install_jugoo() {
 }
 install_jugoo
 
+install_aidylink() {
+  local aidylink_dir=/opt/aidyc/aidylink
+  local config_home="${XDG_CONFIG_HOME:-${HOME}/.config}"
+  local desktop_dir="${HOME}/.local/share/applications"
+  local service_dir="${config_home}/systemd/user"
+  sudo install -d -m 0755 "${aidylink_dir}/aidylink" /usr/local/bin /usr/share/applications
+  sudo install -m 0644 "${ROOT}/packaging/aidylink/aidylink/"*.py "${aidylink_dir}/aidylink/"
+  sudo install -m 0644 "${ROOT}/packaging/aidylink/README.md" "${aidylink_dir}/README.md"
+  sudo install -m 0755 "${ROOT}/packaging/aidylink/aidylink-wrapper" /usr/local/bin/aidylink
+  sudo install -m 0644 "${ROOT}/packaging/aidylink/aidylink.desktop" /usr/share/applications/aidylink.desktop
+  install -d "${desktop_dir}" "${service_dir}"
+  install -m 0644 "${ROOT}/packaging/aidylink/aidylink.desktop" "${desktop_dir}/aidylink.desktop"
+  install -m 0644 "${ROOT}/packaging/aidylink/aidylink.service" "${service_dir}/aidylink.service"
+  systemctl --user daemon-reload >/dev/null 2>&1 || true
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    sudo update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+  fi
+  echo "AidyLink instalado. Inicialízalo con 'aidylink init --name NOMBRE --team EQUIPO'; luego puedes activar el servicio con systemctl --user enable --now aidylink."
+}
+install_aidylink
+
 CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
 HYPR_DIR="${CONFIG_HOME}/hypr"
 HYPR_CONF="${HYPR_DIR}/hyprland.conf"
@@ -142,28 +172,44 @@ HYPR_AIDYCOS_CONF="${HYPR_DIR}/aidycos.conf"
 mkdir -p "${HYPR_DIR}"
 if [[ ! -e "${HYPR_AIDYCOS_CONF}" ]]; then
   cat >"${HYPR_AIDYCOS_CONF}" <<'EOF'
-# AidyCOS keyboard defaults.
+# AidyCOS keyboard and Jugoo defaults.
 input {
     numlock_by_default = true
 }
+bind = SUPER, SPACE, exec, jugoo action launcher
+bind = SUPER, C, exec, aidylink ui
 EOF
-elif ! grep -qE '^[[:space:]]*numlock_by_default[[:space:]]*=[[:space:]]*true' "${HYPR_AIDYCOS_CONF}"; then
-  cp -a "${HYPR_AIDYCOS_CONF}" "${HYPR_AIDYCOS_CONF}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
-  cat >>"${HYPR_AIDYCOS_CONF}" <<'EOF'
+else
+  missing=0
+  grep -qE '^[[:space:]]*numlock_by_default[[:space:]]*=[[:space:]]*true' "${HYPR_AIDYCOS_CONF}" || missing=1
+  grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*SPACE,[[:space:]]*exec,[[:space:]]*jugoo action launcher' "${HYPR_AIDYCOS_CONF}" || missing=1
+  grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*C,[[:space:]]*exec,[[:space:]]*aidylink ui' "${HYPR_AIDYCOS_CONF}" || missing=1
+  if [[ "${missing}" == 1 ]]; then
+    cp -a "${HYPR_AIDYCOS_CONF}" "${HYPR_AIDYCOS_CONF}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
+    if ! grep -qE '^[[:space:]]*numlock_by_default[[:space:]]*=[[:space:]]*true' "${HYPR_AIDYCOS_CONF}"; then
+      cat >>"${HYPR_AIDYCOS_CONF}" <<'EOF'
 
 input {
     numlock_by_default = true
 }
 EOF
+    fi
+    if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*SPACE,[[:space:]]*exec,[[:space:]]*jugoo action launcher' "${HYPR_AIDYCOS_CONF}"; then
+      printf '\nbind = SUPER, SPACE, exec, jugoo action launcher\n' >>"${HYPR_AIDYCOS_CONF}"
+    fi
+    if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*C,[[:space:]]*exec,[[:space:]]*aidylink ui' "${HYPR_AIDYCOS_CONF}"; then
+      printf 'bind = SUPER, C, exec, aidylink ui\n' >>"${HYPR_AIDYCOS_CONF}"
+    fi
+  fi
 fi
 
 if [[ ! -e "${HYPR_CONF}" ]]; then
   cat >"${HYPR_CONF}" <<'EOF'
 # AidyCOS: configuración base compatible con el perfil inicial.
+source = ~/.config/hypr/aidycos.conf
 monitor = , preferred, auto, 1
 input {
     kb_layout = latam
-    numlock_by_default = true
 }
 general {
     border_size = 2
@@ -181,8 +227,7 @@ EOF
   echo "Configuración base creada en ${HYPR_CONF}"
 else
   changed=0
-  if ! grep -qE '^[[:space:]]*source[[:space:]]*=.*aidycos\.conf' "${HYPR_CONF}" \
-     && ! grep -qE '^[[:space:]]*numlock_by_default[[:space:]]*=[[:space:]]*true' "${HYPR_CONF}"; then
+  if ! grep -qE '^[[:space:]]*source[[:space:]]*=.*aidycos\.conf' "${HYPR_CONF}"; then
     changed=1
   fi
   if ! grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*jugoo' "${HYPR_CONF}"; then
@@ -212,29 +257,37 @@ apply_grub_profile() {
     return
   fi
   sudo install -D -m 0644 "${ROOT}/packaging/plymouth/AidyCOS.png" /boot/grub/AidyCOS.png
-  if sudo grep -qE '^GRUB_TIMEOUT=2$' "${grub}" \
-     && sudo grep -qE '^GRUB_TIMEOUT_STYLE=menu$' "${grub}" \
+  if sudo grep -qE '^GRUB_TIMEOUT=1$' "${grub}" \
+     && sudo grep -qE '^GRUB_TIMEOUT_STYLE=hidden$' "${grub}" \
      && sudo grep -qF 'GRUB_BACKGROUND="/boot/grub/AidyCOS.png"' "${grub}" \
      && sudo grep -qE '^GRUB_GFXMODE=auto$' "${grub}" \
+     && sudo grep -qE '^GRUB_GFXPAYLOAD_LINUX=keep$' "${grub}" \
      && sudo grep -qE '^GRUB_CMDLINE_LINUX_DEFAULT=.*quiet' "${grub}" \
-     && sudo grep -qE '^GRUB_CMDLINE_LINUX_DEFAULT=.*splash' "${grub}"; then
+     && sudo grep -qE '^GRUB_CMDLINE_LINUX_DEFAULT=.*splash' "${grub}" \
+     && sudo grep -qE '^GRUB_CMDLINE_LINUX_DEFAULT=.*loglevel=3' "${grub}" \
+     && sudo grep -qE '^GRUB_CMDLINE_LINUX_DEFAULT=.*systemd.show_status=false' "${grub}" \
+     && sudo grep -qE '^GRUB_CMDLINE_LINUX_DEFAULT=.*vt.global_cursor_default=0' "${grub}" \
+     && sudo grep -qE '^GRUB_CMDLINE_LINUX_DEFAULT=.*udev.log_level=3' "${grub}" \
+     && { [[ ! -f /etc/grub.d/10_linux ]] || sudo grep -q '^quiet_boot="1"$' /etc/grub.d/10_linux; }; then
     echo "GRUB ya tiene el perfil AidyCOS."
     return
   fi
   sudo cp -a "${grub}" "${grub}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
   tmp="$(mktemp)"
   sudo awk '
-    BEGIN { timeout=0; style=0; background=0; gfxmode=0 }
-    /^GRUB_TIMEOUT=/ { print "GRUB_TIMEOUT=2"; timeout=1; next }
-    /^GRUB_TIMEOUT_STYLE=/ { print "GRUB_TIMEOUT_STYLE=menu"; style=1; next }
+    BEGIN { timeout=0; style=0; background=0; gfxmode=0; payload=0 }
+    /^GRUB_TIMEOUT=/ { print "GRUB_TIMEOUT=1"; timeout=1; next }
+    /^GRUB_TIMEOUT_STYLE=/ { print "GRUB_TIMEOUT_STYLE=hidden"; style=1; next }
     /^GRUB_BACKGROUND=/ { print "GRUB_BACKGROUND=\"/boot/grub/AidyCOS.png\""; background=1; next }
     /^GRUB_GFXMODE=/ { print "GRUB_GFXMODE=auto"; gfxmode=1; next }
+    /^GRUB_GFXPAYLOAD_LINUX=/ { print "GRUB_GFXPAYLOAD_LINUX=keep"; payload=1; next }
     { print }
     END {
-      if (!timeout) print "GRUB_TIMEOUT=2"
-      if (!style) print "GRUB_TIMEOUT_STYLE=menu"
+      if (!timeout) print "GRUB_TIMEOUT=1"
+      if (!style) print "GRUB_TIMEOUT_STYLE=hidden"
       if (!background) print "GRUB_BACKGROUND=\"/boot/grub/AidyCOS.png\""
       if (!gfxmode) print "GRUB_GFXMODE=auto"
+      if (!payload) print "GRUB_GFXPAYLOAD_LINUX=keep"
     }
   ' "${grub}" >"${tmp}"
   sudo install -m 0644 "${tmp}" "${grub}"
@@ -251,15 +304,24 @@ for index, line in enumerate(lines):
         match = re.fullmatch(r"GRUB_CMDLINE_LINUX_DEFAULT=([\"'])(.*)\1", line)
         if match:
             options = match.group(2).split()
-            for option in ('quiet', 'splash'):
+            for option in (
+                'quiet', 'splash', 'loglevel=3', 'systemd.show_status=false',
+                'rd.systemd.show_status=false', 'vt.global_cursor_default=0',
+                'udev.log_level=3', 'rd.udev.log_level=3',
+            ):
                 if option not in options:
                     options.append(option)
             lines[index] = prefix + match.group(1) + ' '.join(options) + match.group(1)
         break
 else:
-    lines.append(prefix + '"quiet splash"')
+    lines.append(prefix + '"quiet splash loglevel=3 systemd.show_status=false rd.systemd.show_status=false vt.global_cursor_default=0 udev.log_level=3 rd.udev.log_level=3"')
 path.write_text('\n'.join(lines) + '\n')
 PY
+  local linux_generator=/etc/grub.d/10_linux
+  if [[ -f "${linux_generator}" ]] && sudo grep -q '^quiet_boot="0"$' "${linux_generator}"; then
+    sudo cp -a "${linux_generator}" "${linux_generator}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
+    sudo sed -i 's/^quiet_boot="0"$/quiet_boot="1"/' "${linux_generator}"
+  fi
   sudo update-grub
 }
 apply_grub_profile
@@ -304,19 +366,26 @@ configure_login() {
     sudo systemctl set-default graphical.target
   fi
   sudo install -d /etc/sddm.conf.d
-  local sddm_conf=/etc/sddm.conf.d/90-aidycos.conf
-  if [[ ! -e "${sddm_conf}" ]]; then
-    printf '[General]\nNumlock=on\n' | sudo tee "${sddm_conf}" >/dev/null
-  elif ! sudo grep -qiE '^Numlock[[:space:]]*=[[:space:]]*on$' "${sddm_conf}"; then
-    echo "Se conserva ${sddm_conf}; configura Numlock=on manualmente si quieres NumLock en la pantalla de acceso."
+  local sddm_conf=/etc/sddm.conf.d/99-aidycos.conf
+  local sddm_needs_update=0
+  if [[ ! -e "${sddm_conf}" ]] || ! sudo grep -qF 'Current=aidycos' "${sddm_conf}" \
+     || ! sudo grep -qiE '^Numlock[[:space:]]*=[[:space:]]*on$' "${sddm_conf}"; then
+    sddm_needs_update=1
   fi
-  echo "SDDM quedó seleccionado y NumLock se activa en la pantalla de acceso."
+  if [[ -e "${sddm_conf}" && "${sddm_needs_update}" == 1 ]]; then
+    sudo cp -a "${sddm_conf}" "${sddm_conf}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
+    echo "Se respaldó la configuración SDDM existente: ${sddm_conf}"
+  fi
+  if [[ "${sddm_needs_update}" == 1 ]]; then
+    printf '[General]\nNumlock=on\n\n[Theme]\nCurrent=aidycos\n' | sudo tee "${sddm_conf}" >/dev/null
+  fi
+  echo "SDDM usa el tema AidyCOS con el logo y NumLock activo."
 }
 configure_login
 
 cat <<EOF
 
 AidyCOS quedó aplicado sobre Debian 13.
-Reinicia el equipo. En SDDM selecciona la sesión Hyprland la primera vez; luego se recordará.
-NumLock queda activo en SDDM y Hyprland. Si se modificó tu configuración de Hyprland, revisa el respaldo indicado arriba.
+Reinicia el equipo. GRUB queda oculto con espera breve; Plymouth muestra el logo AidyCOS y SDDM presenta la pantalla de acceso personalizada.
+En SDDM selecciona la sesión Hyprland la primera vez; luego se recordará. NumLock queda activo en SDDM y Hyprland. Si se modificó tu configuración de Hyprland, revisa el respaldo indicado arriba.
 EOF
