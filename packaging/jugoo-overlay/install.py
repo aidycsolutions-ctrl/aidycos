@@ -276,6 +276,121 @@ def install_overlay_file(source: Path, destination: Path) -> None:
     shutil.copy2(source, destination)
 
 
+def install_battery(root: Path) -> None:
+    """Backport the UPower/sysfs battery indicator on older Jugoo checkouts."""
+    overlay = Path(__file__).parent / "shell"
+    for relative in (
+        Path("servicios/energia/battery.py"),
+        Path("widgets/barra/battery.py"),
+    ):
+        install_overlay_file(overlay / relative, root / "shell" / relative)
+
+    models = root / "shell/models.py"
+    if "class BatterySnapshot:" not in models.read_text(encoding="utf-8"):
+        snippet = (overlay / "battery_model.py").read_text(encoding="utf-8")
+        replace_once(
+            models,
+            "@dataclass(frozen=True)\nclass NetworkInterfaceSnapshot:\n",
+            snippet + "\n\n@dataclass(frozen=True)\nclass NetworkInterfaceSnapshot:\n",
+            "añadir el modelo de estado de batería",
+        )
+
+    config = root / "shell/config.py"
+    config_text = config.read_text(encoding="utf-8")
+    for key, value in {
+        "BATTERY_ICON_SIZE": "16",
+        "BATTERY_POLL_INTERVAL_SEC": "30",
+        "BATTERY_VISIBILITY": '"auto"',
+        "BATTERY_LOW_PERCENT": "20",
+        "BATTERY_CRITICAL_PERCENT": "10",
+    }.items():
+        if not re.search(rf"^\s*{key}\s*=", config_text, re.MULTILINE):
+            config_text += f"\n{key} = {value}\n"
+    if config_text != config.read_text(encoding="utf-8"):
+        backup = config.with_suffix(config.suffix + ".aidycos-backup")
+        if not backup.exists():
+            shutil.copy2(config, backup)
+        config.write_text(config_text, encoding="utf-8")
+
+    app = root / "shell/app.py"
+    app_text = app.read_text(encoding="utf-8")
+    if "self.battery_service = BatteryService(" in app_text:
+        return
+    replace_once(
+        app,
+        "from .servicios.energia.power import PowerService\n",
+        "from .servicios.energia.power import PowerService\n"
+        "from .servicios.energia.battery import BatteryService\n",
+        "importar servicio de batería",
+    )
+    replace_once(
+        app,
+        "from .widgets.barra.ethernet import EthernetWidget\n",
+        "from .widgets.barra.ethernet import EthernetWidget\n"
+        "from .widgets.barra.battery import BatteryWidget\n",
+        "importar indicador de batería",
+    )
+    replace_once(
+        app,
+        "        self.power_service = PowerService()\n",
+        "        self.power_service = PowerService()\n"
+        "        self.battery_service = BatteryService(self.event_bus)\n",
+        "crear servicio de batería",
+    )
+    replace_once(
+        app,
+        "        self.ethernet_widget = EthernetWidget(self.event_bus, self.network_service)\n",
+        "        self.ethernet_widget = EthernetWidget(self.event_bus, self.network_service)\n"
+        "        self.battery_widget = BatteryWidget(self.event_bus, self.battery_service)\n",
+        "crear indicador de batería",
+    )
+    replace_once(
+        app,
+        "        self.layout.right.add(self.ethernet_widget)\n",
+        "        self.layout.right.add(self.ethernet_widget)\n"
+        "        self.layout.right.add(self.battery_widget)\n",
+        "mostrar indicador de batería",
+    )
+    replace_once(
+        app,
+        "        self.hyprland.start()\n",
+        "        self.hyprland.start()\n        self.battery_service.start()\n",
+        "iniciar monitoreo de batería",
+    )
+    replace_once(
+        app,
+        "        self.network_service.close()\n",
+        "        self.network_service.close()\n        self.battery_service.close()\n",
+        "cerrar monitoreo de batería",
+    )
+
+    schema = root / "shell/settings/schema.py"
+    schema_text = schema.read_text(encoding="utf-8")
+    if 'key="widgets.battery_visibility"' not in schema_text:
+        battery_setting = '''        SettingDef(
+            key="widgets.battery_visibility",
+            category=CategoryId.WIDGETS,
+            label="Indicador de batería",
+            description="Automático muestra el nivel si el equipo tiene batería.",
+            value_type="choice",
+            default=shell_config.BATTERY_VISIBILITY,
+            config_attr="BATTERY_VISIBILITY",
+            apply=APPLY_LIVE,
+            choices=(("auto", "Automático"), ("always", "Siempre"), ("never", "Nunca")),
+            tier="A",
+            section="Batería",
+        ),
+'''
+        anchor = "    )\n\n\ndef settings_by_key"
+        if anchor not in schema_text:
+            raise SystemExit(f"No se pudo registrar el indicador de batería: {schema}")
+        schema_text = schema_text.replace(anchor, battery_setting + anchor, 1)
+        backup = schema.with_suffix(schema.suffix + ".aidycos-backup")
+        if not backup.exists():
+            shutil.copy2(schema, backup)
+        schema.write_text(schema_text, encoding="utf-8")
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("Uso: install.py RUTA_DE_JUGOO")
@@ -291,6 +406,7 @@ def main() -> None:
             raise SystemExit(f"Checkout de Jugoo incompleto: falta {path}")
 
     install_desktop_icons(root)
+    install_battery(root)
 
     overlay_shell = Path(__file__).parent / "shell"
     for relative in (
