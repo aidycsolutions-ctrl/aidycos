@@ -141,20 +141,40 @@ sudo install -m 0644 "${ROOT}/packaging/plymouth/AidyCOS.png" "${SDDM_THEME_DIR}
 install_jugoo() {
   local config_home="${XDG_CONFIG_HOME:-${HOME}/.config}"
   local jugoo_dir="${config_home}/jugoo"
-  mkdir -p "${config_home}"
-  if [[ ! -e "${jugoo_dir}" ]]; then
-    git clone --depth 1 https://github.com/aidycsolutions-ctrl/jugoo.git "${jugoo_dir}"
-  elif [[ ! -d "${jugoo_dir}/.git" || ! -f "${jugoo_dir}/shell/__main__.py" ]]; then
-    echo "${jugoo_dir} existe, pero no parece ser un checkout compatible de Jugoo. Se conserva; revisa esa ruta." >&2
-    return 1
-  else
-    if [[ -z "$(git -C "${jugoo_dir}" status --porcelain)" ]]; then
-      git -C "${jugoo_dir}" pull --ff-only
-    else
-      echo "Jugoo tiene cambios locales; se conservarán y no se actualizará automáticamente." >&2
-    fi
+  local source_file="${config_home}/aidycos/jugoo-source"
+  local source_dir="${AIDYCOS_JUGOO_SOURCE:-}"
+  if [[ -z "${source_dir}" && -r "${source_file}" ]]; then
+    IFS= read -r source_dir <"${source_file}" || true
   fi
-  python3 "${ROOT}/packaging/jugoo-overlay/install.py" "${jugoo_dir}"
+
+  if [[ -n "${source_dir}" ]]; then
+    if [[ ! -d "${source_dir}/.git" || ! -f "${source_dir}/shell/__main__.py" ]]; then
+      echo "El checkout configurado de Jugoo no está disponible o no es válido: ${source_dir}" >&2
+      echo "AidyCOS no usará la copia local de ~/.config/jugoo como reemplazo." >&2
+      return 1
+    fi
+    source_dir="$(cd "${source_dir}" && pwd -P)"
+    install -D -m 0644 /dev/null "${source_file}"
+    printf '%s\n' "${source_dir}" >"${source_file}"
+    jugoo_dir="${source_dir}"
+    echo "AidyCOS usará el checkout de desarrollo de Jugoo: ${jugoo_dir}"
+    echo "Se omite el overlay automático para no modificar el checkout de desarrollo."
+  else
+    mkdir -p "${config_home}"
+    if [[ ! -e "${jugoo_dir}" ]]; then
+      git clone --depth 1 https://github.com/aidycsolutions-ctrl/jugoo.git "${jugoo_dir}"
+    elif [[ ! -d "${jugoo_dir}/.git" || ! -f "${jugoo_dir}/shell/__main__.py" ]]; then
+      echo "${jugoo_dir} existe, pero no parece ser un checkout compatible de Jugoo. Se conserva; revisa esa ruta." >&2
+      return 1
+    else
+      if [[ -z "$(git -C "${jugoo_dir}" status --porcelain)" ]]; then
+        git -C "${jugoo_dir}" pull --ff-only
+      else
+        echo "Jugoo tiene cambios locales; se conservarán y no se actualizará automáticamente." >&2
+      fi
+    fi
+    python3 "${ROOT}/packaging/jugoo-overlay/install.py" "${jugoo_dir}"
+  fi
   install -D -m 0644 "${ROOT}/packaging/jugoo-overlay/aidyc.desktop" "${HOME}/.local/share/applications/aidyc.desktop"
   if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "${HOME}/.local/share/applications" >/dev/null 2>&1 || true

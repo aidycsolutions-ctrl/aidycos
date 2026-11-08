@@ -66,6 +66,17 @@ Al completar correctamente, el equipo se reinicia automáticamente tras una cuen
 curl -fsSL https://raw.githubusercontent.com/aidycsolutions-ctrl/aidycos/main/install.sh | bash -s -- --no-reboot
 ```
 
+#### Usar el checkout de Jugoo en desarrollo
+
+Para que una instalación de prueba ejecute directamente un checkout local de Jugoo, sin clonar ni actualizar otra copia en `~/.config/jugoo`, indica su ruta al aplicar el perfil:
+
+```sh
+AIDYCOS_JUGOO_SOURCE="$HOME/Documentos/Proyectos_AidyC/jugoo" \
+  ./scripts/install-debian-profile.sh --no-reboot
+```
+
+AidyCOS guarda esa ruta en `~/.config/aidycos/jugoo-source` para las siguientes actualizaciones. El lanzador de Jugoo apuntará al checkout indicado y AidyCOS no aplicará su overlay modificando ese código. Si el checkout ya no está disponible, la instalación se detiene en vez de volver silenciosamente a la copia de `~/.config/jugoo`. Para usar esta opción con el actualizador remoto, primero publica esta versión de AidyCOS. Para volver al modo normal de instalación, elimina ese archivo de selección y vuelve a aplicar el perfil.
+
 En SDDM elige **Hyprland** como sesión; normalmente quedará recordada para los siguientes inicios. Si las fuentes de APT del equipo están incompletas, AidyCOS agrega archivos dedicados y no reemplaza archivos de terceros.
 
 El nombre `aidycos` y la ruta se deben ajustar si se publica con otro nombre. Primero ejecuta `plan` en esa máquina y revisa la lista antes de usar `--apply`.
