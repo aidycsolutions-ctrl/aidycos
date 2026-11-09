@@ -676,6 +676,23 @@ def main() -> None:
 
     install_desktop_icons(root)
     install_applications_menu(root)
+    # Keep the Jugoo bar visible: do not retract under maximized floating windows.
+    config = root / "shell/config.py"
+    config_text = config.read_text(encoding="utf-8")
+    if re.search(r"^(\s*BAR_RETRACT_ENABLED\s*=\s*)True(\s*)$", config_text, re.MULTILINE):
+        backup = config.with_suffix(config.suffix + ".aidycos-backup")
+        if not backup.exists():
+            shutil.copy2(config, backup)
+        config.write_text(
+            re.sub(
+                r"^(\s*BAR_RETRACT_ENABLED\s*=\s*)True(\s*)$",
+                r"\g<1>False\g<2>",
+                config_text,
+                count=1,
+                flags=re.MULTILINE,
+            ),
+            encoding="utf-8",
+        )
     install_battery(root)
     install_native_workspace_dispatch(root)
     assistant_card = root / "shell/widgets/notificaciones/assistant_card.py"
@@ -687,8 +704,46 @@ def main() -> None:
             "corregir compatibilidad del evento de salida del asistente",
         )
 
+    # Do not show the Jugoo assistant card for the empty-board briefing.
+    briefing = root / "shell/servicios/tareas/briefing.py"
+    if briefing.is_file():
+        try_replace_once(
+            briefing,
+            (
+                "        facts = self._facts(memory=memory)\n"
+                "        _briefing_diag(\n"
+                '            "facts: "\n'
+                '            f"empty={facts.empty} pending_today={facts.pending_today} "\n'
+                '            f"overdue={facts.overdue} upcoming={facts.upcoming} "\n'
+                '            f"total_open={facts.total_open} "\n'
+                '            f"titles={list(facts.pending_titles) + list(facts.overdue_titles)!r} "\n'
+                '            f"urgent={None if facts.most_urgent is None else facts.most_urgent.title!r}"\n'
+                "        )\n"
+                '        previous = facts.previous_message or "(none)"\n'
+            ),
+            (
+                "        facts = self._facts(memory=memory)\n"
+                "        _briefing_diag(\n"
+                '            "facts: "\n'
+                '            f"empty={facts.empty} pending_today={facts.pending_today} "\n'
+                '            f"overdue={facts.overdue} upcoming={facts.upcoming} "\n'
+                '            f"total_open={facts.total_open} "\n'
+                '            f"titles={list(facts.pending_titles) + list(facts.overdue_titles)!r} "\n'
+                '            f"urgent={None if facts.most_urgent is None else facts.most_urgent.title!r}"\n'
+                "        )\n"
+                "        if facts.empty:\n"
+                '            _briefing_diag("skipped (empty board — no assistant card)")\n'
+                '            _briefing_diag("END")\n'
+                '            return "empty"\n'
+                '        previous = facts.previous_message or "(none)"\n'
+            ),
+            "ocultar briefing vacío sin tareas",
+        )
+
     overlay_shell = Path(__file__).parent / "shell"
     for relative in (
+        Path("controllers/bar_retract.py"),
+        Path("controllers/applications.py"),
         Path("widgets/barra/ethernet.py"),
         Path("widgets/barra/volume.py"),
         Path("widgets/audio/volume_slider.py"),

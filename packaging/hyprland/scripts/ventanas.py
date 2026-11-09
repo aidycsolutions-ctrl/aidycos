@@ -7,6 +7,7 @@ Every window floats; this script arranges them like a classic desktop:
   restore [ADDR]         bring back the last (or given) minimized window
   restore-all            bring back every minimized window
   focus ADDR             taskbar click: restore / minimize / focus
+  alt-tab [prev]         cycle recent windows across all desktops (raise + focus)
   close [ADDR]           close the window
   max [ADDR]             toggle maximized (snap-to-work-area) / restore size
   up [ADDR]              maximize
@@ -26,6 +27,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import selectors
 import signal
 import socket
@@ -43,6 +45,14 @@ STATE_FILE = RUNTIME / "jugoo-ventanas.json"
 
 MINIMIZED_WS = "special:minimizados"
 GAP = 8
+# Keep maximized/snapped windows clear of the Jugoo top bar even if the
+# compositor reports a collapsed exclusive zone (bar-retract edge cases).
+SHELL_TOP_MIN = 57
+# Apps that should open snapped to the work area under the Jugoo bar.
+_AUTO_MAX_CLASS = re.compile(
+    r"^(firefox(?:-esr)?|org\.mozilla\.firefox)$",
+    re.IGNORECASE,
+)
 # Cursor distance from a screen edge that snaps on release (Windows-style).
 SNAP_MARGIN = 36
 # Both edges count as a corner only this close to the actual corner.
@@ -163,6 +173,7 @@ def monitor_bounds(monitor: dict[str, Any]) -> Rect:
 def work_area(monitor: dict[str, Any]) -> Rect:
     x, y, width, height = monitor_bounds(monitor)
     left, top, right, bottom = (list(monitor.get("reserved") or []) + [0, 0, 0, 0])[:4]
+    top = max(int(top), SHELL_TOP_MIN)
     return x + left, y + top, width - left - right, height - top - bottom
 
 
@@ -595,6 +606,59 @@ def cmd_focus(address: str | None = None) -> None:
     )
 
 
+def _alt_tab_candidates() -> list[dict[str, Any]]:
+    """Mapped windows excluding minimized / shell.
+
+    Order is stable across presses: workspace id, then address. Sorting by
+    ``focusHistoryID`` would reshuffle after every focus and Alt+Tab would
+    only bounce between the two most recent windows.
+    """
+    windows = [
+        window
+        for window in query("clients")
+        if is_managed(window) and not is_minimized(window)
+    ]
+    windows.sort(
+        key=lambda c: (
+            int((c.get("workspace") or {}).get("id") or 0),
+            str(c.get("address") or ""),
+        )
+    )
+    return windows
+
+
+def cmd_alt_tab(direction: str | None = None) -> None:
+    """Windows-style Alt+Tab across desktops (not only the current workspace).
+
+    Hyprland ``cyclenext`` stays on one workspace, so with one maximized
+    window per desktop Alt+Tab looked broken until you split and clicked.
+    """
+    windows = _alt_tab_candidates()
+    if len(windows) < 2:
+        if windows:
+            address = windows[0]["address"]
+            dispatch(
+                f"focuswindow address:{address}",
+                f"alterzorder top,address:{address}",
+            )
+        return
+    active = normalize_address((query("activewindow") or {}).get("address"))
+    addresses = [normalize_address(window["address"]) for window in windows]
+    try:
+        index = addresses.index(active) if active else 0
+    except ValueError:
+        index = 0
+    step = -1 if (direction or "").lower() in {"prev", "previous", "back"} else 1
+    target = windows[(index + step) % len(windows)]
+    workspace = workspace_target((target.get("workspace") or {}).get("name"))
+    dispatch(
+        *goto_workspace(workspace),
+        f"focuswindow address:{target['address']}",
+        f"alterzorder top,address:{target['address']}",
+        f"bringactivetotop",
+    )
+
+
 def _workspace_windows(address: str | None) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Managed windows of the target workspace, most recently focused first."""
     anchor = find_window(address) if address else None
@@ -733,9 +797,27 @@ def drop_zone(
     return None
 
 
+def is_true_fullscreen(window: dict[str, Any]) -> bool:
+    """Real fullscreen (F11 / games) may cover the Jugoo bar; maximize must not.
+
+    Hyprland reports both fullscreen and maximized as ``fullscreen != 0``.
+    Mode ``2`` is maximize. Mode ``1`` that still starts below the reserved
+    strip is also treated as maximize so the shell bar stays visible.
+    """
+    fs = int(window.get("fullscreen") or 0)
+    if not fs:
+        return False
+    if fs == 2:
+        return False
+    monitor = monitor_by_id(int(window.get("monitor") or 0))
+    _mx, my, _mw, mh = monitor_bounds(monitor)
+    _x, y, _w, height = geometry(window)
+    return y <= my + 2 and height >= mh - 8
+
+
 def clamp_title_visible(window: dict[str, Any]) -> None:
     """Slide a window down until its title bar clears the shell bar."""
-    if not window.get("floating") or int(window.get("fullscreen") or 0):
+    if not window.get("floating") or is_true_fullscreen(window):
         return
     bar = window_bar_height(window)
     ax, ay, aw, ah = window_area(window)
@@ -749,15 +831,60 @@ def clamp_title_visible(window: dict[str, Any]) -> None:
     dispatch(*place_commands(window, (x, new_y, width, new_height)))
 
 
+def covers_shell_bar(window: dict[str, Any]) -> bool:
+    """True when a floating window sits under / over the Jugoo top bar."""
+    if not window.get("floating") or is_true_fullscreen(window):
+        return False
+    monitor = monitor_by_id(int(window.get("monitor") or 0))
+    _mx, my, _mw, mh = monitor_bounds(monitor)
+    ax, ay, aw, ah = work_area(monitor)
+    x, y, width, height = geometry(window)
+    bar = window_bar_height(window)
+    # Native Hyprland maximize often starts at the monitor top and ignores
+    # a healthy exclusive zone after bar-retract collapses it.
+    if y <= my + 4 and height >= mh - 24:
+        return True
+    if y < ay + bar:
+        return True
+    if y <= ay + 4 and height >= ah - 24:
+        return True
+    return False
+
+
+def fit_to_work_area(window: dict[str, Any]) -> None:
+    """Place a covering window into the work-area maximize snap."""
+    if window is None or is_minimized(window):
+        return
+    if is_true_fullscreen(window):
+        return
+    cmd_snap("max", window["address"])
+
+
+def on_open_window(address: str) -> None:
+    """After open: detect CSD chrome and keep the shell bar visible."""
+    sync_titlebars()
+    window = find_window(normalize_address(address))
+    if window is None or not is_managed(window) or is_minimized(window):
+        return
+    if covers_shell_bar(window) or _AUTO_MAX_CLASS.match(str(window.get("class") or "")):
+        fit_to_work_area(window)
+        return
+    clamp_title_visible(window)
+
+
 def reveal_covered_windows() -> None:
     for window in query("clients"):
-        if is_managed(window) and not is_minimized(window):
+        if not is_managed(window) or is_minimized(window):
+            continue
+        if covers_shell_bar(window):
+            fit_to_work_area(window)
+        else:
             clamp_title_visible(window)
 
 
 def on_drag_end(address: str) -> None:
     window = find_window(address)
-    if window is None or not window.get("floating") or int(window.get("fullscreen") or 0):
+    if window is None or not window.get("floating") or is_true_fullscreen(window):
         return
     cursor = query("cursorpos")
     x, y = int(cursor["x"]), int(cursor["y"])
@@ -820,6 +947,8 @@ def run_command(argv: list[str]) -> None:
         cmd_restore_all()
     elif name == "focus":
         cmd_focus(address)
+    elif name == "alt-tab":
+        cmd_alt_tab(address)
     elif name == "close":
         cmd_close(address)
     elif name == "split2":
@@ -912,9 +1041,15 @@ def daemon() -> int:
                     if event == "hyprbarsdragend":
                         _safe(on_drag_end, data)
                     elif event == "openwindow":
-                        _safe(sync_titlebars)
+                        address = data.split(",", 1)[0]
+                        _safe(on_open_window, address)
                     elif event == "closewindow":
                         _safe(forget, data)
+                    elif event == "fullscreen":
+                        # Maximize must stay under Jugoo; only true fullscreen covers it.
+                        _safe(reveal_covered_windows)
+                    elif event in ("movewindow", "movewindowv2", "changefloatingmode"):
+                        _safe(reveal_covered_windows)
     finally:
         cleanup()
 

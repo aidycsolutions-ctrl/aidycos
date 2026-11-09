@@ -295,6 +295,7 @@ if [[ ! -e "${CAPTURE_SCRIPT}" ]] || ! cmp -s "${ROOT}/packaging/hyprland/script
 fi
 install -m 0755 "${ROOT}/packaging/hyprland/scripts/ventanas" "${HYPR_DIR}/scripts/ventanas"
 install -m 0644 "${ROOT}/packaging/hyprland/scripts/ventanas.py" "${HYPR_DIR}/scripts/ventanas.py"
+install -m 0644 "${ROOT}/packaging/hyprland/scripts/decoraciones.py" "${HYPR_DIR}/scripts/decoraciones.py"
 # Always refresh window-arrange binds so Ctrl+Alt+2/4/G keep working after updates.
 if [[ -e "${HYPR_WINDOWS_CONF}" ]] && ! cmp -s "${ROOT}/packaging/hyprland/config/jugoo_ventanas.conf" "${HYPR_WINDOWS_CONF}"; then
   cp -a "${HYPR_WINDOWS_CONF}" "${HYPR_WINDOWS_CONF}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
@@ -593,7 +594,8 @@ configure_login() {
   local sddm_needs_update=0
   if [[ ! -e "${sddm_conf}" ]] || ! sudo grep -qF 'Current=aidycos' "${sddm_conf}" \
      || ! sudo grep -qiE '^Numlock[[:space:]]*=[[:space:]]*on$' "${sddm_conf}" \
-     || ! sudo grep -q '^InputMethod=$' "${sddm_conf}"; then
+     || ! sudo grep -q '^InputMethod=$' "${sddm_conf}" \
+     || ! sudo grep -qE '^GreeterEnvironment=.*QT_IM_MODULE=' "${sddm_conf}"; then
     sddm_needs_update=1
   fi
   if [[ -e "${sddm_conf}" && "${sddm_needs_update}" == 1 ]]; then
@@ -601,7 +603,9 @@ configure_login() {
     echo "Se respaldó la configuración SDDM existente: ${sddm_conf}"
   fi
   if [[ "${sddm_needs_update}" == 1 ]]; then
-    printf '[General]\nNumlock=on\nInputMethod=\n\n[Theme]\nCurrent=aidycos\n' | sudo tee "${sddm_conf}" >/dev/null
+    # InputMethod= disables qtvirtualkeyboard. GreeterEnvironment forces compose-only IM so
+    # fcitx/ibus plugins (installed on some machines) cannot swallow Enter in the password field.
+    printf '[General]\nNumlock=on\nInputMethod=\nGreeterEnvironment=QT_IM_MODULE=compose\n\n[Theme]\nCurrent=aidycos\n' | sudo tee "${sddm_conf}" >/dev/null
   fi
   echo "SDDM usa el tema AidyCOS con el logo y NumLock activo."
 }

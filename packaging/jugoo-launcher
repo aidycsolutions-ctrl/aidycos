@@ -1,7 +1,13 @@
 #!/bin/sh
 set -eu
 
-JUGOO_DIR=/opt/aidyc/jugoo
-export PYTHONPATH="${JUGOO_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
+# Prefer the writable AidyCOS user overlay; fall back to the system tree.
+if [ -d "${HOME}/.local/share/aidycos/jugoo/shell" ]; then
+  JUGOO_DIR="${HOME}/.local/share/aidycos/jugoo"
+else
+  JUGOO_DIR=/opt/aidyc/jugoo
+fi
+# Do not inherit a polluted PYTHONPATH from a previous /opt session.
+export PYTHONPATH="${JUGOO_DIR}"
 cd "${JUGOO_DIR}"
 exec python3 -m shell "$@"

@@ -16,10 +16,23 @@ Item {
 
     property int sessionIndex: sessionModel.lastIndex
     property string errorText: ""
+    property bool loginInProgress: false
 
     function doLogin() {
+        if (loginInProgress)
+            return
+        loginInProgress = true
         errorText = ""
         sddm.login(usernameField.text, passwordField.text, sessionIndex)
+    }
+
+    // Qt6/SDDM on some machines (IME plugins, latam Enter) skips TextField.onAccepted.
+    // Intercept Return/Enter before the control so login always submits.
+    function handleSubmitKey(event, action) {
+        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            action()
+            event.accepted = true
+        }
     }
 
     Rectangle {
@@ -71,12 +84,15 @@ Item {
                 color: root.textColor
                 placeholderTextColor: root.mutedColor
                 selectByMouse: true
+                inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhPreferLowercase
                 background: Rectangle {
                     radius: 8
                     color: root.bgColor
                     border.color: usernameField.activeFocus ? root.accentColor : root.borderColor
                     border.width: 1
                 }
+                Keys.priority: Keys.BeforeItem
+                Keys.onPressed: (event) => root.handleSubmitKey(event, () => passwordField.forceActiveFocus())
                 onAccepted: passwordField.forceActiveFocus()
             }
 
@@ -88,12 +104,15 @@ Item {
                 color: root.textColor
                 placeholderTextColor: root.mutedColor
                 selectByMouse: true
+                inputMethodHints: Qt.ImhHiddenText | Qt.ImhSensitiveData | Qt.ImhNoAutoUppercase
                 background: Rectangle {
                     radius: 8
                     color: root.bgColor
                     border.color: passwordField.activeFocus ? root.accentColor : root.borderColor
                     border.width: 1
                 }
+                Keys.priority: Keys.BeforeItem
+                Keys.onPressed: (event) => root.handleSubmitKey(event, root.doLogin)
                 onAccepted: root.doLogin()
             }
 
@@ -155,11 +174,13 @@ Item {
     Connections {
         target: sddm
         function onLoginFailed() {
+            root.loginInProgress = false
             root.errorText = "Acceso denegado"
             passwordField.text = ""
             passwordField.forceActiveFocus()
         }
         function onLoginSucceeded() {
+            root.loginInProgress = false
             root.errorText = ""
         }
     }
