@@ -595,7 +595,7 @@ configure_login() {
   if [[ ! -e "${sddm_conf}" ]] || ! sudo grep -qF 'Current=aidycos' "${sddm_conf}" \
      || ! sudo grep -qiE '^Numlock[[:space:]]*=[[:space:]]*on$' "${sddm_conf}" \
      || ! sudo grep -q '^InputMethod=$' "${sddm_conf}" \
-     || ! sudo grep -qE '^GreeterEnvironment=.*QT_IM_MODULE=' "${sddm_conf}"; then
+     || sudo grep -q '^GreeterEnvironment=' "${sddm_conf}"; then
     sddm_needs_update=1
   fi
   if [[ -e "${sddm_conf}" && "${sddm_needs_update}" == 1 ]]; then
@@ -603,9 +603,23 @@ configure_login() {
     echo "Se respaldó la configuración SDDM existente: ${sddm_conf}"
   fi
   if [[ "${sddm_needs_update}" == 1 ]]; then
-    # InputMethod= disables qtvirtualkeyboard. GreeterEnvironment forces compose-only IM so
-    # fcitx/ibus plugins (installed on some machines) cannot swallow Enter in the password field.
-    printf '[General]\nNumlock=on\nInputMethod=\nGreeterEnvironment=QT_IM_MODULE=compose\n\n[Theme]\nCurrent=aidycos\n' | sudo tee "${sddm_conf}" >/dev/null
+    # InputMethod= disables qtvirtualkeyboard. Do not set QT_IM_MODULE=compose:
+    # compose can swallow Enter on password submit on some keyboards/IME stacks.
+    printf '[General]\nNumlock=on\nInputMethod=\n\n[Theme]\nCurrent=aidycos\n' | sudo tee "${sddm_conf}" >/dev/null
+  fi
+
+  # SDDM must not wait on pam_fprintd (common-auth) or password login freezes 10–30s.
+  local sddm_pam=/etc/pam.d/sddm
+  local sddm_pam_source="${ROOT}/packaging/pam/sddm"
+  if [[ -f "${sddm_pam_source}" ]]; then
+    if [[ ! -e "${sddm_pam}" ]] || ! sudo cmp -s "${sddm_pam_source}" "${sddm_pam}"; then
+      if [[ -e "${sddm_pam}" ]] && ! sudo grep -q 'Managed by AidyCOS' "${sddm_pam}"; then
+        sudo cp -a "${sddm_pam}" "${sddm_pam}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
+        echo "Se respaldó PAM de SDDM: ${sddm_pam}"
+      fi
+      sudo install -m 0644 "${sddm_pam_source}" "${sddm_pam}"
+      echo "SDDM usa autenticación por contraseña sin espera de huella."
+    fi
   fi
   echo "SDDM usa el tema AidyCOS con el logo y NumLock activo."
 }

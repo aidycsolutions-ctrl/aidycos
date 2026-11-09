@@ -1,0 +1,29 @@
+#%PAM-1.0
+# Managed by AidyCOS.
+# Password auth only: skip pam_fprintd from common-auth so SDDM does not wait
+# 10–30s for a fingerprint timeout before accepting the typed password.
+
+auth    requisite       pam_nologin.so
+auth    required        pam_succeed_if.so user != root quiet_success
+auth    [success=1 default=ignore]      pam_unix.so nullok try_first_pass
+auth    requisite                       pam_deny.so
+auth    required                        pam_permit.so
+# gnome_keyring breaks QProcess
+-auth   optional        pam_gnome_keyring.so
+-auth   optional        pam_kwallet5.so
+
+@include common-account
+
+session [success=ok ignore=ignore module_unknown=ignore default=bad] pam_selinux.so close
+session optional        pam_keyinit.so force revoke
+session required        pam_limits.so
+session required        pam_loginuid.so
+@include common-session
+session [success=ok ignore=ignore module_unknown=ignore default=bad] pam_selinux.so open
+-session optional       pam_gnome_keyring.so auto_start
+-session optional       pam_kwallet5.so auto_start
+
+@include common-password
+
+session required        pam_env.so
+session required        pam_env.so envfile=/etc/default/locale user_readenv=1

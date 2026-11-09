@@ -16,6 +16,7 @@ Item {
 
     property int sessionIndex: sessionModel.lastIndex
     property string errorText: ""
+    property string statusText: ""
     property bool loginInProgress: false
 
     function doLogin() {
@@ -23,12 +24,11 @@ Item {
             return
         loginInProgress = true
         errorText = ""
+        statusText = "Verificando…"
         sddm.login(usernameField.text, passwordField.text, sessionIndex)
     }
 
-    // Qt6/SDDM on some machines (IME plugins, latam Enter) skips TextField.onAccepted.
-    // Intercept Return/Enter before the control so login always submits.
-    function handleSubmitKey(event, action) {
+    function submitKey(event, action) {
         if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
             action()
             event.accepted = true
@@ -50,6 +50,18 @@ Item {
         fillMode: Image.PreserveAspectFit
         asynchronous: true
         cache: true
+    }
+
+    // Application-level shortcuts survive IM/compose quirks that skip TextField.onAccepted.
+    Shortcut {
+        sequences: ["Return", "Enter"]
+        enabled: usernameField.activeFocus && !root.loginInProgress
+        onActivated: passwordField.forceActiveFocus()
+    }
+    Shortcut {
+        sequences: ["Return", "Enter"]
+        enabled: passwordField.activeFocus && !root.loginInProgress
+        onActivated: root.doLogin()
     }
 
     Item {
@@ -84,7 +96,7 @@ Item {
                 color: root.textColor
                 placeholderTextColor: root.mutedColor
                 selectByMouse: true
-                inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhPreferLowercase
+                enabled: !root.loginInProgress
                 background: Rectangle {
                     radius: 8
                     color: root.bgColor
@@ -92,7 +104,9 @@ Item {
                     border.width: 1
                 }
                 Keys.priority: Keys.BeforeItem
-                Keys.onPressed: (event) => root.handleSubmitKey(event, () => passwordField.forceActiveFocus())
+                Keys.onPressed: function (event) {
+                    root.submitKey(event, function () { passwordField.forceActiveFocus() })
+                }
                 onAccepted: passwordField.forceActiveFocus()
             }
 
@@ -104,7 +118,7 @@ Item {
                 color: root.textColor
                 placeholderTextColor: root.mutedColor
                 selectByMouse: true
-                inputMethodHints: Qt.ImhHiddenText | Qt.ImhSensitiveData | Qt.ImhNoAutoUppercase
+                enabled: !root.loginInProgress
                 background: Rectangle {
                     radius: 8
                     color: root.bgColor
@@ -112,7 +126,9 @@ Item {
                     border.width: 1
                 }
                 Keys.priority: Keys.BeforeItem
-                Keys.onPressed: (event) => root.handleSubmitKey(event, root.doLogin)
+                Keys.onPressed: function (event) {
+                    root.submitKey(event, root.doLogin)
+                }
                 onAccepted: root.doLogin()
             }
 
@@ -120,6 +136,7 @@ Item {
                 id: sessionCombo
                 Layout.fillWidth: true
                 visible: sessionModel.count > 1
+                enabled: !root.loginInProgress
                 model: sessionModel
                 textRole: "name"
                 currentIndex: sessionModel.lastIndex
@@ -149,10 +166,21 @@ Item {
                 font.pixelSize: 13
             }
 
+            Text {
+                Layout.fillWidth: true
+                visible: root.statusText.length > 0 && root.errorText.length === 0
+                text: root.statusText
+                color: root.mutedColor
+                wrapMode: Text.WordWrap
+                horizontalAlignment: Text.AlignHCenter
+                font.pixelSize: 13
+            }
+
             Button {
                 id: loginButton
                 Layout.fillWidth: true
-                text: "Entrar"
+                text: root.loginInProgress ? "Verificando…" : "Entrar"
+                enabled: !root.loginInProgress
                 onClicked: root.doLogin()
                 contentItem: Text {
                     text: loginButton.text
@@ -165,7 +193,7 @@ Item {
                 background: Rectangle {
                     radius: 8
                     color: root.accentColor
-                    opacity: loginButton.down ? 0.75 : 1.0
+                    opacity: loginButton.down || !loginButton.enabled ? 0.75 : 1.0
                 }
             }
         }
@@ -175,12 +203,14 @@ Item {
         target: sddm
         function onLoginFailed() {
             root.loginInProgress = false
+            root.statusText = ""
             root.errorText = "Acceso denegado"
             passwordField.text = ""
             passwordField.forceActiveFocus()
         }
         function onLoginSucceeded() {
             root.loginInProgress = false
+            root.statusText = ""
             root.errorText = ""
         }
     }
