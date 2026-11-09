@@ -33,7 +33,8 @@ Vista previa del perfil AidyCOS para Debian 13:
   * Quitar la versión anterior del paquete AidyC si está instalada (conservar sus datos).
   * Instalar AidyChat nativo, icono/acceso de escritorio y daemon de usuario para notificaciones.
   * Habilitar NetworkManager y UPower para los indicadores de Wi-Fi y batería de Jugoo.
-  * Instalar los ajustes de Jugoo para el control de volumen y los iconos del escritorio.
+  * Instalar los ajustes de Jugoo para volumen, fondo de escritorio, iconos y atajos.
+  * Sembrar fondo AidyCOS e iconos útiles; permitir cambiarlos en Configuración.
   * Instalar botones de cerrar, maximizar y minimizar, y atajos de Hyprland para ventanas y escritorios.
   * Configurar GRUB sin menú prolongado, el splash de Plymouth con logo y el tema de inicio de sesión SDDM.
   * Seleccionar SDDM y habilitar el arranque gráfico.
@@ -145,6 +146,12 @@ install_jugoo() {
   local jugoo_source
   local staging_dir
   local source_dir="${AIDYCOS_JUGOO_SOURCE:-}"
+  # Wallpaper + atajos + iconos viven en esta rama hasta fusionarse en main.
+  local jugoo_ref="${AIDYCOS_JUGOO_REF:-feature/atajos-aidyc-escritorio}"
+
+  staging_dir="$(mktemp -d "${TMPDIR:-/tmp}/aidycos-jugoo.XXXXXX")"
+  trap 'rm -rf "${staging_dir}"' RETURN
+  jugoo_source="${staging_dir}/jugoo"
 
   if [[ -n "${source_dir}" ]]; then
     if [[ ! -d "${source_dir}/.git" || ! -f "${source_dir}/shell/__main__.py" ]]; then
@@ -153,32 +160,35 @@ install_jugoo() {
       return 1
     fi
     source_dir="$(cd "${source_dir}" && pwd -P)"
-    jugoo_source="${source_dir}"
-    echo "AidyCOS usará este checkout solo para esta ejecución: ${jugoo_source}"
-    echo "Se conserva ~/.config/jugoo; el overlay no modifica el checkout seleccionado."
-    sudo install -d -m 0755 /opt/aidyc
-    sudo python3 "${ROOT}/scripts/deploy-jugoo.py" "${jugoo_source}" "${jugoo_dir}"
+    echo "AidyCOS usará este checkout solo para esta ejecución: ${source_dir}"
+    echo "Se copia a un staging temporal; el overlay no modifica el checkout seleccionado."
+    cp -a "${source_dir}" "${jugoo_source}"
   else
     mkdir -p "${config_home}"
     if [[ -r "${config_home}/aidycos/jugoo-source" ]]; then
       echo "Se conserva ${config_home}/aidycos/jugoo-source, pero ya no selecciona el código de Jugoo en actualizaciones."
     fi
-    staging_dir="$(mktemp -d "${TMPDIR:-/tmp}/aidycos-jugoo.XXXXXX")"
-    trap 'rm -rf "${staging_dir}"' RETURN
-    jugoo_source="${staging_dir}/jugoo"
-    git clone --depth 1 https://github.com/aidycsolutions-ctrl/jugoo.git "${jugoo_source}"
-    python3 "${ROOT}/packaging/jugoo-overlay/install.py" "${jugoo_source}"
-    sudo install -d -m 0755 /opt/aidyc
-    sudo python3 "${ROOT}/scripts/deploy-jugoo.py" "${jugoo_source}" "${jugoo_dir}"
-    trap - RETURN
-    rm -rf "${staging_dir}"
+    if ! git clone --depth 1 --branch "${jugoo_ref}" \
+      https://github.com/aidycsolutions-ctrl/jugoo.git "${jugoo_source}"; then
+      echo "No se pudo clonar la rama ${jugoo_ref}; se usa main." >&2
+      rm -rf "${jugoo_source}"
+      git clone --depth 1 https://github.com/aidycsolutions-ctrl/jugoo.git "${jugoo_source}"
+    fi
   fi
+
+  python3 "${ROOT}/packaging/jugoo-overlay/install.py" "${jugoo_source}"
+  sudo install -d -m 0755 /opt/aidyc
+  sudo python3 "${ROOT}/scripts/deploy-jugoo.py" "${jugoo_source}" "${jugoo_dir}"
+  trap - RETURN
+  rm -rf "${staging_dir}"
+
   sudo install -D -m 0755 "${ROOT}/packaging/jugoo-launcher" /usr/local/bin/jugoo
   install -D -m 0644 "${ROOT}/packaging/jugoo-overlay/aidyc.desktop" "${HOME}/.local/share/applications/aidyc.desktop"
   if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "${HOME}/.local/share/applications" >/dev/null 2>&1 || true
   fi
   (cd "${jugoo_dir}" && python3 -m shell --install)
+  python3 "${ROOT}/scripts/seed-desktop-defaults.py" || true
   # shell --install may create a user-local launcher and service. Keep the
   # launcher as a compatibility shim, and override the unit's command so both
   # entry points always execute the same system-managed checkout.

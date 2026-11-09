@@ -21,6 +21,21 @@ def replace_once(path: Path, old: str, new: str, description: str) -> None:
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
+def try_replace_once(path: Path, old: str, new: str, description: str) -> bool:
+    """Like replace_once, but skip with a warning when the checkout already diverged."""
+    text = path.read_text(encoding="utf-8")
+    if new in text:
+        return False
+    if old not in text:
+        print(f"Aviso: se omite {description}: {path}", flush=True)
+        return False
+    backup = path.with_suffix(path.suffix + ".aidycos-backup")
+    if not backup.exists():
+        shutil.copy2(path, backup)
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+    return True
+
+
 def replace_desktop_icons_editor(root: Path, overlay: Path) -> None:
     pages = root / "shell/widgets/configuraciones/pages.py"
     editor_file = overlay / "widgets/configuraciones/desktop_icons_editor.py"
@@ -43,6 +58,145 @@ def replace_desktop_icons_editor(root: Path, overlay: Path) -> None:
             stream.write("\n\n" + editor.rstrip() + "\n")
 
 
+def install_applications_menu(root: Path) -> None:
+    """Bar button that opens the launcher; replaces the pinned-apps dock on the bar."""
+    overlay = Path(__file__).parent / "shell"
+    install_overlay_file(
+        overlay / "widgets/barra/applications.py",
+        root / "shell/widgets/barra/applications.py",
+    )
+
+    app = root / "shell/app.py"
+    try_replace_once(
+        app,
+        "from .widgets.barra.pinned_apps import PinnedAppsWidget\n",
+        "from .widgets.barra.applications import ApplicationsMenuWidget\n"
+        "from .widgets.barra.pinned_apps import PinnedAppsWidget\n",
+        "importar botón de aplicaciones",
+    )
+    # Apps grid + keep the pinned dock (pin from launcher, show on the bar).
+    try_replace_once(
+        app,
+        "        self.pinned_apps_widget = PinnedAppsWidget(self.event_bus, self)\n"
+        "        self.layout.left.add(self.pinned_apps_widget)\n",
+        "        self.applications_menu_widget = ApplicationsMenuWidget(self.toggle_launcher)\n"
+        "        self.layout.left.add(self.applications_menu_widget)\n"
+        "        self.pinned_apps_widget = PinnedAppsWidget(self.event_bus, self)\n"
+        "        self.layout.left.add(self.pinned_apps_widget)\n",
+        "mostrar botón de aplicaciones junto al dock",
+    )
+    # If a previous AidyCOS pass removed the dock from the layout, put it back.
+    try_replace_once(
+        app,
+        "        self.applications_menu_widget = ApplicationsMenuWidget(self.toggle_launcher)\n"
+        "        self.layout.left.add(self.applications_menu_widget)\n"
+        "        # Pinning stays available from the launcher; keep the widget for API compat.\n"
+        "        self.pinned_apps_widget = PinnedAppsWidget(self.event_bus, self)\n",
+        "        self.applications_menu_widget = ApplicationsMenuWidget(self.toggle_launcher)\n"
+        "        self.layout.left.add(self.applications_menu_widget)\n"
+        "        self.pinned_apps_widget = PinnedAppsWidget(self.event_bus, self)\n"
+        "        self.layout.left.add(self.pinned_apps_widget)\n",
+        "restaurar dock anclado junto al botón de aplicaciones",
+    )
+
+    layout = root / "shell/settings/layout_model.py"
+    try_replace_once(
+        layout,
+        '    ModuleSlot("pinned_apps", "left", 1),\n'
+        '    ModuleSlot("keyboard_cat", "left", 2),\n',
+        '    ModuleSlot("applications_menu", "left", 1),\n'
+        '    ModuleSlot("pinned_apps", "left", 2),\n'
+        '    ModuleSlot("keyboard_cat", "left", 3),\n',
+        "layout con botón de apps y dock anclado",
+    )
+    try_replace_once(
+        layout,
+        '    ModuleSlot("applications_menu", "left", 1),\n'
+        '    ModuleSlot("keyboard_cat", "left", 2),\n',
+        '    ModuleSlot("applications_menu", "left", 1),\n'
+        '    ModuleSlot("pinned_apps", "left", 2),\n'
+        '    ModuleSlot("keyboard_cat", "left", 3),\n',
+        "restaurar pinned_apps en el layout por defecto",
+    )
+
+    style = root / "shell/style.css"
+    style_text = style.read_text(encoding="utf-8")
+    if "applications-menu-widget" not in style_text:
+        css = """
+
+/* AidyCOS: applications launcher button on the bar. */
+window#shell box#shell-left > box.applications-menu-widget,
+box.applications-menu-widget {
+    margin-top: 4px;
+    margin-bottom: 4px;
+    padding: 2px 6px;
+}
+
+button.applications-menu-button {
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+    min-width: 0;
+    min-height: 0;
+    padding: 4px;
+    border-radius: 10px;
+    color: @shell_text_primary;
+}
+
+button.applications-menu-button:hover {
+    background-color: @shell_hover_bg;
+}
+"""
+        backup = style.with_suffix(style.suffix + ".aidycos-backup")
+        if not backup.exists():
+            shutil.copy2(style, backup)
+        style.write_text(style_text.rstrip() + "\n" + css, encoding="utf-8")
+
+
+def ensure_desktop_icons_css(root: Path) -> None:
+    """Keep the desktop layer transparent; opaque CSS made the whole desktop black."""
+    style = root / "shell/style.css"
+    text = style.read_text(encoding="utf-8")
+    if "window#shell-desktop.desktop-layer" in text or "window.desktop-layer" in text:
+        return
+    css = """
+
+/* AidyCOS: desktop icons layer must stay transparent over swaybg/hyprpaper. */
+window#shell-desktop.desktop-layer,
+window.desktop-layer {
+    background-color: transparent;
+}
+
+eventbox.desktop-icon {
+    background-color: transparent;
+    border-radius: 10px;
+    padding: 4px;
+}
+
+eventbox.desktop-icon:hover,
+eventbox.desktop-icon.selected {
+    background-color: alpha(@shell_accent, 0.18);
+}
+
+label.desktop-icon-label {
+    color: @shell_text_primary;
+    font-size: 11px;
+    text-shadow: 0 1px 2px alpha(@shell_bg, 0.85);
+}
+
+box.settings-desktop-icons {
+    background-color: alpha(@shell_accent, 0.08);
+    border: 1px solid @shell_border_subtle;
+    border-radius: 12px;
+    padding: 10px 12px;
+}
+"""
+    backup = style.with_suffix(style.suffix + ".aidycos-backup")
+    if not backup.exists():
+        shutil.copy2(style, backup)
+    style.write_text(text.rstrip() + "\n" + css, encoding="utf-8")
+
+
 def install_desktop_icons(root: Path) -> None:
     """Backport Jugoo's desktop-icon support when the published checkout is older."""
     overlay = Path(__file__).parent / "shell"
@@ -63,28 +217,32 @@ def install_desktop_icons(root: Path) -> None:
                 shutil.copy2(item, destination)
 
     runtime_paths = root / "shell/runtime_paths.py"
-    replace_once(
-        runtime_paths,
-        "from .config import CLIPBOARD_HISTORY_PATH, CLIPBOARD_IMAGES_DIR, PINNED_APPS_PATH, TASKS_PATH\n",
-        "from .config import CLIPBOARD_HISTORY_PATH, CLIPBOARD_IMAGES_DIR, PINNED_APPS_PATH, TASKS_PATH, DESKTOP_ICONS_PATH\n",
-        "importar la ruta de iconos del escritorio",
-    )
-    replace_once(
-        runtime_paths,
-        "def tasks_path() -> Path:\n",
-        "def desktop_icons_path() -> Path:\n"
-        "    return xdg_data_dir() / DESKTOP_ICONS_PATH\n\n\n"
-        "def tasks_path() -> Path:\n",
-        "definir almacenamiento de iconos del escritorio",
-    )
+    runtime_text = runtime_paths.read_text(encoding="utf-8")
+    if "DESKTOP_ICONS_PATH" not in runtime_text:
+        replace_once(
+            runtime_paths,
+            "from .config import CLIPBOARD_HISTORY_PATH, CLIPBOARD_IMAGES_DIR, PINNED_APPS_PATH, TASKS_PATH\n",
+            "from .config import CLIPBOARD_HISTORY_PATH, CLIPBOARD_IMAGES_DIR, PINNED_APPS_PATH, TASKS_PATH, DESKTOP_ICONS_PATH\n",
+            "importar la ruta de iconos del escritorio",
+        )
+    if "def desktop_icons_path(" not in runtime_text:
+        replace_once(
+            runtime_paths,
+            "def tasks_path() -> Path:\n",
+            "def desktop_icons_path() -> Path:\n"
+            "    return xdg_data_dir() / DESKTOP_ICONS_PATH\n\n\n"
+            "def tasks_path() -> Path:\n",
+            "definir almacenamiento de iconos del escritorio",
+        )
     identity = root / "shell/identity.py"
-    replace_once(
-        identity,
-        "TITLE_PINNED_OVERFLOW = f\"{APPLICATION_NAME} Pinned Overflow\"\n",
-        "TITLE_PINNED_OVERFLOW = f\"{APPLICATION_NAME} Pinned Overflow\"\n"
-        "TITLE_DESKTOP = f\"{APPLICATION_NAME} Desktop Icons\"\n",
-        "identificar la capa de iconos del escritorio",
-    )
+    if "TITLE_DESKTOP" not in identity.read_text(encoding="utf-8"):
+        replace_once(
+            identity,
+            "TITLE_PINNED_OVERFLOW = f\"{APPLICATION_NAME} Pinned Overflow\"\n",
+            "TITLE_PINNED_OVERFLOW = f\"{APPLICATION_NAME} Pinned Overflow\"\n"
+            "TITLE_DESKTOP = f\"{APPLICATION_NAME} Desktop Icons\"\n",
+            "identificar la capa de iconos del escritorio",
+        )
 
     config = root / "shell/config.py"
     config_text = config.read_text(encoding="utf-8")
@@ -130,6 +288,7 @@ def install_desktop_icons(root: Path) -> None:
         and "self.desktop_icons_layer = DesktopIconsLayer(" in app_text
     ):
         replace_desktop_icons_editor(root, overlay)
+        ensure_desktop_icons_css(root)
         return
     replace_once(
         app,
@@ -284,6 +443,7 @@ def install_desktop_icons(root: Path) -> None:
         "mostrar el editor de iconos en configuración",
     )
     replace_desktop_icons_editor(root, overlay)
+    ensure_desktop_icons_css(root)
 
 
 def install_overlay_file(source: Path, destination: Path) -> None:
@@ -426,7 +586,12 @@ def install_native_workspace_dispatch(root: Path) -> None:
     )
     match = pattern.search(text)
     if match is None:
-        raise SystemExit(f"No se pudo ajustar el cambio de escritorio en Jugoo: {service}")
+        # Newer Jugoo checkouts may already use a different workspace dispatcher.
+        print(
+            f"Aviso: no se ajustó el dispatcher de escritorios (API distinta): {service}",
+            flush=True,
+        )
+        return
     replacement = '''    def _dispatch_workspace(
         self,
         workspace_id: int,
@@ -493,15 +658,17 @@ def main() -> None:
             raise SystemExit(f"Checkout de Jugoo incompleto: falta {path}")
 
     install_desktop_icons(root)
+    install_applications_menu(root)
     install_battery(root)
     install_native_workspace_dispatch(root)
     assistant_card = root / "shell/widgets/notificaciones/assistant_card.py"
-    replace_once(
-        assistant_card,
-        "is_pointer_leaving_surface(self, event)",
-        "is_pointer_leaving_surface(event)",
-        "corregir compatibilidad del evento de salida del asistente",
-    )
+    if assistant_card.is_file():
+        try_replace_once(
+            assistant_card,
+            "is_pointer_leaving_surface(self, event)",
+            "is_pointer_leaving_surface(event)",
+            "corregir compatibilidad del evento de salida del asistente",
+        )
 
     overlay_shell = Path(__file__).parent / "shell"
     for relative in (
@@ -511,14 +678,16 @@ def main() -> None:
     ):
         install_overlay_file(overlay_shell / relative, root / "shell" / relative)
 
-    replace_once(
+    try_replace_once(
         app,
         "from .widgets.barra.ethernet import EthernetWidget\n",
         "from .widgets.barra.ethernet import EthernetWidget\nfrom .widgets.barra.volume import VolumeWidget\n",
         "importar control de volumen",
     )
     app_text = app.read_text(encoding="utf-8")
-    if "self.volume_widget = VolumeWidget(" not in app_text:
+    if "VolumeWidget" not in app_text:
+        print(f"Aviso: el checkout no importa VolumeWidget todavía: {app}", flush=True)
+    elif "self.volume_widget = VolumeWidget(" not in app_text:
         battery_anchor = "        self.battery_widget = BatteryWidget(self.event_bus, self.battery_service)\n"
         ethernet_anchor = "        self.ethernet_widget = EthernetWidget(self.event_bus, self.network_service)\n"
         if battery_anchor in app_text:
@@ -536,15 +705,20 @@ def main() -> None:
                 1,
             )
         else:
-            raise SystemExit(f"No se pudo aplicar el ajuste Jugoo (crear control de volumen): {app}")
-        backup = app.with_suffix(app.suffix + ".aidycos-backup")
-        if not backup.exists():
-            shutil.copy2(app, backup)
-        app.write_text(app_text, encoding="utf-8")
+            print(f"Aviso: no se pudo crear el control de volumen: {app}", flush=True)
+            app_text = None
+        if app_text is not None:
+            backup = app.with_suffix(app.suffix + ".aidycos-backup")
+            if not backup.exists():
+                shutil.copy2(app, backup)
+            app.write_text(app_text, encoding="utf-8")
 
     app_text = app.read_text(encoding="utf-8")
-    if "self.layout.right.add(self.volume_widget)" not in app_text:
-        replace_once(
+    if (
+        "self.volume_widget = VolumeWidget(" in app_text
+        and "self.layout.right.add(self.volume_widget)" not in app_text
+    ):
+        try_replace_once(
             app,
             "        self.layout.right.add(self.ethernet_widget)\n",
             "        self.layout.right.add(self.ethernet_widget)\n"
@@ -552,25 +726,27 @@ def main() -> None:
             "mostrar control de volumen",
         )
 
-    replace_once(
-        applications,
-        "from .desktop import desktop_directories_stamp, scan_desktop_applications, strip_exec_field_codes\n",
-        "from .aidyc_install import aidyc_is_installed, begin_aidyc_install\n"
-        "from .desktop import desktop_directories_stamp, scan_desktop_applications, strip_exec_field_codes\n",
-        "importar descarga de AidyC desde el dock",
-    )
-    replace_once(
-        applications,
-        "    def launch(self, app_id: str) -> None:\n        application = self.snapshot.app_by_id(app_id)\n",
-        "    def launch(self, app_id: str) -> None:\n"
-        "        ident = normalize_desktop_id(app_id)\n"
-        "        if ident.casefold() == \"aidyc\" and not aidyc_is_installed():\n"
-        "            begin_aidyc_install()\n"
-        "            return\n"
-        "        application = self.snapshot.app_by_id(app_id)\n",
-        "descargar AidyC al pulsar su icono si no está instalado",
-    )
-    replace_once(
+    applications_text = applications.read_text(encoding="utf-8")
+    if "begin_aidyc_install" not in applications_text:
+        try_replace_once(
+            applications,
+            "from .desktop import desktop_directories_stamp, scan_desktop_applications, strip_exec_field_codes\n",
+            "from .aidyc_install import aidyc_is_installed, begin_aidyc_install\n"
+            "from .desktop import desktop_directories_stamp, scan_desktop_applications, strip_exec_field_codes\n",
+            "importar descarga de AidyC desde el dock",
+        )
+        try_replace_once(
+            applications,
+            "    def launch(self, app_id: str) -> None:\n        application = self.snapshot.app_by_id(app_id)\n",
+            "    def launch(self, app_id: str) -> None:\n"
+            "        ident = normalize_desktop_id(app_id)\n"
+            "        if ident.casefold() == \"aidyc\" and not aidyc_is_installed():\n"
+            "            begin_aidyc_install()\n"
+            "            return\n"
+            "        application = self.snapshot.app_by_id(app_id)\n",
+            "descargar AidyC al pulsar su icono si no está instalado",
+        )
+    try_replace_once(
         applications,
         "            self._pinned_ids, self._favorite_ids = load_application_prefs(self._path)\n",
         "            self._pinned_ids, self._favorite_ids = load_application_prefs(self._path)\n"
@@ -580,29 +756,32 @@ def main() -> None:
         "mostrar AidyC en el dock de una instalación nueva",
     )
     installed_helper = root / "shell/servicios/aplicaciones/aidyc_install.py"
-    if not installed_helper.exists() or installed_helper.read_bytes() != aidyc_helper.read_bytes():
-        if installed_helper.exists():
-            backup = installed_helper.with_suffix(".py.aidycos-backup")
-            if not backup.exists():
-                shutil.copy2(installed_helper, backup)
+    # Never overwrite a newer helper already present in the Jugoo checkout.
+    if not installed_helper.exists():
         installed_helper.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(aidyc_helper, installed_helper)
 
-    audio_methods = '''\n    def set_system_volume(self, volume: float) -> None:\n        """Set default sink volume from the top-bar control."""\n        clamped = max(0.0, min(1.0, float(volume)))\n        percent = f"{int(round(clamped * 100))}%"\n\n        def apply() -> None:\n            ok = self._run_command(["pactl", "set-sink-volume", "@DEFAULT_SINK@", percent])\n            if not ok:\n                ok = self._run_command(["wpctl", "set-volume", "-l", "1.5", "@DEFAULT_AUDIO_SINK@", str(clamped)])\n            if ok and not self._stop_event.is_set():\n                self._refresh_audio()\n\n        self._start_operation("audio-set-system-volume", apply)\n\n    def toggle_system_mute(self) -> None:\n        """Toggle mute on the default sink."""\n        def apply() -> None:\n            ok = self._run_command(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "toggle"])\n            if not ok:\n                ok = self._run_command(["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"])\n            if ok and not self._stop_event.is_set():\n                self._refresh_audio()\n\n        self._start_operation("audio-toggle-system-mute", apply)\n'''
-    audio_marker = "    def toggle_stream_mute(self, stream_id: str) -> None:\n"
-    replace_once(audio, audio_marker, audio_methods + "\n" + audio_marker,
-                 "operaciones de volumen global")
+    if "def set_system_volume(" not in audio.read_text(encoding="utf-8"):
+        audio_methods = '''\n    def set_system_volume(self, volume: float) -> None:\n        """Set default sink volume from the top-bar control."""\n        clamped = max(0.0, min(1.0, float(volume)))\n        percent = f"{int(round(clamped * 100))}%"\n\n        def apply() -> None:\n            ok = self._run_command(["pactl", "set-sink-volume", "@DEFAULT_SINK@", percent])\n            if not ok:\n                ok = self._run_command(["wpctl", "set-volume", "-l", "1.5", "@DEFAULT_AUDIO_SINK@", str(clamped)])\n            if ok and not self._stop_event.is_set():\n                self._refresh_audio()\n\n        self._start_operation("audio-set-system-volume", apply)\n\n    def toggle_system_mute(self) -> None:\n        """Toggle mute on the default sink."""\n        def apply() -> None:\n            ok = self._run_command(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "toggle"])\n            if not ok:\n                ok = self._run_command(["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"])\n            if ok and not self._stop_event.is_set():\n                self._refresh_audio()\n\n        self._start_operation("audio-toggle-system-mute", apply)\n'''
+        audio_marker = "    def toggle_stream_mute(self, stream_id: str) -> None:\n"
+        try_replace_once(
+            audio,
+            audio_marker,
+            audio_methods + "\n" + audio_marker,
+            "operaciones de volumen global",
+        )
 
     css = '''\nbox.volume-widget { margin: 0 2px; }\nbox.volume-widget button.volume-mute-button {\n    padding: 0; min-width: 0; min-height: 0; background: transparent;\n    border: none; box-shadow: none; color: @shell_text_primary;\n}\nbox.volume-widget box.volume-slider { min-width: 72px; }\n'''
     css_anchor = "box.volume-slider {\n"
-    if "box.volume-widget {" not in style.read_text(encoding="utf-8"):
-        text = style.read_text(encoding="utf-8")
-        if css_anchor not in text:
-            raise SystemExit(f"No se pudo aplicar el estilo del volumen: {style}")
-        backup = style.with_suffix(style.suffix + ".aidycos-backup")
-        if not backup.exists():
-            shutil.copy2(style, backup)
-        style.write_text(text.replace(css_anchor, css + "\n" + css_anchor, 1), encoding="utf-8")
+    style_text = style.read_text(encoding="utf-8")
+    if "box.volume-widget {" not in style_text:
+        if css_anchor not in style_text:
+            print(f"Aviso: no se pudo aplicar el estilo del volumen: {style}", flush=True)
+        else:
+            backup = style.with_suffix(style.suffix + ".aidycos-backup")
+            if not backup.exists():
+                shutil.copy2(style, backup)
+            style.write_text(style_text.replace(css_anchor, css + "\n" + css_anchor, 1), encoding="utf-8")
 
 
 if __name__ == "__main__":

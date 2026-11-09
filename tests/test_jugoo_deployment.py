@@ -75,3 +75,74 @@ class JugooDeploymentTests(unittest.TestCase):
         self.assertIn("python3 -m shell \"$@\"", launcher)
         self.assertIn("ExecStart=/usr/local/bin/jugoo --task-watcher", service)
         self.assertIn("exec-once = /usr/local/bin/jugoo", installer)
+        self.assertIn("feature/atajos-aidyc-escritorio", installer)
+        self.assertIn("seed-desktop-defaults.py", installer)
+
+    def test_overlay_keeps_desktop_layer_transparent(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "jugoo_overlay_install",
+            ROOT / "packaging" / "jugoo-overlay" / "install.py",
+        )
+        assert spec and spec.loader
+        overlay = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(overlay)
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            style = root / "shell" / "style.css"
+            style.parent.mkdir(parents=True)
+            style.write_text("/* base */\n", encoding="utf-8")
+            overlay.ensure_desktop_icons_css(root)
+            text = style.read_text(encoding="utf-8")
+            self.assertIn("window#shell-desktop.desktop-layer", text)
+            self.assertIn("background-color: transparent", text)
+            # Idempotent.
+            overlay.ensure_desktop_icons_css(root)
+            self.assertEqual(text, style.read_text(encoding="utf-8"))
+
+    def test_overlay_adds_applications_menu_button(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "jugoo_overlay_install",
+            ROOT / "packaging" / "jugoo-overlay" / "install.py",
+        )
+        assert spec and spec.loader
+        overlay = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(overlay)
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            app = root / "shell" / "app.py"
+            layout = root / "shell" / "settings" / "layout_model.py"
+            style = root / "shell" / "style.css"
+            app.parent.mkdir(parents=True)
+            layout.parent.mkdir(parents=True)
+            app.write_text(
+                "from .widgets.barra.pinned_apps import PinnedAppsWidget\n"
+                "class Shell:\n"
+                "    def build(self):\n"
+                "        self.pinned_apps_widget = PinnedAppsWidget(self.event_bus, self)\n"
+                "        self.layout.left.add(self.pinned_apps_widget)\n",
+                encoding="utf-8",
+            )
+            layout.write_text(
+                'DEFAULT_LAYOUT = (\n'
+                '    ModuleSlot("pinned_apps", "left", 1),\n'
+                '    ModuleSlot("keyboard_cat", "left", 2),\n'
+                ')\n',
+                encoding="utf-8",
+            )
+            style.write_text("/* base */\n", encoding="utf-8")
+            overlay.install_applications_menu(root)
+            app_text = app.read_text(encoding="utf-8")
+            self.assertIn("ApplicationsMenuWidget", app_text)
+            self.assertIn("self.layout.left.add(self.applications_menu_widget)", app_text)
+            self.assertIn("self.layout.left.add(self.pinned_apps_widget)", app_text)
+            self.assertLess(
+                app_text.index("self.layout.left.add(self.applications_menu_widget)"),
+                app_text.index("self.layout.left.add(self.pinned_apps_widget)"),
+            )
+            layout_text = layout.read_text(encoding="utf-8")
+            self.assertIn("applications_menu", layout_text)
+            self.assertIn("pinned_apps", layout_text)
+            self.assertIn("applications-menu-button", style.read_text(encoding="utf-8"))
+            self.assertTrue((root / "shell/widgets/barra/applications.py").is_file())

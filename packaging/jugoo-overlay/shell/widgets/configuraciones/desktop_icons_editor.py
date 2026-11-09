@@ -1,5 +1,7 @@
 def _desktop_icons_editor(manager: SettingsManager) -> Gtk.Widget:
-    """Minimal create/list/delete UI for desktop shortcuts (does not delete targets)."""
+    """Create/list/delete UI for desktop shortcuts (does not delete targets)."""
+    from pathlib import Path
+
     from ...actions import known_action_names
     from ...servicios.escritorio.desktop_icons.model import CREATABLE_TYPES
 
@@ -14,7 +16,7 @@ def _desktop_icons_editor(manager: SettingsManager) -> Gtk.Widget:
         label=(
             "Crear accesos (aplicación / archivo / carpeta / acción Jugoo). "
             "Eliminar un icono no borra la app ni el archivo original. "
-            "Doble clic abre; arrastrar mueve; la posición se guarda al soltar."
+            "Un clic abre; arrastrar mueve; la posición se guarda al soltar."
         ),
         xalign=0,
     )
@@ -45,16 +47,23 @@ def _desktop_icons_editor(manager: SettingsManager) -> Gtk.Widget:
         type_combo.append(kind, type_labels.get(kind, kind))
     type_combo.set_active_id("application")
     target_entry = Gtk.Entry()
-    target_entry.set_placeholder_text("firefox /ruta /jugoo-action")
+    target_entry.set_placeholder_text("firefox-esr  ·  /ruta  ·  jugoo-action")
+    target_entry.set_hexpand(True)
     icon_entry = Gtk.Entry()
     icon_entry.set_placeholder_text("Icono (opcional)")
+
+    browse_button = Gtk.Button(label="Elegir…")
+    browse_button.get_style_context().add_class("settings-browse-button")
+    target_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+    target_row.pack_start(target_entry, True, True, 0)
+    target_row.pack_start(browse_button, False, False, 0)
 
     form.attach(Gtk.Label(label="Nombre", xalign=0), 0, 0, 1, 1)
     form.attach(name_entry, 1, 0, 1, 1)
     form.attach(Gtk.Label(label="Tipo", xalign=0), 0, 1, 1, 1)
     form.attach(type_combo, 1, 1, 1, 1)
     form.attach(Gtk.Label(label="Destino", xalign=0), 0, 2, 1, 1)
-    form.attach(target_entry, 1, 2, 1, 1)
+    form.attach(target_row, 1, 2, 1, 1)
     form.attach(Gtk.Label(label="Icono", xalign=0), 0, 3, 1, 1)
     form.attach(icon_entry, 1, 3, 1, 1)
     box.pack_start(form, False, False, 0)
@@ -81,6 +90,84 @@ def _desktop_icons_editor(manager: SettingsManager) -> Gtk.Widget:
 
     def _set_status(message: str) -> None:
         status.set_text(message)
+
+    def _guess_name_from_target(kind: str, target: str) -> str:
+        cleaned = target.strip()
+        if not cleaned:
+            return ""
+        if kind == "application":
+            return cleaned.replace(".desktop", "").replace("-", " ").replace("_", " ").title()
+        if kind in {"file", "directory"}:
+            return Path(cleaned).expanduser().name or cleaned
+        return cleaned
+
+    def _browse(_btn) -> None:
+        kind = type_combo.get_active_id() or "application"
+        parent = box.get_toplevel()
+        window = parent if isinstance(parent, Gtk.Window) else None
+        if kind == "application":
+            dialog = Gtk.FileChooserDialog(
+                title="Elegir aplicación (.desktop)",
+                parent=window,
+                action=Gtk.FileChooserAction.OPEN,
+            )
+            dialog.add_buttons(
+                Gtk.STOCK_CANCEL,
+                Gtk.ResponseType.CANCEL,
+                Gtk.STOCK_OPEN,
+                Gtk.ResponseType.OK,
+            )
+            filt = Gtk.FileFilter()
+            filt.set_name("Aplicaciones")
+            filt.add_pattern("*.desktop")
+            dialog.add_filter(filt)
+            for directory in (
+                Path("/usr/share/applications"),
+                Path.home() / ".local/share/applications",
+            ):
+                if directory.is_dir():
+                    dialog.set_current_folder(str(directory))
+                    break
+            response = dialog.run()
+            chosen = dialog.get_filename() if response == Gtk.ResponseType.OK else None
+            dialog.destroy()
+            if not chosen:
+                return
+            desktop_id = Path(chosen).stem
+            target_entry.set_text(desktop_id)
+            if not name_entry.get_text().strip():
+                name_entry.set_text(_guess_name_from_target("application", desktop_id))
+            if not icon_entry.get_text().strip():
+                icon_entry.set_text(desktop_id)
+            return
+
+        if kind not in {"file", "directory"}:
+            _set_status("Para acciones Jugoo escribe el nombre en Destino.")
+            return
+        action = (
+            Gtk.FileChooserAction.SELECT_FOLDER
+            if kind == "directory"
+            else Gtk.FileChooserAction.OPEN
+        )
+        dialog = Gtk.FileChooserDialog(
+            title="Elegir carpeta" if kind == "directory" else "Elegir archivo",
+            parent=window,
+            action=action,
+        )
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL,
+            Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_OPEN,
+            Gtk.ResponseType.OK,
+        )
+        response = dialog.run()
+        chosen = dialog.get_filename() if response == Gtk.ResponseType.OK else None
+        dialog.destroy()
+        if not chosen:
+            return
+        target_entry.set_text(chosen)
+        if not name_entry.get_text().strip():
+            name_entry.set_text(_guess_name_from_target(kind, chosen))
 
     def _rebuild_list() -> None:
         for child in list(list_box.get_children()):
@@ -134,9 +221,12 @@ def _desktop_icons_editor(manager: SettingsManager) -> Gtk.Widget:
             _set_status("Servicio de iconos no disponible.")
             return
         kind = type_combo.get_active_id() or "application"
+        name = name_entry.get_text().strip() or _guess_name_from_target(
+            kind, target_entry.get_text()
+        )
         try:
             service.create(
-                name=name_entry.get_text(),
+                name=name,
                 type=kind,  # type: ignore[arg-type]
                 target=target_entry.get_text(),
                 icon=icon_entry.get_text(),
@@ -150,6 +240,7 @@ def _desktop_icons_editor(manager: SettingsManager) -> Gtk.Widget:
         _set_status("Acceso creado en el escritorio.")
         _rebuild_list()
 
+    browse_button.connect("clicked", _browse)
     add_button.connect("clicked", _add)
     _rebuild_list()
     return box
