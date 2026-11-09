@@ -742,6 +742,9 @@ def main() -> None:
 
     overlay_shell = Path(__file__).parent / "shell"
     for relative in (
+        # Service helpers must ship with the controller: older Jugoo branches
+        # lack revealed_retract_px and the shell crashes before the bar appears.
+        Path("servicios/escritorio/bar_retract.py"),
         Path("controllers/bar_retract.py"),
         Path("controllers/applications.py"),
         Path("widgets/barra/ethernet.py"),

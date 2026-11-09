@@ -1,13 +1,16 @@
 #!/bin/sh
 set -eu
 
-# Prefer the writable AidyCOS user overlay; fall back to the system tree.
-if [ -d "${HOME}/.local/share/aidycos/jugoo/shell" ]; then
+# Prefer the system-managed checkout so aidycos-update always takes effect.
+# Fall back to the user tree only when /opt is missing (install without sudo).
+if [ -f /opt/aidyc/jugoo/.aidycos-managed ] && [ -d /opt/aidyc/jugoo/shell ]; then
+  JUGOO_DIR=/opt/aidyc/jugoo
+elif [ -d "${HOME}/.local/share/aidycos/jugoo/shell" ]; then
   JUGOO_DIR="${HOME}/.local/share/aidycos/jugoo"
 else
   JUGOO_DIR=/opt/aidyc/jugoo
 fi
-# Do not inherit a polluted PYTHONPATH from a previous /opt session.
+# Do not inherit a polluted PYTHONPATH from a previous session.
 export PYTHONPATH="${JUGOO_DIR}"
 cd "${JUGOO_DIR}"
 exec python3 -m shell "$@"
