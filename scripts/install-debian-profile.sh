@@ -187,12 +187,20 @@ install_jugoo() {
   if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "${HOME}/.local/share/applications" >/dev/null 2>&1 || true
   fi
+  # shell --install writes ~/.local/bin/jugoo as the current user. A root-owned
+  # leftover there (from an earlier privileged copy) aborts with PermissionError.
+  install -d "${HOME}/.local/bin"
+  if [[ -e "${HOME}/.local/bin/jugoo" || -L "${HOME}/.local/bin/jugoo" ]]; then
+    if [[ ! -O "${HOME}/.local/bin/jugoo" || ! -w "${HOME}/.local/bin/jugoo" ]]; then
+      echo "Se elimina ${HOME}/.local/bin/jugoo (no escribible por el usuario) antes de reinstalar Jugoo."
+      sudo rm -f "${HOME}/.local/bin/jugoo"
+    fi
+  fi
   (cd "${jugoo_dir}" && python3 -m shell --install)
   python3 "${ROOT}/scripts/seed-desktop-defaults.py" || true
   # shell --install may create a user-local launcher and service. Keep the
   # launcher as a compatibility shim, and override the unit's command so both
   # entry points always execute the same system-managed checkout.
-  install -d "${HOME}/.local/bin"
   if [[ -e "${HOME}/.local/bin/jugoo" || -L "${HOME}/.local/bin/jugoo" ]]; then
     if ! cmp -s "${ROOT}/packaging/jugoo-launcher" "${HOME}/.local/bin/jugoo"; then
       backup="${HOME}/.local/bin/jugoo.aidycos-backup"
@@ -203,6 +211,11 @@ install_jugoo() {
     fi
   else
     install -m 0755 "${ROOT}/packaging/jugoo-launcher" "${HOME}/.local/bin/jugoo"
+  fi
+  # Never leave the user launcher owned by root.
+  if [[ -e "${HOME}/.local/bin/jugoo" && ! -O "${HOME}/.local/bin/jugoo" ]]; then
+    sudo chown "${USER}:${USER}" "${HOME}/.local/bin/jugoo" 2>/dev/null \
+      || sudo chown "$(id -u):$(id -g)" "${HOME}/.local/bin/jugoo"
   fi
   local service_dir="${config_home}/systemd/user/jugoo-task-watcher.service.d"
   install -D -m 0644 "${ROOT}/packaging/systemd/jugoo-task-watcher.service.d/aidycos.conf" \
