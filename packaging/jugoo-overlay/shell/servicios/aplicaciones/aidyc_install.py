@@ -7,6 +7,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import urllib.error
@@ -115,6 +116,97 @@ def _install_worker() -> None:
         global _busy
         with _lock:
             _busy = False
+
+
+def update_aidyc() -> int:
+    """Check the latest Linux release and update an existing AidyC package."""
+    note = _ProgressNote()
+    try:
+        installed = _installed_deb_version()
+        if not installed:
+            note.update("AidyC", "AidyC no está instalada como paquete Debian. Instálala desde su icono del dock.")
+            return 1
+
+        note.update("AidyC", "Buscando actualizaciones…")
+        package = _find_package()
+        destination = _cache_dir() / package.name
+        if package.url:
+            _download(package.url, destination, note)
+        else:
+            _gh_download(package, destination)
+        if package.sha256 and _sha256(destination) != package.sha256:
+            raise RuntimeError("el SHA-256 del paquete no coincide")
+
+        candidate = _deb_version(destination)
+        if not candidate:
+            raise RuntimeError("no se pudo leer la versión del paquete descargado")
+        if not _version_is_newer(candidate, installed):
+            note.update("AidyC", f"AidyC ya está actualizada ({installed}).")
+            return 0
+
+        message = f"Hay una actualización de AidyC disponible.\n\nInstalada: {installed}\nNueva: {candidate}\n\n¿Quieres instalarla ahora?"
+        if not _confirm_update(message):
+            note.update("AidyC", f"Actualización pospuesta. AidyC {candidate} está disponible.")
+            return 0
+
+        _install_deb(_relax_policykit(destination), note)
+        return 0
+    except Exception as error:
+        print(f"aidyc-update: {error}", file=sys.stderr, flush=True)
+        note.update("AidyC", f"No se pudo actualizar: {error}")
+        return 1
+
+
+def _installed_deb_version() -> str:
+    result = subprocess.run(
+        ["dpkg-query", "-W", "-f=${db:Status-Status}\t${Version}", "aidyc"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return ""
+    status, _, version = result.stdout.strip().partition("\t")
+    return version if status == "installed" else ""
+
+
+def _deb_version(path: Path) -> str:
+    if shutil.which("dpkg-deb") is None:
+        raise RuntimeError("falta dpkg-deb para comprobar la versión")
+    result = subprocess.run(
+        ["dpkg-deb", "-f", str(path), "Version"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _version_is_newer(candidate: str, installed: str) -> bool:
+    result = subprocess.run(
+        ["dpkg", "--compare-versions", candidate, "gt", installed],
+        check=False,
+        capture_output=True,
+    )
+    if result.returncode not in (0, 1):
+        raise RuntimeError("dpkg no pudo comparar las versiones")
+    return result.returncode == 0
+
+
+def _confirm_update(message: str) -> bool:
+    if shutil.which("zenity") and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return subprocess.run(
+            ["zenity", "--question", "--title=Actualizar AidyC", f"--text={message}", "--width=460"],
+            check=False,
+        ).returncode == 0
+    if sys.stdin.isatty():
+        print(message)
+        try:
+            return input("Escribe S para actualizar: ").strip().casefold() in {"s", "si", "sí"}
+        except EOFError:
+            return False
+    _notify("Actualización disponible", message.replace("\n", " "))
+    return False
 
 
 class _Package:
@@ -417,3 +509,9 @@ def _notify(summary: str, body: str, *, replace_id: int | None = None) -> int | 
     if text.isdigit():
         return int(text)
     return replace_id
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] != ["--update"]:
+        raise SystemExit("Uso: aidyc_install.py --update")
+    raise SystemExit(update_aidyc())

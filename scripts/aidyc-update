@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
+HELPER="${CONFIG_HOME}/jugoo/shell/servicios/aplicaciones/aidyc_install.py"
+if [[ ! -r "${HELPER}" ]]; then
+  echo "No se encontró el actualizador de AidyC en ${HELPER}. Vuelve a aplicar el perfil AidyCOS." >&2
+  exit 1
+fi
+exec python3 "${HELPER}" --update

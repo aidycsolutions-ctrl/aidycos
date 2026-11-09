@@ -29,11 +29,12 @@ Vista previa del perfil AidyCOS para Debian 13:
   * Instalar el conjunto de paquetes del perfil Hyprland/SDDM/Wayland/Jugoo.
   * Instalar la CLI AidyCOS y Jugoo para el usuario actual.
   * Configurar el comprobador diario de actualizaciones de AidyCOS, con confirmación antes de aplicar.
+  * Instalar el comando y acceso de menú para buscar actualizaciones Linux de AidyC.
   * Quitar la versión anterior del paquete AidyC si está instalada (conservar sus datos).
   * Instalar AidyChat nativo, icono/acceso de escritorio y daemon de usuario para notificaciones.
   * Habilitar NetworkManager y UPower para los indicadores de Wi-Fi y batería de Jugoo.
   * Instalar los ajustes de Jugoo para el control de volumen y los iconos del escritorio.
-  * Instalar las acciones de Hyprland para mover, minimizar y restaurar ventanas.
+  * Instalar botones de cerrar, maximizar y minimizar, y atajos de Hyprland para ventanas y escritorios.
   * Configurar GRUB sin menú prolongado, el splash de Plymouth con logo y el tema de inicio de sesión SDDM.
   * Seleccionar SDDM y habilitar el arranque gráfico.
   * Activar NumLock en la pantalla de acceso y en Hyprland.
@@ -180,8 +181,25 @@ install_jugoo() {
     update-desktop-database "${HOME}/.local/share/applications" >/dev/null 2>&1 || true
   fi
   (cd "${jugoo_dir}" && python3 -m shell --install)
+  if [[ -f "${jugoo_dir}/scripts/setup-hyprbars.sh" ]]; then
+    bash "${jugoo_dir}/scripts/setup-hyprbars.sh"
+  elif [[ -n "${source_dir}" ]]; then
+    echo "El checkout seleccionado de desarrollo no contiene scripts/setup-hyprbars.sh; no se instalaron los botones de título." >&2
+    return 1
+  else
+    echo "Este checkout de Jugoo no contiene scripts/setup-hyprbars.sh; se omiten los botones de título." >&2
+  fi
 }
 install_jugoo
+
+# Separate AidyC updater: the dock icon opens an installed copy, so updates
+# need an explicit launcher that checks GitHub and compares Debian versions.
+sudo install -m 0755 "${ROOT}/scripts/aidyc-update" /usr/local/bin/aidyc-update
+install -D -m 0644 "${ROOT}/packaging/applications/aidyc-update.desktop" \
+  "${HOME}/.local/share/applications/aidyc-update.desktop"
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database "${HOME}/.local/share/applications" >/dev/null 2>&1 || true
+fi
 
 # Jugoo's network and battery indicators use NetworkManager and UPower.
 sudo systemctl enable --now NetworkManager.service
@@ -237,6 +255,14 @@ HYPR_CONF="${HYPR_DIR}/hyprland.conf"
 HYPR_AIDYCOS_CONF="${HYPR_DIR}/aidycos.conf"
 HYPR_WINDOWS_CONF="${HYPR_DIR}/config/jugoo_ventanas.conf"
 mkdir -p "${HYPR_DIR}" "${HYPR_DIR}/config" "${HYPR_DIR}/scripts"
+CAPTURE_SCRIPT="${HOME}/.local/bin/captura.sh"
+mkdir -p "$(dirname "${CAPTURE_SCRIPT}")"
+if [[ ! -e "${CAPTURE_SCRIPT}" ]] || ! cmp -s "${ROOT}/packaging/hyprland/scripts/captura.sh" "${CAPTURE_SCRIPT}"; then
+  if [[ -e "${CAPTURE_SCRIPT}" ]]; then
+    cp -a "${CAPTURE_SCRIPT}" "${CAPTURE_SCRIPT}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
+  fi
+  install -m 0755 "${ROOT}/packaging/hyprland/scripts/captura.sh" "${CAPTURE_SCRIPT}"
+fi
 install -m 0755 "${ROOT}/packaging/hyprland/scripts/ventanas" "${HYPR_DIR}/scripts/ventanas"
 install -m 0644 "${ROOT}/packaging/hyprland/scripts/ventanas.py" "${HYPR_DIR}/scripts/ventanas.py"
 if [[ ! -e "${HYPR_WINDOWS_CONF}" ]] || ! cmp -s "${ROOT}/packaging/hyprland/config/jugoo_ventanas.conf" "${HYPR_WINDOWS_CONF}"; then
@@ -254,6 +280,10 @@ input {
 }
 bind = SUPER, SPACE, exec, jugoo action launcher
 bind = CTRL, SPACE, exec, jugoo action launcher
+bind = CTRL, E, exec, /usr/bin/env GDK_BACKEND=wayland /usr/bin/thunar
+bind = , Print, exec, ~/.local/bin/captura.sh
+bind = SUPER, LEFT, workspace, -1
+bind = SUPER, RIGHT, workspace, +1
 bind = SUPER, C, exec, aidylink ui
 bind = SUPER SHIFT, U, exec, aidycos-update --check
 source = ~/.config/hypr/config/jugoo_ventanas.conf
@@ -264,6 +294,20 @@ else
   grep -qE '^[[:space:]]*numlock_by_default[[:space:]]*=[[:space:]]*true' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*SPACE,[[:space:]]*exec,[[:space:]]*jugoo action launcher' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*CTRL,[[:space:]]*SPACE,[[:space:]]*exec,[[:space:]]*jugoo action launcher' "${HYPR_AIDYCOS_CONF}" || missing=1
+  if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*CTRL,[[:space:]]*E,' "${HYPR_AIDYCOS_CONF}" \
+     && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*CTRL,[[:space:]]*E,' "${HYPR_CONF}"; }; then
+    missing=1
+  fi
+  if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*,[[:space:]]*Print,' "${HYPR_AIDYCOS_CONF}" \
+     && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*,[[:space:]]*Print,' "${HYPR_CONF}"; }; then
+    missing=1
+  fi
+  grep -qF 'bind = SUPER, LEFT, workspace, -1' "${HYPR_AIDYCOS_CONF}" || grep -qF 'bind = SUPER, LEFT, workspace, -1' "${HYPR_CONF}" 2>/dev/null || missing=1
+  grep -qF 'bind = SUPER, RIGHT, workspace, +1' "${HYPR_AIDYCOS_CONF}" || grep -qF 'bind = SUPER, RIGHT, workspace, +1' "${HYPR_CONF}" 2>/dev/null || missing=1
+  if ! grep -qF 'source = ~/.config/hypr/config/jugoo_hyprbars.conf' "${HYPR_AIDYCOS_CONF}" \
+     && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qF 'source = ~/.config/hypr/config/jugoo_hyprbars.conf' "${HYPR_CONF}"; }; then
+    missing=1
+  fi
   grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*C,[[:space:]]*exec,[[:space:]]*aidylink ui' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qF 'source = ~/.config/hypr/config/jugoo_ventanas.conf' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qF 'exec-once = /usr/local/bin/aidycos-prefer-external-display' "${HYPR_AIDYCOS_CONF}" || missing=1
@@ -284,6 +328,26 @@ EOF
     if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*CTRL,[[:space:]]*SPACE,[[:space:]]*exec,[[:space:]]*jugoo action launcher' "${HYPR_AIDYCOS_CONF}"; then
       printf 'bind = CTRL, SPACE, exec, jugoo action launcher\n' >>"${HYPR_AIDYCOS_CONF}"
     fi
+    if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*CTRL,[[:space:]]*E,' "${HYPR_AIDYCOS_CONF}" \
+       && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*CTRL,[[:space:]]*E,' "${HYPR_CONF}"; }; then
+      printf 'bind = CTRL, E, exec, /usr/bin/env GDK_BACKEND=wayland /usr/bin/thunar\n' >>"${HYPR_AIDYCOS_CONF}"
+    fi
+    if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*,[[:space:]]*Print,' "${HYPR_AIDYCOS_CONF}" \
+       && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*,[[:space:]]*Print,' "${HYPR_CONF}"; }; then
+      printf 'bind = , Print, exec, ~/.local/bin/captura.sh\n' >>"${HYPR_AIDYCOS_CONF}"
+    fi
+    if ! grep -qF 'bind = SUPER, LEFT, workspace, -1' "${HYPR_AIDYCOS_CONF}" \
+       && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qF 'bind = SUPER, LEFT, workspace, -1' "${HYPR_CONF}"; }; then
+      printf 'bind = SUPER, LEFT, workspace, -1\n' >>"${HYPR_AIDYCOS_CONF}"
+    fi
+    if ! grep -qF 'bind = SUPER, RIGHT, workspace, +1' "${HYPR_AIDYCOS_CONF}" \
+       && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qF 'bind = SUPER, RIGHT, workspace, +1' "${HYPR_CONF}"; }; then
+      printf 'bind = SUPER, RIGHT, workspace, +1\n' >>"${HYPR_AIDYCOS_CONF}"
+    fi
+    if ! grep -qF 'source = ~/.config/hypr/config/jugoo_hyprbars.conf' "${HYPR_AIDYCOS_CONF}" \
+       && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qF 'source = ~/.config/hypr/config/jugoo_hyprbars.conf' "${HYPR_CONF}"; }; then
+      printf 'source = ~/.config/hypr/config/jugoo_hyprbars.conf\n' >>"${HYPR_AIDYCOS_CONF}"
+    fi
     if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*C,[[:space:]]*exec,[[:space:]]*aidylink ui' "${HYPR_AIDYCOS_CONF}"; then
       printf 'bind = SUPER, C, exec, aidylink ui\n' >>"${HYPR_AIDYCOS_CONF}"
     fi
@@ -297,6 +361,11 @@ EOF
       printf 'bind = SUPER SHIFT, U, exec, aidycos-update --check\n' >>"${HYPR_AIDYCOS_CONF}"
     fi
   fi
+fi
+
+if ! grep -qF 'source = ~/.config/hypr/config/jugoo_hyprbars.conf' "${HYPR_AIDYCOS_CONF}" \
+   && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qF 'source = ~/.config/hypr/config/jugoo_hyprbars.conf' "${HYPR_CONF}"; }; then
+  printf 'source = ~/.config/hypr/config/jugoo_hyprbars.conf\n' >>"${HYPR_AIDYCOS_CONF}"
 fi
 
 if [[ ! -e "${HYPR_CONF}" ]]; then
@@ -366,6 +435,9 @@ apply_grub_profile() {
      && sudo grep -qE '^GRUB_CMDLINE_LINUX_DEFAULT=.*udev.log_level=3' "${grub}" \
      && { [[ ! -f /etc/grub.d/10_linux ]] || sudo grep -q '^quiet_boot="1"$' /etc/grub.d/10_linux; }; then
     echo "GRUB ya tiene el perfil AidyCOS."
+    # Rebuild the generated menu as well: /etc/default/grub can be correct
+    # while /boot/grub/grub.cfg is stale from an earlier profile apply.
+    sudo update-grub
     return
   fi
   sudo cp -a "${grub}" "${grub}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
