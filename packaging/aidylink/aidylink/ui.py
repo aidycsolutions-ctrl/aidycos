@@ -80,7 +80,7 @@ def _first_run_setup() -> bool:
     box.set_border_width(12)
     box.pack_start(
         Gtk.Label(
-            label="¿Cómo llamamos a este computador? Después podrás iniciar sesión o elegir otro equipo de la red.",
+            label="¿Cómo llamamos a este computador? Para encontrar otros equipos, todos deben compartir el mismo grupo y código local.",
             xalign=0,
         ),
         False,
@@ -95,7 +95,7 @@ def _first_run_setup() -> bool:
     team_e.set_text("AidyCOS")
     team_e.set_placeholder_text("Nombre de la red local")
     secret_e = Gtk.Entry()
-    secret_e.set_placeholder_text("Código compartido entre computadores (opcional)")
+    secret_e.set_placeholder_text("Código compartido entre computadores")
     secret_e.set_visibility(False)
     box.pack_start(Gtk.Label(label="Nombre de este computador", xalign=0), False, False, 0)
     box.pack_start(name_e, False, False, 0)
@@ -115,6 +115,7 @@ def _first_run_setup() -> bool:
     advanced_box.pack_start(Gtk.Label(label="Código compartido del grupo", xalign=0), False, False, 0)
     advanced_box.pack_start(secret_e, False, False, 0)
     advanced.add(advanced_box)
+    advanced.set_expanded(True)
     box.pack_start(advanced, False, False, 0)
     dialog.show_all()
     response = dialog.run()
@@ -125,7 +126,30 @@ def _first_run_setup() -> bool:
     team = (team_e.get_text() or "").strip() or "AidyCOS"
     secret = (secret_e.get_text() or "").strip() or None
     dialog.destroy()
-    init_config(display_name=name, team_id=team, team_secret=secret)
+    cfg = init_config(display_name=name, team_id=team, team_secret=secret)
+    if not secret:
+        notice = Gtk.MessageDialog(
+            transient_for=None,
+            flags=0,
+            message_type=Gtk.MessageType.INFO,
+            buttons=Gtk.ButtonsType.OK,
+            text="Código compartido de AidyLink",
+        )
+        notice.format_secondary_text(
+            "Guarda este código y escríbelo en Configuración avanzada al configurar "
+            "los demás computadores del grupo. Sin el mismo código no aparecerán."
+        )
+        notice.set_title("Configurar equipos de la red")
+        notice.set_default_size(440, 180)
+        notice.get_content_area().pack_start(
+            Gtk.Label(label=cfg.team_secret, selectable=True, xalign=0),
+            False,
+            False,
+            8,
+        )
+        notice.show_all()
+        notice.run()
+        notice.destroy()
     return True
 
 

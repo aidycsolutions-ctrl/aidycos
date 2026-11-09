@@ -182,10 +182,11 @@ install_jugoo() {
   fi
   (cd "${jugoo_dir}" && python3 -m shell --install)
   if [[ -f "${jugoo_dir}/scripts/setup-hyprbars.sh" ]]; then
-    bash "${jugoo_dir}/scripts/setup-hyprbars.sh"
+    if ! bash "${jugoo_dir}/scripts/setup-hyprbars.sh"; then
+      echo "No se pudieron compilar los botones de título de Jugoo; se continúa sin cargar una configuración inexistente." >&2
+    fi
   elif [[ -n "${source_dir}" ]]; then
     echo "El checkout seleccionado de desarrollo no contiene scripts/setup-hyprbars.sh; no se instalaron los botones de título." >&2
-    return 1
   else
     echo "Este checkout de Jugoo no contiene scripts/setup-hyprbars.sh; se omiten los botones de título." >&2
   fi
@@ -254,6 +255,7 @@ HYPR_DIR="${CONFIG_HOME}/hypr"
 HYPR_CONF="${HYPR_DIR}/hyprland.conf"
 HYPR_AIDYCOS_CONF="${HYPR_DIR}/aidycos.conf"
 HYPR_WINDOWS_CONF="${HYPR_DIR}/config/jugoo_ventanas.conf"
+HYPR_HYPERBARS_CONF="${HYPR_DIR}/config/jugoo_hyprbars.conf"
 mkdir -p "${HYPR_DIR}" "${HYPR_DIR}/config" "${HYPR_DIR}/scripts"
 CAPTURE_SCRIPT="${HOME}/.local/bin/captura.sh"
 mkdir -p "$(dirname "${CAPTURE_SCRIPT}")"
@@ -284,6 +286,7 @@ bind = CTRL, E, exec, /usr/bin/env GDK_BACKEND=wayland /usr/bin/thunar
 bind = , Print, exec, ~/.local/bin/captura.sh
 bind = SUPER, LEFT, workspace, -1
 bind = SUPER, RIGHT, workspace, +1
+bind = SUPER, Y, workspace, +1
 bind = SUPER, C, exec, aidylink ui
 bind = SUPER SHIFT, U, exec, aidycos-update --check
 source = ~/.config/hypr/config/jugoo_ventanas.conf
@@ -304,10 +307,7 @@ else
   fi
   grep -qF 'bind = SUPER, LEFT, workspace, -1' "${HYPR_AIDYCOS_CONF}" || grep -qF 'bind = SUPER, LEFT, workspace, -1' "${HYPR_CONF}" 2>/dev/null || missing=1
   grep -qF 'bind = SUPER, RIGHT, workspace, +1' "${HYPR_AIDYCOS_CONF}" || grep -qF 'bind = SUPER, RIGHT, workspace, +1' "${HYPR_CONF}" 2>/dev/null || missing=1
-  if ! grep -qF 'source = ~/.config/hypr/config/jugoo_hyprbars.conf' "${HYPR_AIDYCOS_CONF}" \
-     && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qF 'source = ~/.config/hypr/config/jugoo_hyprbars.conf' "${HYPR_CONF}"; }; then
-    missing=1
-  fi
+  grep -qF 'bind = SUPER, Y, workspace, +1' "${HYPR_AIDYCOS_CONF}" || grep -qF 'bind = SUPER, Y, workspace, +1' "${HYPR_CONF}" 2>/dev/null || missing=1
   grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*C,[[:space:]]*exec,[[:space:]]*aidylink ui' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qF 'source = ~/.config/hypr/config/jugoo_ventanas.conf' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qF 'exec-once = /usr/local/bin/aidycos-prefer-external-display' "${HYPR_AIDYCOS_CONF}" || missing=1
@@ -344,9 +344,9 @@ EOF
        && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qF 'bind = SUPER, RIGHT, workspace, +1' "${HYPR_CONF}"; }; then
       printf 'bind = SUPER, RIGHT, workspace, +1\n' >>"${HYPR_AIDYCOS_CONF}"
     fi
-    if ! grep -qF 'source = ~/.config/hypr/config/jugoo_hyprbars.conf' "${HYPR_AIDYCOS_CONF}" \
-       && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qF 'source = ~/.config/hypr/config/jugoo_hyprbars.conf' "${HYPR_CONF}"; }; then
-      printf 'source = ~/.config/hypr/config/jugoo_hyprbars.conf\n' >>"${HYPR_AIDYCOS_CONF}"
+    if ! grep -qF 'bind = SUPER, Y, workspace, +1' "${HYPR_AIDYCOS_CONF}" \
+       && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qF 'bind = SUPER, Y, workspace, +1' "${HYPR_CONF}"; }; then
+      printf 'bind = SUPER, Y, workspace, +1\n' >>"${HYPR_AIDYCOS_CONF}"
     fi
     if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*C,[[:space:]]*exec,[[:space:]]*aidylink ui' "${HYPR_AIDYCOS_CONF}"; then
       printf 'bind = SUPER, C, exec, aidylink ui\n' >>"${HYPR_AIDYCOS_CONF}"
@@ -361,11 +361,6 @@ EOF
       printf 'bind = SUPER SHIFT, U, exec, aidycos-update --check\n' >>"${HYPR_AIDYCOS_CONF}"
     fi
   fi
-fi
-
-if ! grep -qF 'source = ~/.config/hypr/config/jugoo_hyprbars.conf' "${HYPR_AIDYCOS_CONF}" \
-   && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qF 'source = ~/.config/hypr/config/jugoo_hyprbars.conf' "${HYPR_CONF}"; }; then
-  printf 'source = ~/.config/hypr/config/jugoo_hyprbars.conf\n' >>"${HYPR_AIDYCOS_CONF}"
 fi
 
 if [[ ! -e "${HYPR_CONF}" ]]; then
@@ -415,6 +410,24 @@ EOF
   fi
 fi
 
+# Only load the optional hyprbars plugin config after the setup script has
+# actually created it. Remove stale managed references left by failed installs.
+HYPR_HYPERBARS_SOURCE='source = ~/.config/hypr/config/jugoo_hyprbars.conf'
+if [[ -f "${HYPR_HYPERBARS_CONF}" ]]; then
+  if ! grep -qF "${HYPR_HYPERBARS_SOURCE}" "${HYPR_AIDYCOS_CONF}" \
+     && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qF "${HYPR_HYPERBARS_SOURCE}" "${HYPR_CONF}"; }; then
+    cp -a "${HYPR_AIDYCOS_CONF}" "${HYPR_AIDYCOS_CONF}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
+    printf '\n%s\n' "${HYPR_HYPERBARS_SOURCE}" >>"${HYPR_AIDYCOS_CONF}"
+  fi
+else
+  for config in "${HYPR_AIDYCOS_CONF}" "${HYPR_CONF}"; do
+    if [[ -f "${config}" ]] && grep -qF "${HYPR_HYPERBARS_SOURCE}" "${config}"; then
+      cp -a "${config}" "${config}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
+      sed -i '\|^[[:space:]]*source[[:space:]]*=[[:space:]]*~/.config/hypr/config/jugoo_hyprbars.conf[[:space:]]*$|d' "${config}"
+    fi
+  done
+fi
+
 apply_grub_profile() {
   local grub=/etc/default/grub tmp
   if [[ ! -f "${grub}" ]] || ! command -v update-grub >/dev/null; then
@@ -422,7 +435,7 @@ apply_grub_profile() {
     return
   fi
   sudo install -D -m 0644 "${ROOT}/packaging/plymouth/AidyCOS.png" /boot/grub/AidyCOS.png
-  if sudo grep -qE '^GRUB_TIMEOUT=1$' "${grub}" \
+  if sudo grep -qE '^GRUB_TIMEOUT=0$' "${grub}" \
      && sudo grep -qE '^GRUB_TIMEOUT_STYLE=hidden$' "${grub}" \
      && sudo grep -qF 'GRUB_BACKGROUND="/boot/grub/AidyCOS.png"' "${grub}" \
      && sudo grep -qE '^GRUB_GFXMODE=auto$' "${grub}" \
@@ -444,14 +457,14 @@ apply_grub_profile() {
   tmp="$(mktemp)"
   sudo awk '
     BEGIN { timeout=0; style=0; background=0; gfxmode=0; payload=0 }
-    /^GRUB_TIMEOUT=/ { print "GRUB_TIMEOUT=1"; timeout=1; next }
+    /^GRUB_TIMEOUT=/ { print "GRUB_TIMEOUT=0"; timeout=1; next }
     /^GRUB_TIMEOUT_STYLE=/ { print "GRUB_TIMEOUT_STYLE=hidden"; style=1; next }
     /^GRUB_BACKGROUND=/ { print "GRUB_BACKGROUND=\"/boot/grub/AidyCOS.png\""; background=1; next }
     /^GRUB_GFXMODE=/ { print "GRUB_GFXMODE=auto"; gfxmode=1; next }
     /^GRUB_GFXPAYLOAD_LINUX=/ { print "GRUB_GFXPAYLOAD_LINUX=keep"; payload=1; next }
     { print }
     END {
-      if (!timeout) print "GRUB_TIMEOUT=1"
+      if (!timeout) print "GRUB_TIMEOUT=0"
       if (!style) print "GRUB_TIMEOUT_STYLE=hidden"
       if (!background) print "GRUB_BACKGROUND=\"/boot/grub/AidyCOS.png\""
       if (!gfxmode) print "GRUB_GFXMODE=auto"

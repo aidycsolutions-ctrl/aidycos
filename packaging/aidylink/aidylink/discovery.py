@@ -12,7 +12,7 @@ from typing import Callable
 from . import PROTOCOL
 from .config import LinkConfig
 from .crypto import sign_payload, verify_payload
-from .netutil import detect_lan_ip
+from .netutil import detect_lan_ip, lan_broadcast_addresses
 
 LOGGER = logging.getLogger(__name__)
 
@@ -124,7 +124,11 @@ class DiscoveryService:
             body["aidychat_user_id"] = self.cfg.cloud.peer_user_ids["self"]
         envelope = {"body": body, "sig": sign_payload(self.cfg.team_secret, body)}
         payload = json.dumps(envelope, ensure_ascii=False).encode("utf-8")
-        self._transport.sendto(payload, ("255.255.255.255", self.cfg.discovery_port))
+        for broadcast in lan_broadcast_addresses():
+            try:
+                self._transport.sendto(payload, (broadcast, self.cfg.discovery_port))
+            except OSError as exc:
+                LOGGER.debug("beacon send to %s failed: %s", broadcast, exc)
 
     def _on_datagram(self, data: bytes, host: str) -> None:
         try:
