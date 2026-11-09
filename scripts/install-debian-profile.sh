@@ -295,12 +295,11 @@ if [[ ! -e "${CAPTURE_SCRIPT}" ]] || ! cmp -s "${ROOT}/packaging/hyprland/script
 fi
 install -m 0755 "${ROOT}/packaging/hyprland/scripts/ventanas" "${HYPR_DIR}/scripts/ventanas"
 install -m 0644 "${ROOT}/packaging/hyprland/scripts/ventanas.py" "${HYPR_DIR}/scripts/ventanas.py"
-if [[ ! -e "${HYPR_WINDOWS_CONF}" ]] || ! cmp -s "${ROOT}/packaging/hyprland/config/jugoo_ventanas.conf" "${HYPR_WINDOWS_CONF}"; then
-  if [[ -e "${HYPR_WINDOWS_CONF}" ]]; then
-    cp -a "${HYPR_WINDOWS_CONF}" "${HYPR_WINDOWS_CONF}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
-  fi
-  install -m 0644 "${ROOT}/packaging/hyprland/config/jugoo_ventanas.conf" "${HYPR_WINDOWS_CONF}"
+# Always refresh window-arrange binds so Ctrl+Alt+2/4/G keep working after updates.
+if [[ -e "${HYPR_WINDOWS_CONF}" ]] && ! cmp -s "${ROOT}/packaging/hyprland/config/jugoo_ventanas.conf" "${HYPR_WINDOWS_CONF}"; then
+  cp -a "${HYPR_WINDOWS_CONF}" "${HYPR_WINDOWS_CONF}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
 fi
+install -m 0644 "${ROOT}/packaging/hyprland/config/jugoo_ventanas.conf" "${HYPR_WINDOWS_CONF}"
 sudo install -m 0755 "${ROOT}/packaging/hyprland/aidycos-prefer-external-display" /usr/local/bin/aidycos-prefer-external-display
 if [[ ! -e "${HYPR_AIDYCOS_CONF}" ]]; then
   cat >"${HYPR_AIDYCOS_CONF}" <<'EOF'
@@ -317,7 +316,6 @@ bind = SUPER, RIGHT, workspace, +1
 bind = SUPER, Y, workspace, +1
 bind = SUPER, C, exec, aidylink ui
 bind = SUPER SHIFT, U, exec, aidycos-update --check
-source = ~/.config/hypr/config/jugoo_ventanas.conf
 exec-once = /usr/local/bin/aidycos-prefer-external-display
 EOF
 else
@@ -337,7 +335,6 @@ else
   grep -qF 'bind = SUPER, RIGHT, workspace, +1' "${HYPR_AIDYCOS_CONF}" || grep -qF 'bind = SUPER, RIGHT, workspace, +1' "${HYPR_CONF}" 2>/dev/null || missing=1
   grep -qF 'bind = SUPER, Y, workspace, +1' "${HYPR_AIDYCOS_CONF}" || grep -qF 'bind = SUPER, Y, workspace, +1' "${HYPR_CONF}" 2>/dev/null || missing=1
   grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*C,[[:space:]]*exec,[[:space:]]*aidylink ui' "${HYPR_AIDYCOS_CONF}" || missing=1
-  grep -qF 'source = ~/.config/hypr/config/jugoo_ventanas.conf' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qF 'exec-once = /usr/local/bin/aidycos-prefer-external-display' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qF 'bind = SUPER SHIFT, U, exec, aidycos-update --check' "${HYPR_AIDYCOS_CONF}" || missing=1
   if [[ "${missing}" == 1 ]]; then
@@ -379,9 +376,6 @@ EOF
     if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*C,[[:space:]]*exec,[[:space:]]*aidylink ui' "${HYPR_AIDYCOS_CONF}"; then
       printf 'bind = SUPER, C, exec, aidylink ui\n' >>"${HYPR_AIDYCOS_CONF}"
     fi
-    if ! grep -qF 'source = ~/.config/hypr/config/jugoo_ventanas.conf' "${HYPR_AIDYCOS_CONF}"; then
-      printf 'source = ~/.config/hypr/config/jugoo_ventanas.conf\n' >>"${HYPR_AIDYCOS_CONF}"
-    fi
     if ! grep -qF 'exec-once = /usr/local/bin/aidycos-prefer-external-display' "${HYPR_AIDYCOS_CONF}"; then
       printf 'exec-once = /usr/local/bin/aidycos-prefer-external-display\n' >>"${HYPR_AIDYCOS_CONF}"
     fi
@@ -389,6 +383,17 @@ EOF
       printf 'bind = SUPER SHIFT, U, exec, aidycos-update --check\n' >>"${HYPR_AIDYCOS_CONF}"
     fi
   fi
+fi
+
+# Load arrange binds once: prefer hyprland.conf, else aidycos.conf (never both).
+if grep -qF 'source = ~/.config/hypr/config/jugoo_ventanas.conf' "${HYPR_CONF}" 2>/dev/null; then
+  if [[ -f "${HYPR_AIDYCOS_CONF}" ]] && grep -qF 'source = ~/.config/hypr/config/jugoo_ventanas.conf' "${HYPR_AIDYCOS_CONF}"; then
+    sed -i '\|^[[:space:]]*source[[:space:]]*=[[:space:]]*~/.config/hypr/config/jugoo_ventanas.conf[[:space:]]*$|d' "${HYPR_AIDYCOS_CONF}"
+  fi
+elif [[ -f "${HYPR_AIDYCOS_CONF}" ]] && ! grep -qF 'source = ~/.config/hypr/config/jugoo_ventanas.conf' "${HYPR_AIDYCOS_CONF}"; then
+  printf 'source = ~/.config/hypr/config/jugoo_ventanas.conf\n' >>"${HYPR_AIDYCOS_CONF}"
+elif [[ ! -f "${HYPR_AIDYCOS_CONF}" ]]; then
+  printf '\nsource = ~/.config/hypr/config/jugoo_ventanas.conf\n' >>"${HYPR_CONF}"
 fi
 
 if [[ ! -e "${HYPR_CONF}" ]]; then

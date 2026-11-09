@@ -59,12 +59,29 @@ def replace_desktop_icons_editor(root: Path, overlay: Path) -> None:
 
 
 def install_applications_menu(root: Path) -> None:
-    """Bar button that opens the launcher; replaces the pinned-apps dock on the bar."""
+    """Bar button that opens the launcher; keep the pinned dock beside it."""
     overlay = Path(__file__).parent / "shell"
     install_overlay_file(
         overlay / "widgets/barra/applications.py",
         root / "shell/widgets/barra/applications.py",
     )
+
+    # The dock already had a grid-looking “Anclar” control; use a + so it
+    # does not look like a second applications launcher.
+    pinned = root / "shell/widgets/barra/pinned_apps.py"
+    if pinned.is_file():
+        try_replace_once(
+            pinned,
+            '        self._expand_icon = Gtk.Image.new_from_icon_name(\n'
+            '            "view-app-grid-symbolic",\n'
+            "            Gtk.IconSize.DIALOG,\n"
+            "        )\n",
+            '        self._expand_icon = Gtk.Image.new_from_icon_name(\n'
+            '            "list-add-symbolic",\n'
+            "            Gtk.IconSize.DIALOG,\n"
+            "        )\n",
+            "distinguir el botón Anclar del lanzador de aplicaciones",
+        )
 
     app = root / "shell/app.py"
     try_replace_once(
@@ -249,7 +266,7 @@ def install_desktop_icons(root: Path) -> None:
     if "DESKTOP_ICONS_ENABLED" not in config_text:
         config_text = config_text.rstrip() + (
             "\n\n# AidyCOS: escritorio con accesos directos habilitados.\n"
-            "DESKTOP_ICONS_ENABLED = True\n"
+            "DESKTOP_ICONS_ENABLED = False\n"
             "DESKTOP_ICONS_PATH = \"desktop-icons.json\"\n"
             "DESKTOP_ICON_SIZE = 48\n"
             "DESKTOP_ICON_LABEL_WIDTH = 96\n"
@@ -259,8 +276,8 @@ def install_desktop_icons(root: Path) -> None:
         )
     else:
         config_text = re.sub(
-            r"^(\s*DESKTOP_ICONS_ENABLED\s*=\s*)False(\s*)$",
-            r"\g<1>True\g<2>",
+            r"^(\s*DESKTOP_ICONS_ENABLED\s*=\s*)True(\s*)$",
+            r"\g<1>False\g<2>",
             config_text,
             count=1,
             flags=re.MULTILINE,

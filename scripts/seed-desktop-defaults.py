@@ -109,19 +109,20 @@ def default_icons(home: Path) -> list[dict[str, object]]:
     return icons
 
 
-def ensure_desktop_icons(path: Path, *, reset: bool) -> bool:
-    if path.is_file() and not reset:
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            payload = {}
-        icons = payload.get("icons") if isinstance(payload, dict) else payload
-        if isinstance(icons, list) and icons:
-            return False
-    icons = default_icons(Path.home())
+def ensure_desktop_icons(path: Path, *, reset: bool, clear: bool = True) -> bool:
+    """Keep the desktop free of placeholder icons unless the user creates some."""
+    if clear or reset:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"version": 1, "icons": []}, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        return True
+    if path.is_file():
+        return False
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps({"version": 1, "icons": icons}, indent=2, ensure_ascii=False) + "\n",
+        json.dumps({"version": 1, "icons": []}, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
     return True
@@ -138,7 +139,12 @@ def main() -> int:
     parser.add_argument(
         "--reset-icons",
         action="store_true",
-        help="Reescribe desktop-icons.json aunque ya existan iconos",
+        help="Vacía desktop-icons.json aunque ya existan iconos",
+    )
+    parser.add_argument(
+        "--keep-icons",
+        action="store_true",
+        help="No tocar desktop-icons.json si ya existe",
     )
     args = parser.parse_args()
 
@@ -160,11 +166,31 @@ def main() -> int:
         print("No se encontró imagen de fondo por defecto.", flush=True)
 
     icons_path = root / "desktop-icons.json"
-    if ensure_desktop_icons(icons_path, reset=args.reset_icons):
-        changed = True
-        print(f"Iconos del escritorio: {icons_path}")
-    else:
+    if args.keep_icons and icons_path.is_file() and not args.reset_icons:
         print(f"Iconos del escritorio conservados: {icons_path}")
+    elif ensure_desktop_icons(
+        icons_path, reset=args.reset_icons, clear=not args.keep_icons
+    ):
+        changed = True
+        print(f"Iconos del escritorio vaciados: {icons_path}")
+    else:
+        print(f"Iconos del escritorio: {icons_path}")
+
+    settings_path = root / "settings.json"
+    if settings_path.is_file():
+        try:
+            payload = json.loads(settings_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            payload = {"version": 1, "values": {}}
+        values = payload.setdefault("values", {})
+        if isinstance(values, dict) and values.get("escritorio.icons_enabled") is not False:
+            values["escritorio.icons_enabled"] = False
+            settings_path.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            changed = True
+            print("Iconos del escritorio desactivados en settings.json")
 
     return 0 if changed or chosen is not None else 0
 
