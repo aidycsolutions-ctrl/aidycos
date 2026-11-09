@@ -36,8 +36,9 @@ Vista previa del perfil AidyCOS para Debian 13:
   * Instalar los ajustes de Jugoo para volumen, fondo de escritorio, iconos y atajos.
   * Sembrar fondo AidyCOS e iconos útiles; permitir cambiarlos en Configuración.
   * Instalar botones de cerrar, maximizar y minimizar, y atajos de Hyprland para ventanas y escritorios.
-  * Configurar GRUB sin menú prolongado, el splash de Plymouth con logo y el tema de inicio de sesión SDDM.
-  * Seleccionar SDDM y habilitar el arranque gráfico.
+  * Configurar GRUB sin menú, modo gráfico con fallbacks y el splash de Plymouth con logo.
+  * Preferir la resolución del monitor externo detectado para GRUB/Plymouth cuando exista.
+  * Seleccionar SDDM y habilitar el arranque gráfico; logo en todas las pantallas de acceso.
   * Activar NumLock en la pantalla de acceso y en Hyprland.
   * Crear configuración inicial de Hyprland si no existe.
   * Ocultar GRUB y los mensajes de arranque; mostrar el logo en Plymouth y SDDM.
@@ -485,17 +486,24 @@ else
 fi
 
 apply_grub_profile() {
-  local grub=/etc/default/grub tmp
+  local grub=/etc/default/grub tmp gfxmode
   if [[ ! -f "${grub}" ]] || ! command -v update-grub >/dev/null; then
     echo "GRUB no está instalado; se omite su perfil."
     return
   fi
+  sudo install -D -m 0755 "${ROOT}/packaging/boot/aidycos-boot-gfxmode" /usr/local/bin/aidycos-boot-gfxmode
   sudo install -D -m 0644 "${ROOT}/packaging/plymouth/AidyCOS.png" /boot/grub/AidyCOS.png
+  gfxmode="$(python3 "${ROOT}/packaging/boot/aidycos-boot-gfxmode" 2>/dev/null || true)"
+  if [[ -z "${gfxmode}" ]]; then
+    gfxmode="1920x1080x32,1680x1050x32,1600x900x32,1366x768x32,1280x720x32,1024x768x32,auto"
+  fi
+  echo "GRUB_GFXMODE preferido: ${gfxmode}"
   if sudo grep -qE '^GRUB_TIMEOUT=0$' "${grub}" \
      && sudo grep -qE '^GRUB_TIMEOUT_STYLE=hidden$' "${grub}" \
      && sudo grep -qF 'GRUB_BACKGROUND="/boot/grub/AidyCOS.png"' "${grub}" \
-     && sudo grep -qE '^GRUB_GFXMODE=auto$' "${grub}" \
+     && sudo grep -qF "GRUB_GFXMODE=\"${gfxmode}\"" "${grub}" \
      && sudo grep -qE '^GRUB_GFXPAYLOAD_LINUX=keep$' "${grub}" \
+     && sudo grep -qE '^GRUB_TERMINAL_OUTPUT=gfxterm$' "${grub}" \
      && sudo grep -qE '^GRUB_CMDLINE_LINUX_DEFAULT=.*quiet' "${grub}" \
      && sudo grep -qE '^GRUB_CMDLINE_LINUX_DEFAULT=.*splash' "${grub}" \
      && sudo grep -qE '^GRUB_CMDLINE_LINUX_DEFAULT=.*loglevel=3' "${grub}" \
@@ -511,20 +519,22 @@ apply_grub_profile() {
   fi
   sudo cp -a "${grub}" "${grub}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
   tmp="$(mktemp)"
-  sudo awk '
-    BEGIN { timeout=0; style=0; background=0; gfxmode=0; payload=0 }
+  sudo awk -v gfxmode_value="${gfxmode}" '
+    BEGIN { timeout=0; style=0; background=0; gfxmode=0; payload=0; terminal=0 }
     /^GRUB_TIMEOUT=/ { print "GRUB_TIMEOUT=0"; timeout=1; next }
     /^GRUB_TIMEOUT_STYLE=/ { print "GRUB_TIMEOUT_STYLE=hidden"; style=1; next }
     /^GRUB_BACKGROUND=/ { print "GRUB_BACKGROUND=\"/boot/grub/AidyCOS.png\""; background=1; next }
-    /^GRUB_GFXMODE=/ { print "GRUB_GFXMODE=auto"; gfxmode=1; next }
+    /^GRUB_GFXMODE=/ { print "GRUB_GFXMODE=\"" gfxmode_value "\""; gfxmode=1; next }
     /^GRUB_GFXPAYLOAD_LINUX=/ { print "GRUB_GFXPAYLOAD_LINUX=keep"; payload=1; next }
+    /^GRUB_TERMINAL_OUTPUT=/ { print "GRUB_TERMINAL_OUTPUT=gfxterm"; terminal=1; next }
     { print }
     END {
       if (!timeout) print "GRUB_TIMEOUT=0"
       if (!style) print "GRUB_TIMEOUT_STYLE=hidden"
       if (!background) print "GRUB_BACKGROUND=\"/boot/grub/AidyCOS.png\""
-      if (!gfxmode) print "GRUB_GFXMODE=auto"
+      if (!gfxmode) print "GRUB_GFXMODE=\"" gfxmode_value "\""
       if (!payload) print "GRUB_GFXPAYLOAD_LINUX=keep"
+      if (!terminal) print "GRUB_TERMINAL_OUTPUT=gfxterm"
     }
   ' "${grub}" >"${tmp}"
   sudo install -m 0644 "${tmp}" "${grub}"
@@ -634,7 +644,7 @@ configure_login() {
       echo "SDDM usa autenticación por contraseña sin espera de huella."
     fi
   fi
-  echo "SDDM usa el tema AidyCOS con el logo y NumLock activo."
+  echo "SDDM usa el tema AidyCOS con logo en cada pantalla y NumLock activo."
 }
 configure_login
 
@@ -645,7 +655,7 @@ systemctl --user enable --now aidycos-update-check.timer >/dev/null 2>&1 || true
 cat <<EOF
 
 AidyCOS quedó aplicado sobre Debian 13.
-GRUB queda oculto con espera breve; Plymouth muestra el logo AidyCOS y SDDM presenta la pantalla de acceso personalizada.
+GRUB queda oculto en modo gráfico (con resoluciones de respaldo; prioriza el monitor externo si estaba conectado al aplicar el perfil). Plymouth muestra solo el logo AidyCOS y SDDM lo replica en cada pantalla de acceso.
 En SDDM selecciona la sesión Hyprland la primera vez; luego se recordará. NumLock queda activo en SDDM y Hyprland. Si se modificó tu configuración de Hyprland, revisa el respaldo indicado arriba.
 EOF
 

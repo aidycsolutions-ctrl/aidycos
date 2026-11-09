@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""Pick a GRUB_GFXMODE list that prefers an external display when present.
+
+Prints a comma-separated mode list ending with auto. Does not disable panels:
+laptop-only boots stay usable after the external monitor is unplugged.
+"""
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+DRM_ROOT = Path("/sys/class/drm")
+INTERNAL_TOKENS = ("edp", "lvds", "dsi")
+FALLBACKS = (
+    "1920x1080x32",
+    "1680x1050x32",
+    "1600x900x32",
+    "1440x900x32",
+    "1366x768x32",
+    "1280x800x32",
+    "1280x720x32",
+    "1024x768x32",
+)
+MODE_RE = re.compile(r"^(\d+)x(\d+)")
+
+
+def connector_kind(name: str) -> str:
+    lowered = name.lower()
+    if any(token in lowered for token in INTERNAL_TOKENS):
+        return "internal"
+    if any(token in lowered for token in ("hdmi", "dp-", "displayport", "dvi", "vga", "typec", "usb-c")):
+        return "external"
+    return "other"
+
+
+def first_mode(connector: Path) -> str | None:
+    modes_path = connector / "modes"
+    if not modes_path.is_file():
+        return None
+    try:
+        lines = modes_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        match = MODE_RE.match(line.strip())
+        if match:
+            return f"{match.group(1)}x{match.group(2)}x32"
+    return None
+
+
+def collect_modes() -> list[str]:
+    preferred: list[str] = []
+    secondary: list[str] = []
+    if not DRM_ROOT.is_dir():
+        return []
+    for entry in sorted(DRM_ROOT.iterdir()):
+        if "-" not in entry.name:
+            continue
+        status_path = entry / "status"
+        if not status_path.is_file():
+            continue
+        try:
+            status = status_path.read_text(encoding="utf-8", errors="ignore").strip().lower()
+        except OSError:
+            continue
+        if status != "connected":
+            continue
+        mode = first_mode(entry)
+        if not mode:
+            continue
+        kind = connector_kind(entry.name)
+        if kind == "external":
+            preferred.append(mode)
+        else:
+            secondary.append(mode)
+    return preferred + secondary
+
+
+def build_gfxmode() -> str:
+    ordered: list[str] = []
+    for mode in collect_modes() + list(FALLBACKS):
+        if mode not in ordered:
+            ordered.append(mode)
+    ordered.append("auto")
+    return ",".join(ordered)
+
+
+def main() -> int:
+    sys.stdout.write(build_gfxmode() + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
