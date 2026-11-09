@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-import secrets
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .paths import config_path
+
+
+def default_team_secret(team_id: str) -> str:
+    """Stable local code derived from the group name.
+
+    Two fresh installs that pick the same group name (and leave the code
+    blank) will find each other without copying a random secret.
+    """
+    digest = hashlib.sha256(f"aidylink-v1:{(team_id or 'AidyCOS').strip()}".encode("utf-8")).digest()
+    return digest.hex()[:24]
 
 
 @dataclass
@@ -95,13 +105,18 @@ def init_config(
     path: Path | None = None,
 ) -> LinkConfig:
     existing = load_config(path)
-    secret = (team_secret or "").strip() or (existing.team_secret if existing else "") or secrets.token_urlsafe(24)
+    team = (team_id or "").strip() or "AidyCOS"
+    secret = (
+        (team_secret or "").strip()
+        or (existing.team_secret if existing else "")
+        or default_team_secret(team)
+    )
     node_id = existing.node_id if existing else str(uuid.uuid4())
     cloud = existing.cloud if existing else CloudConfig()
     cfg = LinkConfig(
         node_id=node_id,
         display_name=display_name.strip() or "AidyC-OS",
-        team_id=team_id.strip() or "default",
+        team_id=team,
         team_secret=secret,
         cloud=cloud,
     )

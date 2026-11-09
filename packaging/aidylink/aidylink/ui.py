@@ -14,7 +14,7 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk, Pango  # noqa: E402
 
-from .config import init_config, load_config
+from .config import default_team_secret, init_config, load_config, save_config
 from .daemon import control_request
 from .native_auth import start_google_login
 from .paths import control_socket_path
@@ -164,6 +164,7 @@ class AidylinkWindow(Gtk.Window):
         self._seen_ids: set[str] = set()
         self._status_ok = False
         self._standalone = standalone
+        self._mismatches: list[dict[str, Any]] = []
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.add(root)
@@ -178,6 +179,9 @@ class AidylinkWindow(Gtk.Window):
         self.refresh_btn = Gtk.Button(label="Actualizar")
         self.refresh_btn.connect("clicked", lambda *_: self.refresh_peers())
         title_row.pack_start(self.refresh_btn, False, False, 0)
+        self.group_btn = Gtk.Button(label="Grupo local")
+        self.group_btn.connect("clicked", lambda *_: self.open_group_dialog())
+        title_row.pack_start(self.group_btn, False, False, 0)
         cfg = load_config()
         self.google_btn = Gtk.Button(label="Cuenta conectada" if cfg and cfg.cloud.enabled else "Iniciar sesión con Google")
         self.google_btn.connect("clicked", lambda *_: self.open_cloud_dialog())
@@ -255,7 +259,17 @@ class AidylinkWindow(Gtk.Window):
         if not resp.get("ok"):
             self._set_status(resp.get("error") or "daemon error", ok=False)
             return
-        self._set_status("Conectado · buscando equipos cercanos")
+        team = str(resp.get("team_id") or "")
+        peers = int(resp.get("peers") or 0)
+        mismatches = int(resp.get("mismatches") or 0)
+        if peers:
+            self._set_status(f"Conectado · {peers} equipo(s) · grupo {team}")
+        elif mismatches:
+            self._set_status(
+                f"Conectado · hay AidyLink cerca pero el grupo/código no coincide · grupo {team}"
+            )
+        else:
+            self._set_status(f"Conectado · buscando equipos cercanos · grupo {team}")
 
     def refresh_peers(self, silent: bool = False) -> None:
         selected_id = str((self._selected_peer_data or {}).get("node_id") or "")
@@ -267,7 +281,9 @@ class AidylinkWindow(Gtk.Window):
                 self.peer_empty.set_text("No se pudo encontrar AidyLink en esta red.")
             return
         peers = resp.get("peers") or []
+        mismatches = resp.get("mismatches") or []
         self._peers = peers if isinstance(peers, list) else []
+        self._mismatches = mismatches if isinstance(mismatches, list) else []
         self._set_peer_cards(self._peers, selected_id=selected_id)
 
     def _set_peer_cards(self, peers: list[dict[str, Any]], *, selected_id: str = "") -> None:
@@ -275,10 +291,22 @@ class AidylinkWindow(Gtk.Window):
             self.peer_cards.remove(child)
         self._selected_peer_data = None
         self.peer_empty.set_visible(not peers)
-        self.peer_empty.set_text(
-            "Aún no hay computadores disponibles. Revisa que ambos estén en la misma red, tengan AidyLink abierto y usen el mismo código local."
-            if not peers else ""
-        )
+        if peers:
+            empty_text = ""
+        elif self._mismatches:
+            hosts = ", ".join(
+                str(item.get("host") or "?") for item in self._mismatches[:3]
+            )
+            empty_text = (
+                f"Se encontró AidyLink en {hosts}, pero el grupo o el código local no coinciden. "
+                "Abre «Grupo local» y usa el mismo nombre de grupo y código en ambos PCs."
+            )
+        else:
+            empty_text = (
+                "Aún no hay computadores disponibles. Revisa que ambos estén en la misma red, "
+                "tengan AidyLink abierto y usen el mismo código local."
+            )
+        self.peer_empty.set_text(empty_text)
         for peer in peers:
             card = Gtk.Button()
             card.set_relief(Gtk.ReliefStyle.NONE)
@@ -379,6 +407,94 @@ class AidylinkWindow(Gtk.Window):
 
     def _selected_peer(self) -> dict[str, Any] | None:
         return self._selected_peer_data
+
+    def open_group_dialog(self) -> None:
+        cfg = load_config()
+        if cfg is None:
+            self._append_line("⚠ No se encontró la configuración de AidyLink.")
+            return
+        dialog = Gtk.Dialog(title="Grupo local de AidyLink", transient_for=self, flags=0)
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            "Guardar y reiniciar", Gtk.ResponseType.OK,
+        )
+        dialog.set_default_size(480, 280)
+        box = dialog.get_content_area()
+        box.set_spacing(8)
+        box.set_border_width(12)
+        box.pack_start(
+            Gtk.Label(
+                label="Todos los PCs del mismo local deben compartir el mismo grupo y código. "
+                "Si otro AidyLink aparece en la red pero no en la lista, casi siempre es por esto.",
+                xalign=0,
+                wrap=True,
+            ),
+            False,
+            False,
+            0,
+        )
+        name_e = Gtk.Entry()
+        name_e.set_text(cfg.display_name)
+        team_e = Gtk.Entry()
+        team_e.set_text(cfg.team_id)
+        secret_e = Gtk.Entry()
+        secret_e.set_text(cfg.team_secret)
+        secret_e.set_visibility(True)
+        for label, entry in (
+            ("Nombre de este computador", name_e),
+            ("Nombre del grupo", team_e),
+            ("Código compartido", secret_e),
+        ):
+            box.pack_start(Gtk.Label(label=label, xalign=0), False, False, 0)
+            box.pack_start(entry, False, False, 0)
+        if self._mismatches:
+            hosts = ", ".join(str(item.get("host") or "?") for item in self._mismatches[:3])
+            box.pack_start(
+                Gtk.Label(
+                    label=f"Detectado en la red sin coincidir: {hosts}",
+                    xalign=0,
+                    wrap=True,
+                ),
+                False,
+                False,
+                0,
+            )
+        hint = Gtk.Label(
+            label=(
+                "En el otro PC ejecuta:\n"
+                f"aidylink init --name SU_NOMBRE --team {cfg.team_id} --team-secret {cfg.team_secret}\n"
+                "systemctl --user restart aidylink"
+            ),
+            xalign=0,
+            selectable=True,
+        )
+        hint.set_line_wrap(True)
+        box.pack_start(hint, False, False, 0)
+        dialog.show_all()
+        response = dialog.run()
+        if response != Gtk.ResponseType.OK:
+            dialog.destroy()
+            return
+        name = (name_e.get_text() or "").strip() or cfg.display_name
+        team = (team_e.get_text() or "").strip() or "AidyCOS"
+        secret = (secret_e.get_text() or "").strip() or default_team_secret(team)
+        dialog.destroy()
+        cfg.display_name = name
+        cfg.team_id = team
+        cfg.team_secret = secret
+        save_config(cfg)
+        self._append_line(f"✓ Grupo local guardado: {team}. Reiniciando AidyLink…")
+        try:
+            subprocess.run(
+                ["systemctl", "--user", "restart", "aidylink.service"],
+                check=False,
+                timeout=8,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+        GLib.timeout_add_seconds(1, lambda: (self.refresh_status() or self.refresh_peers() or False) or False)
 
     def open_cloud_dialog(self) -> None:
         cfg = load_config()

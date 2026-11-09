@@ -137,6 +137,7 @@ class AidylinkDaemon:
         if cmd == "ping":
             return {"ok": True, "pong": True}
         if cmd == "status":
+            mismatches = self.discovery.list_mismatches()
             return {
                 "ok": True,
                 "node_id": self.cfg.node_id,
@@ -145,6 +146,7 @@ class AidylinkDaemon:
                 "lan_ip": self.discovery.lan_ip,
                 "cloud_enabled": self.cloud.enabled,
                 "peers": len(self.discovery.list_online()),
+                "mismatches": len(mismatches),
             }
         if cmd == "peers":
             peers = [
@@ -157,7 +159,11 @@ class AidylinkDaemon:
                 }
                 for p in self.discovery.list_online()
             ]
-            return {"ok": True, "peers": peers}
+            mismatches = [
+                {"host": h.host, "reason": h.reason}
+                for h in self.discovery.list_mismatches()
+            ]
+            return {"ok": True, "peers": peers, "mismatches": mismatches}
         if cmd == "send":
             target = str(req.get("to") or "")
             text = str(req.get("text") or "")

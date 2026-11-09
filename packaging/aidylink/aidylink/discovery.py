@@ -18,9 +18,10 @@ LOGGER = logging.getLogger(__name__)
 
 PEER_TTL_S = 15.0
 BEACON_INTERVAL_S = 2.5
-TCP_SCAN_INTERVAL_S = 8.0
-TCP_CONNECT_TIMEOUT_S = 0.35
-TCP_SCAN_CONCURRENCY = 48
+TCP_SCAN_INTERVAL_S = 6.0
+TCP_CONNECT_TIMEOUT_S = 1.2
+TCP_SCAN_CONCURRENCY = 64
+MISMATCH_TTL_S = 45.0
 
 
 @dataclass
@@ -38,6 +39,13 @@ class Peer:
         return (time.time() - self.last_seen) <= PEER_TTL_S
 
 
+@dataclass
+class MismatchHint:
+    host: str
+    reason: str
+    last_seen: float
+
+
 class DiscoveryService:
     def __init__(
         self,
@@ -48,6 +56,7 @@ class DiscoveryService:
         self.cfg = cfg
         self.on_peer = on_peer
         self.peers: dict[str, Peer] = {}
+        self.mismatches: dict[str, MismatchHint] = {}
         self._transport: asyncio.DatagramTransport | None = None
         self._beacon_task: asyncio.Task | None = None
         self._tcp_task: asyncio.Task | None = None
@@ -59,6 +68,14 @@ class DiscoveryService:
             peer
             for peer in self.peers.values()
             if (now - peer.last_seen) <= PEER_TTL_S and peer.node_id != self.cfg.node_id
+        ]
+
+    def list_mismatches(self) -> list[MismatchHint]:
+        now = time.time()
+        return [
+            hint
+            for hint in self.mismatches.values()
+            if (now - hint.last_seen) <= MISMATCH_TTL_S
         ]
 
     def find(self, query: str) -> Peer | None:
@@ -118,9 +135,19 @@ class DiscoveryService:
             ),
         )
         self.peers[node_id] = peer
+        self.mismatches.pop(remote_host, None)
+        self.mismatches.pop(peer.host, None)
         if self.on_peer:
             self.on_peer(peer)
         return peer
+
+    def _note_mismatch(self, host: str, reason: str) -> None:
+        host = (host or "").strip()
+        if not host or host == self.lan_ip:
+            return
+        self.mismatches[host] = MismatchHint(
+            host=host, reason=reason, last_seen=time.time()
+        )
 
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
@@ -195,14 +222,17 @@ class DiscoveryService:
             return
         if body.get("type") != "presence":
             return
+        if body.get("team_id") != self.cfg.team_id:
+            self._note_mismatch(host, "team")
+            return
         if not verify_payload(self.cfg.team_secret, body, str(sig or "")):
             LOGGER.debug("ignored presence with bad signature from %s", host)
+            self._note_mismatch(host, "sig")
             return
         self.accept_presence(body, host)
 
     async def _tcp_scan_loop(self) -> None:
-        # Let the LAN TCP server bind before the first probe wave.
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(0.8)
         while True:
             try:
                 await self._scan_subnet_tcp()
@@ -212,22 +242,42 @@ class DiscoveryService:
                 LOGGER.debug("tcp discovery scan failed: %s", exc)
             await asyncio.sleep(TCP_SCAN_INTERVAL_S)
 
+    async def _port_open(self, host: str) -> bool:
+        try:
+            _reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, self.cfg.message_port),
+                timeout=TCP_CONNECT_TIMEOUT_S,
+            )
+        except (OSError, asyncio.TimeoutError):
+            return False
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+        return True
+
     async def _scan_subnet_tcp(self) -> None:
         self.lan_ip = detect_lan_ip()
         targets = list(lan_subnet_hosts(exclude=self.lan_ip))
-        # Keep probing recently seen peers first even if outside the scan set.
         for peer in self.list_online():
             if peer.host and peer.host not in targets and peer.host != self.lan_ip:
                 targets.insert(0, peer.host)
+        for hint in self.list_mismatches():
+            if hint.host not in targets:
+                targets.insert(0, hint.host)
         if not targets:
             return
+
         sem = asyncio.Semaphore(TCP_SCAN_CONCURRENCY)
 
-        async def _one(host: str) -> None:
+        async def _probe_if_open(host: str) -> None:
             async with sem:
+                if not await self._port_open(host):
+                    return
                 await self.probe_host_tcp(host)
 
-        await asyncio.gather(*(_one(host) for host in targets))
+        await asyncio.gather(*(_probe_if_open(host) for host in targets))
 
     async def probe_host_tcp(self, host: str) -> Peer | None:
         host = (host or "").strip()
@@ -247,7 +297,7 @@ class DiscoveryService:
         try:
             writer.write(line)
             await writer.drain()
-            raw = await asyncio.wait_for(reader.readline(), timeout=1.5)
+            raw = await asyncio.wait_for(reader.readline(), timeout=2.0)
         except (OSError, asyncio.TimeoutError):
             return None
         finally:
@@ -262,7 +312,21 @@ class DiscoveryService:
             reply = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
             return None
-        if not isinstance(reply, dict) or not reply.get("ok"):
+        if not isinstance(reply, dict):
+            return None
+        if not reply.get("ok"):
+            err = str(reply.get("error") or "unknown")
+            # "type" means team+sig matched on an older daemon without hello support.
+            # UDP beacons should still discover it once codes match.
+            if err in ("team", "sig"):
+                self._note_mismatch(host, err)
+                LOGGER.info(
+                    "aidylink at %s rejected hello (%s) — group/code mismatch",
+                    host,
+                    err,
+                )
+            elif err == "type":
+                self._note_mismatch(host, "old")
             return None
         reply_body = reply.get("body")
         reply_sig = reply.get("sig")
@@ -270,13 +334,12 @@ class DiscoveryService:
             return None
         if not verify_payload(self.cfg.team_secret, reply_body, str(reply_sig or "")):
             LOGGER.debug("ignored tcp presence reply with bad signature from %s", host)
+            self._note_mismatch(host, "sig")
             return None
-        # Prefer the reachable TCP endpoint we actually used.
         if not reply_body.get("host"):
             reply_body = dict(reply_body)
             reply_body["host"] = host
-        elif str(reply_body.get("host")) != host:
-            # Keep announced host, but if it's loopback/unusable keep TCP peer IP.
+        else:
             announced = str(reply_body.get("host") or "")
             if announced.startswith("127.") or announced == "0.0.0.0":
                 reply_body = dict(reply_body)
