@@ -141,46 +141,64 @@ sudo install -m 0644 "${ROOT}/packaging/plymouth/AidyCOS.png" "${SDDM_THEME_DIR}
 
 install_jugoo() {
   local config_home="${XDG_CONFIG_HOME:-${HOME}/.config}"
-  local jugoo_dir="${config_home}/jugoo"
-  local source_file="${config_home}/aidycos/jugoo-source"
+  local jugoo_dir=/opt/aidyc/jugoo
+  local jugoo_source
+  local staging_dir
   local source_dir="${AIDYCOS_JUGOO_SOURCE:-}"
-  if [[ -z "${source_dir}" && -r "${source_file}" ]]; then
-    IFS= read -r source_dir <"${source_file}" || true
-  fi
 
   if [[ -n "${source_dir}" ]]; then
     if [[ ! -d "${source_dir}/.git" || ! -f "${source_dir}/shell/__main__.py" ]]; then
       echo "El checkout configurado de Jugoo no está disponible o no es válido: ${source_dir}" >&2
-      echo "AidyCOS no usará la copia local de ~/.config/jugoo como reemplazo." >&2
+      echo "AidyCOS conserva ~/.config/jugoo y no la usará como reemplazo." >&2
       return 1
     fi
     source_dir="$(cd "${source_dir}" && pwd -P)"
-    install -D -m 0644 /dev/null "${source_file}"
-    printf '%s\n' "${source_dir}" >"${source_file}"
-    jugoo_dir="${source_dir}"
-    echo "AidyCOS usará el checkout de desarrollo de Jugoo: ${jugoo_dir}"
-    echo "Se omite el overlay automático para no modificar el checkout de desarrollo."
+    jugoo_source="${source_dir}"
+    echo "AidyCOS usará este checkout solo para esta ejecución: ${jugoo_source}"
+    echo "Se conserva ~/.config/jugoo; el overlay no modifica el checkout seleccionado."
+    sudo install -d -m 0755 /opt/aidyc
+    sudo python3 "${ROOT}/scripts/deploy-jugoo.py" "${jugoo_source}" "${jugoo_dir}"
   else
     mkdir -p "${config_home}"
-    if [[ ! -e "${jugoo_dir}" ]]; then
-      git clone --depth 1 https://github.com/aidycsolutions-ctrl/jugoo.git "${jugoo_dir}"
-    elif [[ ! -d "${jugoo_dir}/.git" || ! -f "${jugoo_dir}/shell/__main__.py" ]]; then
-      echo "${jugoo_dir} existe, pero no parece ser un checkout compatible de Jugoo. Se conserva; revisa esa ruta." >&2
-      return 1
-    else
-      if [[ -z "$(git -C "${jugoo_dir}" status --porcelain)" ]]; then
-        git -C "${jugoo_dir}" pull --ff-only
-      else
-        echo "Jugoo tiene cambios locales; se conservarán y no se actualizará automáticamente." >&2
-      fi
+    if [[ -r "${config_home}/aidycos/jugoo-source" ]]; then
+      echo "Se conserva ${config_home}/aidycos/jugoo-source, pero ya no selecciona el código de Jugoo en actualizaciones."
     fi
-    python3 "${ROOT}/packaging/jugoo-overlay/install.py" "${jugoo_dir}"
+    staging_dir="$(mktemp -d "${TMPDIR:-/tmp}/aidycos-jugoo.XXXXXX")"
+    trap 'rm -rf "${staging_dir}"' RETURN
+    jugoo_source="${staging_dir}/jugoo"
+    git clone --depth 1 https://github.com/aidycsolutions-ctrl/jugoo.git "${jugoo_source}"
+    python3 "${ROOT}/packaging/jugoo-overlay/install.py" "${jugoo_source}"
+    sudo install -d -m 0755 /opt/aidyc
+    sudo python3 "${ROOT}/scripts/deploy-jugoo.py" "${jugoo_source}" "${jugoo_dir}"
+    trap - RETURN
+    rm -rf "${staging_dir}"
   fi
+  sudo install -D -m 0755 "${ROOT}/packaging/jugoo-launcher" /usr/local/bin/jugoo
   install -D -m 0644 "${ROOT}/packaging/jugoo-overlay/aidyc.desktop" "${HOME}/.local/share/applications/aidyc.desktop"
   if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "${HOME}/.local/share/applications" >/dev/null 2>&1 || true
   fi
   (cd "${jugoo_dir}" && python3 -m shell --install)
+  # shell --install may create a user-local launcher and service. Keep the
+  # launcher as a compatibility shim, and override the unit's command so both
+  # entry points always execute the same system-managed checkout.
+  install -d "${HOME}/.local/bin"
+  if [[ -e "${HOME}/.local/bin/jugoo" || -L "${HOME}/.local/bin/jugoo" ]]; then
+    if ! cmp -s "${ROOT}/packaging/jugoo-launcher" "${HOME}/.local/bin/jugoo"; then
+      backup="${HOME}/.local/bin/jugoo.aidycos-backup"
+      if [[ ! -e "${backup}" && ! -L "${backup}" ]]; then
+        cp -a "${HOME}/.local/bin/jugoo" "${backup}"
+      fi
+      install -m 0755 "${ROOT}/packaging/jugoo-launcher" "${HOME}/.local/bin/jugoo"
+    fi
+  else
+    install -m 0755 "${ROOT}/packaging/jugoo-launcher" "${HOME}/.local/bin/jugoo"
+  fi
+  local service_dir="${config_home}/systemd/user/jugoo-task-watcher.service.d"
+  install -D -m 0644 "${ROOT}/packaging/systemd/jugoo-task-watcher.service.d/aidycos.conf" \
+    "${service_dir}/aidycos.conf"
+  systemctl --user daemon-reload >/dev/null 2>&1 || true
+  systemctl --user try-restart jugoo-task-watcher.service >/dev/null 2>&1 || true
   if [[ -f "${jugoo_dir}/scripts/setup-hyprbars.sh" ]]; then
     if ! bash "${jugoo_dir}/scripts/setup-hyprbars.sh"; then
       echo "No se pudieron compilar los botones de título de Jugoo; se continúa sin cargar una configuración inexistente." >&2
@@ -379,7 +397,7 @@ general {
 decoration {
     rounding = 8
 }
-exec-once = ~/.local/bin/jugoo
+exec-once = /usr/local/bin/jugoo
 bind = SUPER, Q, killactive
 bind = SUPER, RETURN, exec, foot
 bind = SUPER, M, exit
@@ -403,10 +421,19 @@ else
       cat >>"${HYPR_CONF}" <<'EOF'
 
 # AidyCOS: iniciar Jugoo al entrar en Hyprland.
-exec-once = ~/.local/bin/jugoo
+exec-once = /usr/local/bin/jugoo
 EOF
     fi
     echo "Se agregaron los ajustes AidyCOS; respaldo previo: ${backup}"
+  fi
+fi
+
+# Upgrade older profiles that launched the generated ~/.local/bin copy. The
+# compatibility shim uses the same system entry point as the user service.
+if grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*(~/.local/bin/jugoo|/usr/local/bin/jugoo|(^|[[:space:]])jugoo([[:space:]]|$))' "${HYPR_CONF}"; then
+  if grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*~/.local/bin/jugoo' "${HYPR_CONF}"; then
+    cp -a "${HYPR_CONF}" "${HYPR_CONF}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
+    sed -i -E 's|exec-once([[:space:]]*=[[:space:]]*)~/.local/bin/jugoo|exec-once\1/usr/local/bin/jugoo|' "${HYPR_CONF}"
   fi
 fi
 

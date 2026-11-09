@@ -6,19 +6,14 @@ import socket
 import struct
 
 
-def lan_broadcast_addresses() -> tuple[str, ...]:
-    """Return broadcast addresses for active IPv4 interfaces.
-
-    The limited broadcast (255.255.255.255) is routed using the system's
-    preferred interface. Directed subnet broadcasts also reach peers when
-    the machine has multiple LAN interfaces or a less common route setup.
-    """
+def _iter_ipv4_ifaces() -> list[tuple[str, int, int]]:
+    """Return (ifname, ip_int, mask_int) for up broadcast-capable IPv4 NICs."""
     try:
         import fcntl
     except ImportError:
-        return ("255.255.255.255",)
+        return []
 
-    addresses: set[str] = {"255.255.255.255"}
+    out: list[tuple[str, int, int]] = []
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         for _, name in socket.if_nameindex():
             ifname = name.encode("utf-8")[:15]
@@ -30,17 +25,54 @@ def lan_broadcast_addresses() -> tuple[str, ...]:
                     continue
                 raw_addr = fcntl.ioctl(sock.fileno(), 0x8915, request)  # SIOCGIFADDR
                 raw_mask = fcntl.ioctl(sock.fileno(), 0x891B, request)  # SIOCGIFNETMASK
-                ip_bytes = raw_addr[20:24]
-                mask_bytes = raw_mask[20:24]
-                ip = int.from_bytes(ip_bytes, "big")
-                mask = int.from_bytes(mask_bytes, "big")
+                ip = int.from_bytes(raw_addr[20:24], "big")
+                mask = int.from_bytes(raw_mask[20:24], "big")
                 if ip >> 24 == 127 or mask == 0:
                     continue
-                broadcast = (ip & mask) | (0xFFFFFFFF ^ mask)
-                addresses.add(socket.inet_ntoa(broadcast.to_bytes(4, "big")))
+                out.append((name, ip, mask))
             except OSError:
                 continue
+    return out
+
+
+def lan_broadcast_addresses() -> tuple[str, ...]:
+    """Return broadcast addresses for active IPv4 interfaces.
+
+    The limited broadcast (255.255.255.255) is routed using the system's
+    preferred interface. Directed subnet broadcasts also reach peers when
+    the machine has multiple LAN interfaces or a less common route setup.
+    """
+    addresses: set[str] = {"255.255.255.255"}
+    for _, ip, mask in _iter_ipv4_ifaces():
+        broadcast = (ip & mask) | (0xFFFFFFFF ^ mask)
+        addresses.add(socket.inet_ntoa(broadcast.to_bytes(4, "big")))
     return tuple(sorted(addresses)) or ("255.255.255.255",)
+
+
+def lan_subnet_hosts(*, exclude: str | None = None, max_hosts: int = 254) -> tuple[str, ...]:
+    """Host IPs on local /24+ LAN segments for TCP presence fallback.
+
+    Skips networks wider than /24 to avoid huge scans. ``exclude`` (usually
+    this machine's LAN IP) is omitted from the result.
+    """
+    skip = (exclude or "").strip()
+    hosts: list[str] = []
+    seen: set[str] = set()
+    for _, ip, mask in _iter_ipv4_ifaces():
+        prefix = bin(mask).count("1")
+        if prefix < 24:
+            continue
+        network = ip & mask
+        broadcast = network | (0xFFFFFFFF ^ mask)
+        for value in range(network + 1, broadcast):
+            host = socket.inet_ntoa(value.to_bytes(4, "big"))
+            if host == skip or host in seen:
+                continue
+            seen.add(host)
+            hosts.append(host)
+            if len(hosts) >= max_hosts:
+                return tuple(hosts)
+    return tuple(hosts)
 
 # Debe coincidir con hostfwd en probar-qemu.sh (tcp::47834-:47833).
 QEMU_HOSTFWD_PORT = 47834

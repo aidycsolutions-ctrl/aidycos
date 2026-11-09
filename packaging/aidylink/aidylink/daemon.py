@@ -26,7 +26,12 @@ class AidylinkDaemon:
     def __init__(self, cfg: LinkConfig) -> None:
         self.cfg = cfg
         self.discovery = DiscoveryService(cfg)
-        self.lan = LanTransport(cfg, on_message=self._on_lan_message)
+        self.lan = LanTransport(
+            cfg,
+            on_message=self._on_lan_message,
+            on_presence=self.discovery.accept_presence,
+            presence_body=self.discovery.presence_body,
+        )
         self.cloud = AidyChatBridge(cfg)
         self.router = MessageRouter(cfg, self.discovery, self.lan, self.cloud)
         self._control_server: asyncio.AbstractServer | None = None

@@ -1,11 +1,11 @@
-"""LAN TCP JSON-lines transport for signed chat envelopes."""
+"""LAN TCP JSON-lines transport for signed chat envelopes + presence hello."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-from typing import Callable
+from typing import Any, Callable
 
 from . import PROTOCOL
 from .config import LinkConfig
@@ -21,9 +21,13 @@ class LanTransport:
         cfg: LinkConfig,
         *,
         on_message: Callable[[LinkMessage], None] | None = None,
+        on_presence: Callable[[dict[str, Any], str], None] | None = None,
+        presence_body: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self.cfg = cfg
         self.on_message = on_message
+        self.on_presence = on_presence
+        self.presence_body = presence_body
         self._server: asyncio.AbstractServer | None = None
 
     async def start(self) -> None:
@@ -66,12 +70,38 @@ class LanTransport:
             except Exception:
                 pass
 
+    def _reply_presence(self) -> dict[str, Any]:
+        if self.presence_body is not None:
+            body = dict(self.presence_body())
+        else:
+            body = {
+                "protocol": PROTOCOL,
+                "type": "presence",
+                "node_id": self.cfg.node_id,
+                "display_name": self.cfg.display_name,
+                "team_id": self.cfg.team_id,
+                "message_port": self.cfg.message_port,
+                "host": "0.0.0.0",
+                "ts": 0,
+            }
+        body["type"] = "presence"
+        body["protocol"] = PROTOCOL
+        return {
+            "ok": True,
+            "body": body,
+            "sig": sign_payload(self.cfg.team_secret, body),
+        }
+
     async def _handle_client(
         self,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
+        peername = ""
         try:
+            addr = writer.get_extra_info("peername")
+            if isinstance(addr, tuple) and addr:
+                peername = str(addr[0])
             raw = await asyncio.wait_for(reader.readline(), timeout=5.0)
             if not raw:
                 return
@@ -95,7 +125,17 @@ class LanTransport:
                 writer.write(b'{"ok":false,"error":"sig"}\n')
                 await writer.drain()
                 return
-            if body.get("type") != "chat":
+
+            msg_type = str(body.get("type") or "")
+            if msg_type == "presence_hello":
+                if self.on_presence:
+                    self.on_presence(body, peername or str(body.get("host") or ""))
+                reply = self._reply_presence()
+                writer.write((json.dumps(reply, ensure_ascii=False) + "\n").encode("utf-8"))
+                await writer.drain()
+                return
+
+            if msg_type != "chat":
                 writer.write(b'{"ok":false,"error":"type"}\n')
                 await writer.drain()
                 return

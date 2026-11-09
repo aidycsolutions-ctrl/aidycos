@@ -75,8 +75,11 @@ aidylink send <peer-id|nombre> "¿Libre en caja?"
 
 | Puerto | Protocolo |
 |--------|-----------|
-| `47832/udp` | Beacons de presencia |
-| `47833/tcp` | Mensajes (JSON lines + team HMAC) |
+| `47832/udp` | Beacons de presencia (broadcast) |
+| `47833/tcp` | Mensajes + hello de presencia (JSON lines + team HMAC) |
+
+Si el Wi‑Fi bloquea broadcasts entre clientes, AidyLink también escanea la
+subred por `47833/tcp` y hace un handshake `presence_hello` firmado.
 
 ## Conectar equipos de la red local
 

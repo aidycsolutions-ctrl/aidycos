@@ -68,14 +68,14 @@ curl -fsSL https://raw.githubusercontent.com/aidycsolutions-ctrl/aidycos/main/in
 
 #### Usar el checkout de Jugoo en desarrollo
 
-Para que una instalación de prueba ejecute directamente un checkout local de Jugoo, sin clonar ni actualizar otra copia en `~/.config/jugoo`, indica su ruta al aplicar el perfil:
+Para probar un checkout local de Jugoo, indica su ruta al aplicar el perfil:
 
 ```sh
 AIDYCOS_JUGOO_SOURCE="$HOME/Documentos/Proyectos_AidyC/jugoo" \
   ./scripts/install-debian-profile.sh --no-reboot
 ```
 
-AidyCOS guarda esa ruta en `~/.config/aidycos/jugoo-source` para las siguientes actualizaciones. El lanzador de Jugoo apuntará al checkout indicado y AidyCOS no aplicará su overlay modificando ese código. Si el checkout ya no está disponible, la instalación se detiene en vez de volver silenciosamente a la copia de `~/.config/jugoo`. Para usar esta opción con el actualizador remoto, primero publica esta versión de AidyCOS. Para volver al modo normal de instalación, elimina ese archivo de selección y vuelve a aplicar el perfil.
+La ruta se usa solo durante esa ejecución y el checkout seleccionado se copia a `/opt/aidyc/jugoo`; los lanzadores de Hyprland y del servicio de tareas usan esa misma copia. No modifica el checkout de desarrollo ni borra la copia histórica de `~/.config/jugoo`. En el modo normal, cada actualización clona la fuente oficial `aidycsolutions-ctrl/jugoo`, aplica el overlay de AidyCOS y la instala en `/opt/aidyc/jugoo`. Si ya existe una instalación de Jugoo no gestionada en esa ruta, se conserva como `/opt/aidyc/jugoo.aidycos-preserved` en la primera migración. Una selección guardada por versiones anteriores en `~/.config/aidycos/jugoo-source` se conserva como dato, pero ya no desvía futuras actualizaciones de la fuente oficial.
 
 En SDDM elige **Hyprland** como sesión; normalmente quedará recordada para los siguientes inicios. Si las fuentes de APT del equipo están incompletas, AidyCOS agrega archivos dedicados y no reemplaza archivos de terceros.
 
