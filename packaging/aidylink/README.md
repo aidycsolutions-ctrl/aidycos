@@ -28,13 +28,12 @@ acceso en `~/.local/share/applications/aidylink.desktop`.
 
 El instalador de AidyCOS añade **AidyChat** al menú y al escritorio, con icono
 propio. En QEMU / ISO: `sudo ./scripts/actualizar-qemu.sh` copia
-`/opt/aidyc/aidylink`, `/usr/local/bin/aidylink` y el acceso. Atajo Hyprland:
-**Super+C**.
+`/opt/aidyc/aidylink`, `/usr/local/bin/aidylink` y el acceso.
 
-Abrir: icono **AidyChat**, `aidylink ui`, o Super+C. La primera pantalla pide
-solo el nombre visible del computador; después puedes elegir un equipo cercano
-en una tarjeta o iniciar sesión con Google. El inicio de sesión ocurre en el
-navegador del sistema y vuelve automáticamente a AidyLink.
+Abrir: icono **AidyChat** o `aidylink ui`. La primera pantalla pide solo el
+nombre visible del computador; después puedes elegir un equipo cercano en una
+tarjeta o iniciar sesión con Google. El inicio de sesión ocurre en el navegador
+del sistema y vuelve automáticamente a AidyChat.
 
 La ventana puede cerrarse y el daemon continúa consultando mensajes y enviando
 notificaciones del escritorio. Al pulsar **Abrir AidyChat** en una notificación,
