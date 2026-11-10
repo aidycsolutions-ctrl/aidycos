@@ -23,11 +23,13 @@ class LanTransport:
         on_message: Callable[[LinkMessage], None] | None = None,
         on_presence: Callable[[dict[str, Any], str], None] | None = None,
         presence_body: Callable[[], dict[str, Any]] | None = None,
+        on_pair_request: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
     ) -> None:
         self.cfg = cfg
         self.on_message = on_message
         self.on_presence = on_presence
         self.presence_body = presence_body
+        self.on_pair_request = on_pair_request
         self._server: asyncio.AbstractServer | None = None
 
     async def start(self) -> None:
@@ -117,6 +119,21 @@ class LanTransport:
                 writer.write(b'{"ok":false,"error":"bad protocol"}\n')
                 await writer.drain()
                 return
+
+            msg_type = str(body.get("type") or "")
+            # Pairing happens before team/HMAC checks: the whole point is that
+            # the two PCs do not share a secret yet.
+            if msg_type == "pair_request":
+                reply = None
+                if self.on_pair_request is not None:
+                    reply = self.on_pair_request(body)
+                if not reply:
+                    writer.write(b'{"ok":false,"error":"pairing"}\n')
+                else:
+                    writer.write((json.dumps(reply, ensure_ascii=False) + "\n").encode("utf-8"))
+                await writer.drain()
+                return
+
             if body.get("team_id") != self.cfg.team_id:
                 writer.write(b'{"ok":false,"error":"team"}\n')
                 await writer.drain()
@@ -126,7 +143,6 @@ class LanTransport:
                 await writer.drain()
                 return
 
-            msg_type = str(body.get("type") or "")
             if msg_type == "presence_hello":
                 if self.on_presence:
                     self.on_presence(body, peername or str(body.get("host") or ""))

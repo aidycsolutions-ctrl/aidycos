@@ -22,21 +22,21 @@ def start_google_login(
 ) -> None:
     """Open AidyChat's Google login in the default browser and accept its token.
 
-    The short-lived localhost listener only accepts one POST with a random
-    state value. It never binds to the LAN interface.
+    The short-lived localhost listener accepts one GET or POST with a random
+    state value. It never binds to the LAN interface. GET is preferred because
+    browsers often block HTTPS→HTTP form posts to loopback as private-network
+    access, while a top-level redirect to 127.0.0.1 still works.
     """
     state = secrets.token_urlsafe(32)
     completed = threading.Event()
     result: dict[str, str | Exception] = {}
 
     class CallbackHandler(BaseHTTPRequestHandler):
-        def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-            if self.path != "/aidylink-auth" or completed.is_set():
+        def _take_fields(self, fields: dict[str, list[str]]) -> None:
+            if completed.is_set():
                 self.send_error(404)
                 return
             try:
-                length = min(int(self.headers.get("Content-Length", "0")), 8192)
-                fields = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
                 received_state = (fields.get("state") or [""])[0]
                 token = (fields.get("token") or [""])[0].strip()
                 if not secrets.compare_digest(received_state, state) or not token:
@@ -60,13 +60,31 @@ def start_google_login(
                 self.end_headers()
                 self.wfile.write(
                     "<!doctype html><meta charset='utf-8'><title>AidyChat</title>"
-                    "<h2>Sesión iniciada</h2><p>Ya puedes volver a AidyLink.</p>".encode()
+                    "<h2>Sesión iniciada</h2>"
+                    "<p>Ya puedes volver a AidyChat. Esta pestaña se puede cerrar.</p>"
+                    "<script>setTimeout(() => window.close(), 800);</script>".encode()
                 )
                 completed.set()
             except Exception as exc:
                 result["error"] = exc
                 self.send_error(400, "No se pudo validar la sesión de AidyChat")
                 completed.set()
+
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            parsed = urllib.parse.urlparse(self.path)
+            if parsed.path != "/aidylink-auth" or completed.is_set():
+                self.send_error(404)
+                return
+            fields = urllib.parse.parse_qs(parsed.query)
+            self._take_fields(fields)
+
+        def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            if self.path != "/aidylink-auth" or completed.is_set():
+                self.send_error(404)
+                return
+            length = min(int(self.headers.get("Content-Length", "0")), 8192)
+            fields = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
+            self._take_fields(fields)
 
         def log_message(self, *_args: object) -> None:
             return
@@ -89,7 +107,10 @@ def start_google_login(
                 if not completed.is_set():
                     result["error"] = TimeoutError("El inicio de sesión expiró")
             error = result.get("error")
-            on_done(None if isinstance(error, Exception) else str(result.get("username") or "AidyChat"), error)
+            on_done(
+                None if isinstance(error, Exception) else str(result.get("username") or "AidyChat"),
+                error if isinstance(error, Exception) else None,
+            )
         finally:
             server.shutdown()
             server.server_close()

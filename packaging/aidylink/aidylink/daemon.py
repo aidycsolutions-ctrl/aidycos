@@ -16,6 +16,7 @@ from .discovery import DiscoveryService
 from .lan import LanTransport
 from .messages import LinkMessage
 from .notify import notify
+from .pairing import PairingService
 from .paths import control_socket_path, data_dir
 from .router import MessageRouter
 
@@ -26,11 +27,13 @@ class AidylinkDaemon:
     def __init__(self, cfg: LinkConfig) -> None:
         self.cfg = cfg
         self.discovery = DiscoveryService(cfg)
+        self.pairing = PairingService(cfg)
         self.lan = LanTransport(
             cfg,
             on_message=self._on_lan_message,
             on_presence=self.discovery.accept_presence,
             presence_body=self.discovery.presence_body,
+            on_pair_request=self.pairing.handle_request,
         )
         self.cloud = AidyChatBridge(cfg)
         self.router = MessageRouter(cfg, self.discovery, self.lan, self.cloud)
@@ -160,10 +163,37 @@ class AidylinkDaemon:
                 for p in self.discovery.list_online()
             ]
             mismatches = [
-                {"host": h.host, "reason": h.reason}
+                {
+                    "host": h.host,
+                    "reason": h.reason,
+                    "display_name": h.display_name,
+                }
                 for h in self.discovery.list_mismatches()
             ]
             return {"ok": True, "peers": peers, "mismatches": mismatches}
+        if cmd == "pair_host":
+            return self.pairing.start_host()
+        if cmd == "pair_stop":
+            self.pairing.stop()
+            return {"ok": True}
+        if cmd == "pair_status":
+            return self.pairing.status()
+        if cmd == "pair_join":
+            pin = str(req.get("pin") or "").strip()
+            hosts = [h.host for h in self.discovery.list_mismatches()]
+            hosts.extend(p.host for p in self.discovery.list_online())
+            result = await self.pairing.join(pin, hosts=hosts)
+            if result.get("ok"):
+                self.cfg.team_id = str(result["team_id"])
+                self.cfg.team_secret = str(result["team_secret"])
+                save_config(self.cfg)
+                self.discovery.peers.clear()
+                self.discovery.mismatches.clear()
+                notify(
+                    "AidyChat",
+                    f"Emparejado con {result.get('host_name') or 'otro PC'}",
+                )
+            return result
         if cmd == "send":
             target = str(req.get("to") or "")
             text = str(req.get("text") or "")

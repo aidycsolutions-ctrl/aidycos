@@ -272,9 +272,12 @@ install_aidylink() {
   sudo install -m 0644 "${ROOT}/packaging/aidylink/README.md" "${aidylink_dir}/README.md"
   sudo install -m 0755 "${ROOT}/packaging/aidylink/aidylink-wrapper" /usr/local/bin/aidylink
   sudo install -m 0644 "${desktop_entry}" /usr/share/applications/aidychat.desktop
+  # Un solo acceso en el menú: AidyChat. Quitar el .desktop viejo "AidyLink".
+  sudo rm -f /usr/share/applications/aidylink.desktop
   sudo install -D -m 0644 "${ROOT}/packaging/aidylink/aidychat.svg" /usr/share/icons/hicolor/scalable/apps/aidychat.svg
   install -d "${desktop_dir}" "${service_dir}"
   install -m 0644 "${desktop_entry}" "${desktop_dir}/aidychat.desktop"
+  rm -f "${desktop_dir}/aidylink.desktop"
   install -m 0644 "${ROOT}/packaging/aidylink/aidylink.service" "${service_dir}/aidylink.service"
   if command -v xdg-user-dir >/dev/null 2>&1; then
     user_desktop="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
@@ -284,11 +287,13 @@ install_aidylink() {
   fi
   mkdir -p "${user_desktop}"
   install -m 0755 "${desktop_entry}" "${user_desktop}/AidyChat.desktop"
+  rm -f "${user_desktop}/AidyLink.desktop" "${user_desktop}/aidylink.desktop"
   systemctl --user daemon-reload >/dev/null 2>&1 || true
   if command -v update-desktop-database >/dev/null 2>&1; then
     sudo update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+    update-desktop-database "${desktop_dir}" >/dev/null 2>&1 || true
   fi
-  echo "AidyChat instalado. Abre el acceso del escritorio y ejecuta aidylink init --name NOMBRE --team EQUIPO para activar el daemon y las notificaciones en segundo plano."
+  echo "AidyChat instalado. Abre el acceso del escritorio; la primera vez pide el nombre del PC y puedes emparejar otros con un código."
 }
 install_aidylink
 

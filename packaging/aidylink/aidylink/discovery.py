@@ -44,6 +44,7 @@ class MismatchHint:
     host: str
     reason: str
     last_seen: float
+    display_name: str = ""
 
 
 class DiscoveryService:
@@ -141,12 +142,23 @@ class DiscoveryService:
             self.on_peer(peer)
         return peer
 
-    def _note_mismatch(self, host: str, reason: str) -> None:
+    def _note_mismatch(
+        self,
+        host: str,
+        reason: str,
+        *,
+        display_name: str = "",
+    ) -> None:
         host = (host or "").strip()
         if not host or host == self.lan_ip:
             return
+        previous = self.mismatches.get(host)
+        name = (display_name or "").strip() or (previous.display_name if previous else "")
         self.mismatches[host] = MismatchHint(
-            host=host, reason=reason, last_seen=time.time()
+            host=host,
+            reason=reason,
+            last_seen=time.time(),
+            display_name=name,
         )
 
     async def start(self) -> None:
@@ -222,12 +234,13 @@ class DiscoveryService:
             return
         if body.get("type") != "presence":
             return
+        display_name = str(body.get("display_name") or "")
         if body.get("team_id") != self.cfg.team_id:
-            self._note_mismatch(host, "team")
+            self._note_mismatch(host, "team", display_name=display_name)
             return
         if not verify_payload(self.cfg.team_secret, body, str(sig or "")):
             LOGGER.debug("ignored presence with bad signature from %s", host)
-            self._note_mismatch(host, "sig")
+            self._note_mismatch(host, "sig", display_name=display_name)
             return
         self.accept_presence(body, host)
 

@@ -69,19 +69,24 @@ def _first_run_setup() -> bool:
     if load_config() is not None:
         return True
 
-    dialog = Gtk.Dialog(title="Bienvenido a AidyLink", flags=0)
+    dialog = Gtk.Dialog(title="Bienvenido a AidyChat", flags=0)
     dialog.add_buttons(
         Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
         "Continuar", Gtk.ResponseType.OK,
     )
-    dialog.set_default_size(460, 340)
+    dialog.set_default_size(460, 280)
     box = dialog.get_content_area()
     box.set_spacing(8)
     box.set_border_width(12)
     box.pack_start(
         Gtk.Label(
-            label="¿Cómo llamamos a este computador? Para encontrar otros equipos, todos deben compartir el mismo grupo y código local.",
+            label=(
+                "¿Cómo llamamos a este computador?\n\n"
+                "Cada PC tiene su propia IP: eso es normal. Para verse entre sí "
+                "usa Emparejar con un código de 6 dígitos (no hace falta copiar IPs)."
+            ),
             xalign=0,
+            wrap=True,
         ),
         False,
         False,
@@ -95,16 +100,17 @@ def _first_run_setup() -> bool:
     team_e.set_text("AidyCOS")
     team_e.set_placeholder_text("Nombre de la red local")
     secret_e = Gtk.Entry()
-    secret_e.set_placeholder_text("Código compartido entre computadores")
+    secret_e.set_placeholder_text("Dejar vacío (recomendado)")
     secret_e.set_visibility(False)
     box.pack_start(Gtk.Label(label="Nombre de este computador", xalign=0), False, False, 0)
     box.pack_start(name_e, False, False, 0)
-    advanced = Gtk.Expander(label="Configuración avanzada de red local")
+    advanced = Gtk.Expander(label="Configuración avanzada (opcional)")
     advanced_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
     advanced_box.pack_start(
         Gtk.Label(
-            label="Para que dos computadores se encuentren en la red local, ambos usan el mismo grupo y código.",
+            label="Solo si quieres forzar un grupo/código a mano. Lo habitual es Emparejar.",
             xalign=0,
+            wrap=True,
         ),
         False,
         False,
@@ -115,7 +121,7 @@ def _first_run_setup() -> bool:
     advanced_box.pack_start(Gtk.Label(label="Código compartido del grupo", xalign=0), False, False, 0)
     advanced_box.pack_start(secret_e, False, False, 0)
     advanced.add(advanced_box)
-    advanced.set_expanded(True)
+    advanced.set_expanded(False)
     box.pack_start(advanced, False, False, 0)
     dialog.show_all()
     response = dialog.run()
@@ -126,36 +132,13 @@ def _first_run_setup() -> bool:
     team = (team_e.get_text() or "").strip() or "AidyCOS"
     secret = (secret_e.get_text() or "").strip() or None
     dialog.destroy()
-    cfg = init_config(display_name=name, team_id=team, team_secret=secret)
-    if not secret:
-        notice = Gtk.MessageDialog(
-            transient_for=None,
-            flags=0,
-            message_type=Gtk.MessageType.INFO,
-            buttons=Gtk.ButtonsType.OK,
-            text="Código compartido de AidyLink",
-        )
-        notice.format_secondary_text(
-            "Guarda este código y escríbelo en Configuración avanzada al configurar "
-            "los demás computadores del grupo. Sin el mismo código no aparecerán."
-        )
-        notice.set_title("Configurar equipos de la red")
-        notice.set_default_size(440, 180)
-        notice.get_content_area().pack_start(
-            Gtk.Label(label=cfg.team_secret, selectable=True, xalign=0),
-            False,
-            False,
-            8,
-        )
-        notice.show_all()
-        notice.run()
-        notice.destroy()
+    init_config(display_name=name, team_id=team, team_secret=secret)
     return True
 
 
 class AidylinkWindow(Gtk.Window):
     def __init__(self, *, standalone: bool = True) -> None:
-        super().__init__(title="AidyLink · Mensajería")
+        super().__init__(title="AidyChat · Red local")
         self.set_default_size(760, 680)
         self.set_border_width(10)
 
@@ -179,6 +162,9 @@ class AidylinkWindow(Gtk.Window):
         self.refresh_btn = Gtk.Button(label="Actualizar")
         self.refresh_btn.connect("clicked", lambda *_: self.refresh_peers())
         title_row.pack_start(self.refresh_btn, False, False, 0)
+        self.pair_btn = Gtk.Button(label="Emparejar")
+        self.pair_btn.connect("clicked", lambda *_: self.open_pair_dialog())
+        title_row.pack_start(self.pair_btn, False, False, 0)
         self.group_btn = Gtk.Button(label="Grupo local")
         self.group_btn.connect("clicked", lambda *_: self.open_group_dialog())
         title_row.pack_start(self.group_btn, False, False, 0)
@@ -294,17 +280,19 @@ class AidylinkWindow(Gtk.Window):
         if peers:
             empty_text = ""
         elif self._mismatches:
-            hosts = ", ".join(
-                str(item.get("host") or "?") for item in self._mismatches[:3]
-            )
+            labels = []
+            for item in self._mismatches[:3]:
+                name = str(item.get("display_name") or "").strip()
+                host = str(item.get("host") or "?")
+                labels.append(f"{name} ({host})" if name else host)
             empty_text = (
-                f"Se encontró AidyLink en {hosts}, pero el grupo o el código local no coinciden. "
-                "Abre «Grupo local» y usa el mismo nombre de grupo y código en ambos PCs."
+                f"Hay AidyChat cerca ({', '.join(labels)}) pero aún no están emparejados. "
+                "Pulsa Emparejar: un PC muestra el código y el otro lo escribe."
             )
         else:
             empty_text = (
-                "Aún no hay computadores disponibles. Revisa que ambos estén en la misma red, "
-                "tengan AidyLink abierto y usen el mismo código local."
+                "Aún no hay computadores disponibles. Ambos deben estar en la misma Wi‑Fi/LAN "
+                "con AidyChat abierto. IPs distintas son normales; usa Emparejar con el código."
             )
         self.peer_empty.set_text(empty_text)
         for peer in peers:
@@ -408,12 +396,177 @@ class AidylinkWindow(Gtk.Window):
     def _selected_peer(self) -> dict[str, Any] | None:
         return self._selected_peer_data
 
+    def open_pair_dialog(self) -> None:
+        cfg = load_config()
+        if cfg is None:
+            self._append_line("⚠ No se encontró la configuración de AidyChat.")
+            return
+        chooser = Gtk.Dialog(title="Emparejar computadores", transient_for=self, flags=0)
+        chooser.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            "Ingresar código", Gtk.ResponseType.REJECT,
+            "Mostrar código", Gtk.ResponseType.OK,
+        )
+        chooser.set_default_size(460, 180)
+        box = chooser.get_content_area()
+        box.set_spacing(8)
+        box.set_border_width(12)
+        box.pack_start(
+            Gtk.Label(
+                label=(
+                    "No necesitas copiar IPs. En un PC pulsa «Mostrar código» y en el otro "
+                    "«Ingresar código» con esos 6 dígitos. Así ambos quedan en el mismo grupo."
+                ),
+                xalign=0,
+                wrap=True,
+            ),
+            False,
+            False,
+            0,
+        )
+        chooser.show_all()
+        response = chooser.run()
+        chooser.destroy()
+        if response == Gtk.ResponseType.OK:
+            self._pair_show_code()
+        elif response == Gtk.ResponseType.REJECT:
+            self._pair_enter_code()
+
+    def _pair_show_code(self) -> None:
+        try:
+            resp = control_request({"cmd": "pair_host"}, timeout=3.0)
+        except Exception as exc:
+            self._append_line(f"⚠ No se pudo crear el código: {exc}")
+            return
+        if not resp.get("ok"):
+            self._append_line(f"⚠ {resp.get('error') or 'No se pudo crear el código'}")
+            return
+        pin = str(resp.get("pin") or "")
+        paired = {"done": False}
+        dialog = Gtk.Dialog(title="Código de emparejado", transient_for=self, flags=0)
+        dialog.add_buttons("Cancelar", Gtk.ResponseType.CANCEL)
+        dialog.set_default_size(420, 220)
+        box = dialog.get_content_area()
+        box.set_spacing(10)
+        box.set_border_width(16)
+        box.pack_start(
+            Gtk.Label(
+                label="En el otro computador abre Emparejar → Ingresar código y escribe:",
+                xalign=0,
+                wrap=True,
+            ),
+            False,
+            False,
+            0,
+        )
+        pin_label = Gtk.Label()
+        pin_label.set_markup(f"<span size='xx-large' weight='bold'>{GLib.markup_escape_text(pin)}</span>")
+        pin_label.set_selectable(True)
+        box.pack_start(pin_label, False, False, 8)
+        hint = Gtk.Label(
+            label="Esperando al otro PC… el código caduca en unos 3 minutos.",
+            xalign=0,
+            wrap=True,
+        )
+        box.pack_start(hint, False, False, 0)
+        dialog.show_all()
+
+        def poll_pair() -> bool:
+            if not dialog.get_visible():
+                return False
+            try:
+                status = control_request({"cmd": "pair_status"}, timeout=1.5)
+            except Exception:
+                return True
+            if status.get("active"):
+                left = int(status.get("expires_in") or 0)
+                hint.set_text(f"Esperando al otro PC… quedan ~{left}s.")
+                return True
+            if status.get("paired"):
+                paired["done"] = True
+                hint.set_text("¡Emparejado! Ya pueden chatear en la red local.")
+                GLib.timeout_add(600, dialog.response, Gtk.ResponseType.OK)
+                return False
+            hint.set_text("El código expiró. Cierra e inténtalo de nuevo.")
+            return False
+
+        GLib.timeout_add_seconds(1, poll_pair)
+        dialog.run()
+        dialog.destroy()
+        if not paired["done"]:
+            try:
+                control_request({"cmd": "pair_stop"}, timeout=2.0)
+            except Exception:
+                pass
+        else:
+            self._append_line("✓ Otro computador se emparejó con este PC.")
+        self.refresh_status()
+        self.refresh_peers()
+
+    def _pair_enter_code(self) -> None:
+        dialog = Gtk.Dialog(title="Ingresar código", transient_for=self, flags=0)
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            "Emparejar", Gtk.ResponseType.OK,
+        )
+        dialog.set_default_size(400, 160)
+        box = dialog.get_content_area()
+        box.set_spacing(8)
+        box.set_border_width(12)
+        box.pack_start(
+            Gtk.Label(label="Código de 6 dígitos del otro PC", xalign=0),
+            False,
+            False,
+            0,
+        )
+        pin_e = Gtk.Entry()
+        pin_e.set_max_length(6)
+        pin_e.set_placeholder_text("123456")
+        pin_e.set_input_purpose(Gtk.InputPurpose.DIGITS)
+        pin_e.set_activates_default(True)
+        dialog.set_default_response(Gtk.ResponseType.OK)
+        box.pack_start(pin_e, False, False, 0)
+        dialog.show_all()
+        response = dialog.run()
+        pin = (pin_e.get_text() or "").strip()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK or not pin:
+            return
+        self._append_line("Buscando el otro computador en la red…")
+        self.pair_btn.set_sensitive(False)
+
+        def work() -> None:
+            try:
+                resp = control_request({"cmd": "pair_join", "pin": pin}, timeout=45.0)
+                error = None
+            except Exception as exc:
+                resp, error = None, exc
+            GLib.idle_add(finish, resp, error)
+
+        def finish(resp: dict[str, Any] | None, error: Exception | None) -> bool:
+            self.pair_btn.set_sensitive(True)
+            if error:
+                self._append_line(f"⚠ Emparejado falló: {error}")
+                return GLib.SOURCE_REMOVE
+            if not resp or not resp.get("ok"):
+                self._append_line(f"⚠ {((resp or {}).get('error') if resp else None) or 'No se pudo emparejar'}")
+                return GLib.SOURCE_REMOVE
+            host_name = str(resp.get("host_name") or "otro PC")
+            self._append_line(f"✓ Emparejado con {host_name}. Ya pueden verse en la red local.")
+            self.refresh_status()
+            self.refresh_peers()
+            return GLib.SOURCE_REMOVE
+
+        import threading
+
+        threading.Thread(target=work, daemon=True, name="aidychat-pair-join").start()
+
     def open_group_dialog(self) -> None:
         cfg = load_config()
         if cfg is None:
-            self._append_line("⚠ No se encontró la configuración de AidyLink.")
+            self._append_line("⚠ No se encontró la configuración de AidyChat.")
             return
-        dialog = Gtk.Dialog(title="Grupo local de AidyLink", transient_for=self, flags=0)
+        dialog = Gtk.Dialog(title="Grupo local de AidyChat", transient_for=self, flags=0)
         dialog.add_buttons(
             Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
             "Guardar y reiniciar", Gtk.ResponseType.OK,
@@ -502,7 +655,10 @@ class AidylinkWindow(Gtk.Window):
             self._append_line("⚠ No se encontró la configuración de AidyLink.")
             return
         self.google_btn.set_sensitive(False)
-        self._append_line("Se abrió AidyChat en tu navegador. Inicia sesión con Google para continuar.")
+        self._append_line(
+            "Se abrió el navegador. Completa Google allí; si pide celular, verifícalo. "
+            "Cuando termine, esta ventana avanzará sola."
+        )
 
         def done(username: str | None, error: Exception | None) -> None:
             GLib.idle_add(finish, username, error)

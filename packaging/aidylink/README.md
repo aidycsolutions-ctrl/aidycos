@@ -83,10 +83,15 @@ subred por `47833/tcp` y hace un handshake `presence_hello` firmado.
 
 ## Conectar equipos de la red local
 
-La ventana presenta los equipos compatibles en tarjetas; no es necesario
-escribir IP o puerto. Para que se descubran entre sí, ambos deben usar el mismo
-grupo y código local. Esa opción queda dentro de **Configuración avanzada de
-red local** al crear la identidad.
+Cada PC tiene su propia IP: eso es normal y no impide el emparejado.
+
+En la ventana, **Emparejar**:
+1. Un computador pulsa **Mostrar código** (6 dígitos).
+2. El otro pulsa **Ingresar código** y escribe esos dígitos.
+
+Así copian el mismo grupo/código local automáticamente. No hace falta
+compartir IPs ni secretos largos. El menú solo muestra **AidyChat** (el
+acceso antiguo «AidyLink» se elimina al instalar).
 
 ## Usar con el servidor (AidyChat cloud)
 

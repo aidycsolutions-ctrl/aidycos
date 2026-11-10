@@ -57,7 +57,7 @@ class AidyChatWindow(Gtk.Window):
     """WhatsApp-like native shell for messages and shared media."""
 
     def __init__(self, cfg: LinkConfig) -> None:
-        super().__init__(title="AidyLink")
+        super().__init__(title="AidyChat")
         self.cfg = cfg
         self.bridge = AidyChatBridge(cfg)
         self.set_default_size(1120, 740)
@@ -94,7 +94,7 @@ class AidyChatWindow(Gtk.Window):
 
         brand = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         brand.get_style_context().add_class("link-brand")
-        title = Gtk.Label(label="AidyLink", xalign=0)
+        title = Gtk.Label(label="AidyChat", xalign=0)
         title.set_hexpand(True)
         brand.pack_start(title, True, True, 0)
         refresh = Gtk.Button.new_from_icon_name("view-refresh-symbolic", Gtk.IconSize.BUTTON)

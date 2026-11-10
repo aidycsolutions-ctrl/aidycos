@@ -7,7 +7,7 @@ Every window floats; this script arranges them like a classic desktop:
   restore [ADDR]         bring back the last (or given) minimized window
   restore-all            bring back every minimized window
   focus ADDR             taskbar click: restore / minimize / focus
-  alt-tab [prev]         cycle recent windows across all desktops (raise + focus)
+  alt-tab [prev]         cycle windows on the current desktop (raise + focus)
   close [ADDR]           close the window
   max [ADDR]             toggle maximized (snap-to-work-area) / restore size
   up [ADDR]              maximize
@@ -607,32 +607,26 @@ def cmd_focus(address: str | None = None) -> None:
 
 
 def _alt_tab_candidates() -> list[dict[str, Any]]:
-    """Mapped windows excluding minimized / shell.
+    """Mapped windows on the active desktop, excluding minimized / shell.
 
-    Order is stable across presses: workspace id, then address. Sorting by
-    ``focusHistoryID`` would reshuffle after every focus and Alt+Tab would
-    only bounce between the two most recent windows.
+    Order is stable across presses: address. Sorting by ``focusHistoryID``
+    would reshuffle after every focus and Alt+Tab would only bounce between
+    the two most recent windows.
     """
+    workspace_id = query("activeworkspace").get("id")
     windows = [
         window
         for window in query("clients")
-        if is_managed(window) and not is_minimized(window)
+        if is_managed(window)
+        and not is_minimized(window)
+        and (window.get("workspace") or {}).get("id") == workspace_id
     ]
-    windows.sort(
-        key=lambda c: (
-            int((c.get("workspace") or {}).get("id") or 0),
-            str(c.get("address") or ""),
-        )
-    )
+    windows.sort(key=lambda c: str(c.get("address") or ""))
     return windows
 
 
 def cmd_alt_tab(direction: str | None = None) -> None:
-    """Windows-style Alt+Tab across desktops (not only the current workspace).
-
-    Hyprland ``cyclenext`` stays on one workspace, so with one maximized
-    window per desktop Alt+Tab looked broken until you split and clicked.
-    """
+    """Cycle windows on the current desktop only (do not jump workspaces)."""
     windows = _alt_tab_candidates()
     if len(windows) < 2:
         if windows:
@@ -650,9 +644,7 @@ def cmd_alt_tab(direction: str | None = None) -> None:
         index = 0
     step = -1 if (direction or "").lower() in {"prev", "previous", "back"} else 1
     target = windows[(index + step) % len(windows)]
-    workspace = workspace_target((target.get("workspace") or {}).get("name"))
     dispatch(
-        *goto_workspace(workspace),
         f"focuswindow address:{target['address']}",
         f"alterzorder top,address:{target['address']}",
         f"bringactivetotop",
