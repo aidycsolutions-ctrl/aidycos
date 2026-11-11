@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""Build a GRUB background that keeps the AidyCOS logo's aspect ratio.
+
+GRUB paints backgrounds with ``background_image -m stretch``. Feeding it the
+square logo makes the mark look wide on 16:9 panels. This helper creates a
+black canvas at the target mode and centers the logo the same way Plymouth
+does (~56% of the shorter screen edge, capped to 85% width).
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+MODE_RE = re.compile(r"^(\d+)x(\d+)")
+
+
+def parse_size(value: str) -> tuple[int, int]:
+    match = MODE_RE.match(value.strip())
+    if not match:
+        raise argparse.ArgumentTypeError(f"invalid size: {value}")
+    width, height = int(match.group(1)), int(match.group(2))
+    if width < 320 or height < 240:
+        raise argparse.ArgumentTypeError(f"size too small: {value}")
+    return width, height
+
+
+def first_mode(gfxmode: str) -> tuple[int, int]:
+    for part in gfxmode.split(","):
+        match = MODE_RE.match(part.strip())
+        if match:
+            return int(match.group(1)), int(match.group(2))
+    return 1920, 1080
+
+
+def render(logo_path: Path, width: int, height: int, output: Path) -> None:
+    from PIL import Image
+
+    logo = Image.open(logo_path).convert("RGBA")
+    canvas = Image.new("RGBA", (width, height), (0, 0, 0, 255))
+
+    logo_size = int(min(height * 0.56, width * 0.85))
+    if logo_size < 1:
+        logo_size = min(width, height)
+    scaled = logo.resize((logo_size, logo_size), Image.Resampling.LANCZOS)
+    x = (width - scaled.width) // 2
+    y = (height - scaled.height) // 2
+    canvas.alpha_composite(scaled, (x, y))
+    output.parent.mkdir(parents=True, exist_ok=True)
+    canvas.convert("RGB").save(output, format="PNG", optimize=True)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--logo", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--size",
+        type=parse_size,
+        help="WxH canvas size (default: first entry of --gfxmode or 1920x1080)",
+    )
+    parser.add_argument(
+        "--gfxmode",
+        default="",
+        help="Comma-separated GRUB_GFXMODE list; first WxH wins when --size omitted",
+    )
+    args = parser.parse_args(argv)
+
+    if not args.logo.is_file():
+        print(f"logo not found: {args.logo}", file=sys.stderr)
+        return 1
+
+    if args.size:
+        width, height = args.size
+    elif args.gfxmode:
+        width, height = first_mode(args.gfxmode)
+    else:
+        width, height = 1920, 1080
+
+    try:
+        render(args.logo, width, height, args.output)
+    except Exception as exc:  # noqa: BLE001 - show a clear fallback hint
+        print(f"failed to render GRUB background: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

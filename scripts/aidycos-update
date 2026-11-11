@@ -22,6 +22,26 @@ gui_available() {
   [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]
 }
 
+# systemd user units often lack Wayland vars even inside an active Hyprland session.
+ensure_session_env() {
+  if [[ -n "${WAYLAND_DISPLAY:-}" && -n "${DISPLAY:-}" ]]; then
+    return 0
+  fi
+  local line key value
+  while IFS= read -r line; do
+    [[ "${line}" == *=* ]] || continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    case "${key}" in
+      WAYLAND_DISPLAY|DISPLAY|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|HYPRLAND_INSTANCE_SIGNATURE)
+        if [[ -z "${!key:-}" && -n "${value}" ]]; then
+          export "${key}=${value}"
+        fi
+        ;;
+    esac
+  done < <(systemctl --user show-environment 2>/dev/null || true)
+}
+
 notify_error() {
   local text="$1"
   echo "${text}" >&2
@@ -44,48 +64,61 @@ find_terminal() {
   return 1
 }
 
-# Launch a visible terminal that stays open for sudo password prompts.
-# Prefer hyprctl so the window is created inside the active Hyprland session
-# even when this script was started from a .desktop file or a systemd timer.
-run_in_terminal() {
+build_terminal_command() {
   local terminal="$1"
   local script_path="$2"
-  local name title cmd_str
+  local name title
   name="$(basename "${terminal}")"
   title="Actualización de AidyCOS"
 
   case "${name}" in
     gnome-terminal|kgx)
-      cmd_str="$(printf '%q --title=%q -- bash %q' "${terminal}" "${title}" "${script_path}")"
+      printf '%q --title=%q -- bash %q' "${terminal}" "${title}" "${script_path}"
       ;;
     xfce4-terminal)
-      cmd_str="$(printf '%q --title=%q -x bash %q' "${terminal}" "${title}" "${script_path}")"
+      printf '%q --title=%q -x bash %q' "${terminal}" "${title}" "${script_path}"
       ;;
     alacritty)
-      cmd_str="$(printf '%q --title %q -e bash %q' "${terminal}" "${title}" "${script_path}")"
+      printf '%q --title %q -e bash %q' "${terminal}" "${title}" "${script_path}"
       ;;
     xterm|uxterm|x-terminal-emulator)
-      cmd_str="$(printf '%q -T %q -e bash %q' "${terminal}" "${title}" "${script_path}")"
+      printf '%q -T %q -e bash %q' "${terminal}" "${title}" "${script_path}"
       ;;
     kitty)
-      cmd_str="$(printf '%q --title %q bash %q' "${terminal}" "${title}" "${script_path}")"
+      printf '%q --title %q bash %q' "${terminal}" "${title}" "${script_path}"
       ;;
     *)
       # foot and other simple Wayland terminals
-      cmd_str="$(printf '%q -T %q bash %q' "${terminal}" "${title}" "${script_path}")"
+      printf '%q -T %q bash %q' "${terminal}" "${title}" "${script_path}"
       ;;
   esac
+}
 
+# Open the password terminal immediately. Never download before this returns.
+run_in_terminal() {
+  local terminal="$1"
+  local script_path="$2"
+  local cmd_str
+  cmd_str="$(build_terminal_command "${terminal}" "${script_path}")"
+
+  ensure_session_env
+
+  # 1) Ask Hyprland to spawn the window in the live session (best for .desktop / timers).
   if command -v hyprctl >/dev/null 2>&1; then
     if hyprctl dispatch exec -- "${cmd_str}" >/dev/null 2>&1; then
       return 0
     fi
   fi
 
-  # Detach from the updater so systemd/oneshot or the menu launcher can exit
-  # while the password prompt stays visible.
-  nohup bash -lc "${cmd_str}" >/dev/null 2>&1 &
-  disown || true
+  # 2) Direct spawn when this process already has a graphical session.
+  if gui_available; then
+    # shellcheck disable=SC2086
+    nohup bash -lc "${cmd_str}" >/dev/null 2>&1 &
+    disown || true
+    return 0
+  fi
+
+  return 1
 }
 
 mkdir -p "$(dirname "${LOCK}")"
@@ -94,6 +127,8 @@ if ! flock -n 9; then
   echo "Ya hay una comprobación o actualización de AidyCOS en curso."
   exit 0
 fi
+
+ensure_session_env
 
 if ! command -v curl >/dev/null 2>&1; then
   notify_error "No se encontró curl; instala curl para comprobar actualizaciones."
@@ -151,8 +186,8 @@ if [[ "${accept}" != 1 ]]; then
   exit 0
 fi
 
-# Build a self-contained apply script so the visible terminal can download,
-# ask for the sudo password, and keep errors on screen.
+# Open feedback immediately: write a tiny runner and spawn the terminal BEFORE
+# any tarball download. The slow curl lives inside that window.
 apply_dir="$(mktemp -d "${TMPDIR:-/tmp}/aidycos-update.XXXXXX")"
 apply_script="${apply_dir}/apply.sh"
 cat >"${apply_script}" <<EOF
@@ -168,11 +203,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "Descargando AidyCOS (\${LATEST:0:8})…"
+echo "Actualización de AidyCOS"
+echo "========================"
+echo "Descargando revisión \${LATEST:0:8}…"
 archive="\${WORKDIR}/aidycos.tar.gz"
 curl --fail --show-error --location \
   --connect-timeout 10 --max-time 180 \
   "https://codeload.github.com/\${REPO}/tar.gz/\${LATEST}" -o "\${archive}"
+echo "Descarga terminada. Preparando instalador…"
 tar -xzf "\${archive}" -C "\${WORKDIR}"
 source_dir="\$(find "\${WORKDIR}" -mindepth 1 -maxdepth 1 -type d -print -quit)"
 installer="\${source_dir}/scripts/install-debian-profile.sh"
@@ -194,7 +232,7 @@ read -r -p "Pulsa Enter para cerrar esta ventana…" _
 EOF
 chmod 700 "${apply_script}"
 
-# From an interactive terminal, apply here so sudo can prompt on this TTY.
+# Menu entry uses Terminal=true, so reuse this TTY when present.
 if [[ -t 0 ]]; then
   bash "${apply_script}"
   exit 0
@@ -207,13 +245,17 @@ if [[ -z "${terminal}" ]]; then
   exit 1
 fi
 
-# Release the flock before handing off: the apply script may take a long time
-# and later update checks should not stay blocked by this launcher.
+# Release the flock before handing off so later checks are not blocked.
 exec 9>&-
 
-run_in_terminal "${terminal}" "${apply_script}"
+if ! run_in_terminal "${terminal}" "${apply_script}"; then
+  notify_error "No se pudo abrir la terminal para pedir la contraseña. Abre foot y ejecuta: aidycos-update"
+  rm -rf "${apply_dir}"
+  exit 1
+fi
+
 if command -v notify-send >/dev/null 2>&1; then
   notify-send -a AidyCOS "Actualización de AidyCOS" \
-    "Se abrió una terminal. Escribe tu contraseña ahí para continuar." || true
+    "Terminal abierta: la descarga y la contraseña van ahí." || true
 fi
 exit 0

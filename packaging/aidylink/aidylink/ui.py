@@ -181,23 +181,100 @@ def _daemon_alive() -> bool:
         return False
 
 
-def ensure_daemon_running() -> bool:
-    """Start aidylink daemon in background if the control socket is down."""
-    if _daemon_alive():
-        return True
+def _pids_on_aidylink_ports() -> set[int]:
+    """PIDs listening on AidyChat LAN/mobile ports (orphans without a socket)."""
+    try:
+        out = subprocess.check_output(
+            ["ss", "-ltnup"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        out_udp = subprocess.check_output(
+            ["ss", "-lnup"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+        out = out + "\n" + out_udp
+    except (OSError, subprocess.CalledProcessError):
+        return set()
+    pids: set[int] = set()
+    for line in out.splitlines():
+        if ":47833" not in line and ":47835" not in line and ":47832" not in line:
+            continue
+        for part in line.replace(",", " ").split():
+            if part.startswith("pid="):
+                try:
+                    pids.add(int(part.split("=", 1)[1]))
+                except ValueError:
+                    pass
+    return pids
+
+
+def _stop_orphan_daemon() -> None:
+    """Kill a daemon that still holds ports after its control socket vanished."""
+    from .paths import runtime_dir
+
+    pid_path = runtime_dir() / "aidylink.pid"
+    pids = set(_pids_on_aidylink_ports())
+    if pid_path.is_file():
+        try:
+            pids.add(int(pid_path.read_text(encoding="utf-8").strip().splitlines()[0]))
+        except (OSError, ValueError):
+            pass
+    me = os.getpid()
+    for pid in sorted(pids):
+        if pid <= 1 or pid == me:
+            continue
+        try:
+            os.kill(pid, 15)
+        except OSError:
+            pass
+    import time
+
+    time.sleep(0.4)
+    for pid in sorted(_pids_on_aidylink_ports()):
+        if pid <= 1 or pid == me:
+            continue
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
     sock = control_socket_path()
     if sock.exists():
         try:
             sock.unlink()
         except OSError:
             pass
+    if pid_path.exists():
+        try:
+            pid_path.unlink()
+        except OSError:
+            pass
+
+
+def ensure_daemon_running() -> bool:
+    """Start aidylink daemon in background if the control socket is down."""
+    if _daemon_alive():
+        return True
+    # Common failure mode: ports still held but sock was deleted → UI sees no PCs.
+    if _pids_on_aidylink_ports() or control_socket_path().exists():
+        _stop_orphan_daemon()
     # Prefer the installed wrapper; fall back to the same interpreter/module.
     cmd: list[str]
-    wrapper = Path("/usr/local/bin/aidylink")
-    if wrapper.is_file() and os.access(wrapper, os.X_OK):
-        cmd = [str(wrapper), "daemon"]
+    local_wrapper = Path.home() / ".local" / "bin" / "aidylink"
+    system_wrapper = Path("/usr/local/bin/aidylink")
+    if local_wrapper.is_file() and os.access(local_wrapper, os.X_OK):
+        cmd = [str(local_wrapper), "daemon"]
+    elif system_wrapper.is_file() and os.access(system_wrapper, os.X_OK):
+        cmd = [str(system_wrapper), "daemon"]
     else:
         cmd = [sys.executable, "-m", "aidylink", "daemon"]
+        env_pythonpath = os.environ.get("PYTHONPATH", "")
+        user_pkg = str(Path.home() / ".local" / "share" / "aidycos" / "aidylink")
+        if user_pkg not in env_pythonpath.split(":"):
+            os.environ["PYTHONPATH"] = (
+                user_pkg + (":" + env_pythonpath if env_pythonpath else "")
+            )
     log_path = Path.home() / ".local" / "share" / "aidylink" / "daemon.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as log:
@@ -210,7 +287,7 @@ def ensure_daemon_running() -> bool:
         )
     import time
 
-    for _ in range(25):
+    for _ in range(40):
         if _daemon_alive():
             return True
         time.sleep(0.2)

@@ -51,14 +51,14 @@ if [[ ! -f "${ROOT}/packaging/boot/aidycos-boot-gfxmode" ]]; then
   exit 1
 fi
 
-run_root apt-get install -y --no-install-recommends plymouth plymouth-themes >/dev/null
+run_root apt-get install -y --no-install-recommends plymouth plymouth-themes python3-pil >/dev/null
 run_root install -d -m 0755 "${PLYMOUTH_THEME_DIR}"
 run_root install -D -m 0644 "${ROOT}/packaging/plymouth/AidyCOS.png" "${PLYMOUTH_THEME_DIR}/AidyCOS.png"
 run_root install -m 0644 "${ROOT}/packaging/plymouth/aidycos.plymouth" "${PLYMOUTH_THEME_DIR}/aidycos.plymouth"
 run_root install -m 0644 "${ROOT}/packaging/plymouth/aidycos.script" "${PLYMOUTH_THEME_DIR}/aidycos.script"
 run_root install -D -m 0644 "${ROOT}/packaging/plymouth/AidyCOS.png" /usr/share/backgrounds/aidycos.png
-run_root install -D -m 0644 "${ROOT}/packaging/plymouth/AidyCOS.png" /boot/grub/AidyCOS.png
 run_root install -D -m 0755 "${ROOT}/packaging/boot/aidycos-boot-gfxmode" /usr/local/bin/aidycos-boot-gfxmode
+run_root install -D -m 0755 "${ROOT}/packaging/boot/aidycos-grub-background" /usr/local/bin/aidycos-grub-background
 
 # Prefer Theme= in plymouthd.conf (Debian 13) and keep a default.plymouth link.
 run_root install -d -m 0755 /etc/plymouth
@@ -89,6 +89,21 @@ fi
 cmdline="${CMDLINE_OPTIONS[*]}"
 
 echo "GRUB_GFXMODE preferido: ${gfxmode}"
+
+# GRUB stretches backgrounds to the panel. Pre-letterbox the square logo onto a
+# black canvas at the preferred mode so the mark keeps its proportions.
+grub_bg_tmp="$(mktemp --suffix=.png)"
+if python3 "${ROOT}/packaging/boot/aidycos-grub-background" \
+     --logo "${ROOT}/packaging/plymouth/AidyCOS.png" \
+     --gfxmode "${gfxmode}" \
+     --output "${grub_bg_tmp}"; then
+  run_root install -D -m 0644 "${grub_bg_tmp}" /boot/grub/AidyCOS.png
+  echo "Fondo GRUB generado sin estirar el logo."
+else
+  echo "No se pudo generar el fondo letterbox; se usa el logo cuadrado." >&2
+  run_root install -D -m 0644 "${ROOT}/packaging/plymouth/AidyCOS.png" /boot/grub/AidyCOS.png
+fi
+rm -f "${grub_bg_tmp}"
 
 # Drop-in wins over /etc/default/grub and over leftover AidyC drop-ins.
 run_root install -d -m 0755 /etc/default/grub.d

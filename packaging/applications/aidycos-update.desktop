@@ -4,6 +4,6 @@ Name=Actualizar AidyCOS
 Comment=Comprobar y aplicar actualizaciones de AidyCOS
 Exec=aidycos-update --check
 Icon=system-software-update
-Terminal=false
+Terminal=true
 Categories=System;Settings;
 StartupNotify=true

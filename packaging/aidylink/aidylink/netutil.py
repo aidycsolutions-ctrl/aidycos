@@ -58,7 +58,14 @@ def lan_subnet_hosts(*, exclude: str | None = None, max_hosts: int = 254) -> tup
     skip = (exclude or "").strip()
     hosts: list[str] = []
     seen: set[str] = set()
-    for _, ip, mask in _iter_ipv4_ifaces():
+    ranked = sorted(
+        _iter_ipv4_ifaces(),
+        key=lambda item: _score_lan_candidate(*item),
+        reverse=True,
+    )
+    for name, ip, mask in ranked:
+        if _iface_looks_like_vpn(name):
+            continue
         prefix = bin(mask).count("1")
         if prefix < 24:
             continue
@@ -78,7 +85,65 @@ def lan_subnet_hosts(*, exclude: str | None = None, max_hosts: int = 254) -> tup
 QEMU_HOSTFWD_PORT = 47834
 
 
+_VPN_IFACE_MARKERS = (
+    "tun",
+    "tap",
+    "wg",
+    "tailscale",
+    "nordlynx",
+    "mullvad",
+    "proton",
+    "zt",
+    "ocytun",
+    "ppp",
+)
+
+
+def _iface_looks_like_vpn(name: str) -> bool:
+    lowered = (name or "").lower()
+    return any(marker in lowered for marker in _VPN_IFACE_MARKERS)
+
+
+def _score_lan_candidate(name: str, ip: int, mask: int) -> tuple[int, int, int]:
+    """Higher is better. Prefer real Wi‑Fi/Ethernet over VPN default routes."""
+    prefix = bin(mask).count("1")
+    first = ip >> 24
+    second = (ip >> 16) & 0xFF
+    score = 0
+    if _iface_looks_like_vpn(name):
+        score -= 1000
+    # Typical home/LAN ranges first.
+    if first == 192 and second == 168:
+        score += 300
+    elif first == 10 and second == 0:
+        score += 220
+    elif first == 172 and 16 <= second <= 31:
+        score += 180
+    elif first == 10:
+        score += 80  # other 10/8 (often VPN overlays)
+    # Prefer denser LAN prefixes (/24../22).
+    if 24 <= prefix <= 24:
+        score += 40
+    elif 22 <= prefix <= 23:
+        score += 20
+    elif prefix < 20:
+        score -= 40
+    # Stable tie-breakers: denser mask, then lower IP.
+    return (score, prefix, -ip)
+
+
 def detect_lan_ip() -> str:
+    """Pick a LAN IPv4 for beacons/QR, avoiding VPN tunnels when possible."""
+    candidates = _iter_ipv4_ifaces()
+    if candidates:
+        best_name, best_ip, best_mask = max(
+            candidates, key=lambda item: _score_lan_candidate(*item)
+        )
+        if not _iface_looks_like_vpn(best_name) or len(candidates) == 1:
+            return socket.inet_ntoa(best_ip.to_bytes(4, "big"))
+        # All look like VPN: still return the best scored one.
+        return socket.inet_ntoa(best_ip.to_bytes(4, "big"))
+
     probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         probe.connect(("192.0.2.1", 9))

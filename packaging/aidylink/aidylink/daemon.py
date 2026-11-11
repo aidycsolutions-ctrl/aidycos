@@ -20,7 +20,7 @@ from .messages import LinkMessage
 from .mobile_gateway import MobileGateway
 from .notify import notify
 from .pairing import PairingService
-from .paths import control_socket_path, data_dir
+from .paths import control_socket_path, data_dir, runtime_dir, runtime_dir
 from .router import MessageRouter
 
 LOGGER = logging.getLogger(__name__)
@@ -217,17 +217,26 @@ class AidylinkDaemon:
             except OSError:
                 pass
 
+        # Bind the UI control socket first so a partial start never leaves
+        # LAN ports up without a way for the window to talk to the daemon.
+        self._control_server = await asyncio.start_unix_server(
+            self._handle_control,
+            path=str(sock),
+        )
+        os.chmod(sock, 0o600)
+        try:
+            (runtime_dir() / "aidylink.pid").write_text(
+                f"{os.getpid()}\n", encoding="utf-8"
+            )
+        except OSError:
+            pass
+
         await self.discovery.start()
         await self.lan.start()
         try:
             await self.mobile.start()
         except OSError as exc:
             LOGGER.warning("mobile gateway no arrancó (%s); el chat de PC sigue OK", exc)
-        self._control_server = await asyncio.start_unix_server(
-            self._handle_control,
-            path=str(sock),
-        )
-        os.chmod(sock, 0o600)
 
         if self.cloud.enabled:
             try:
@@ -263,6 +272,18 @@ class AidylinkDaemon:
         if sock.exists():
             try:
                 sock.unlink()
+            except OSError:
+                pass
+        pid_path = runtime_dir() / "aidylink.pid"
+        if pid_path.exists():
+            try:
+                pid_path.unlink()
+            except OSError:
+                pass
+        pid_path = runtime_dir() / "aidylink.pid"
+        if pid_path.exists():
+            try:
+                pid_path.unlink()
             except OSError:
                 pass
 

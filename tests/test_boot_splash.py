@@ -11,6 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 APPLY = ROOT / "packaging" / "boot" / "apply-aidycos-boot.sh"
 GFXMODE = ROOT / "packaging" / "boot" / "aidycos-boot-gfxmode"
+GRUB_BG = ROOT / "packaging" / "boot" / "aidycos-grub-background"
+LOGO = ROOT / "packaging" / "plymouth" / "AidyCOS.png"
 INSTALLER = ROOT / "scripts" / "install-debian-profile.sh"
 
 
@@ -68,6 +70,36 @@ printf '%s\\n' "${{found}}"
         line = result.stdout.strip()
         self.assertTrue(line.endswith(",auto"))
         self.assertIn("1920x1080", line)
+
+    def test_grub_background_keeps_logo_aspect_on_widescreen(self) -> None:
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "grub.png"
+            subprocess.run(
+                [
+                    "python3",
+                    str(GRUB_BG),
+                    "--logo",
+                    str(LOGO),
+                    "--size",
+                    "1920x1080",
+                    "--output",
+                    str(output),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            image = Image.open(output).convert("RGB")
+            self.assertEqual(image.size, (1920, 1080))
+            # Corners stay pure black; a stretched square logo would tint them.
+            for point in ((0, 0), (1919, 0), (0, 1079), (1919, 1079)):
+                self.assertEqual(image.getpixel(point), (0, 0, 0))
+            # Mid row should include logo color, not only black letterboxing.
+            mid = [image.getpixel((x, 540)) for x in range(0, 1920, 20)]
+            self.assertTrue(any(max(pixel) > 20 for pixel in mid))
+            self.assertIn("aidycos-grub-background", APPLY.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
