@@ -274,10 +274,31 @@ install_aidylink() {
   sudo install -m 0644 "${desktop_entry}" /usr/share/applications/aidychat.desktop
   # Un solo acceso en el menú: AidyChat. Quitar el .desktop viejo "AidyLink".
   sudo rm -f /usr/share/applications/aidylink.desktop
-  sudo install -D -m 0644 "${ROOT}/packaging/aidylink/aidychat.svg" /usr/share/icons/hicolor/scalable/apps/aidychat.svg
+  # Logo AidyChat (PNG en tamaños hicolor; quitar SVG genérico anterior).
+  sudo rm -f /usr/share/icons/hicolor/scalable/apps/aidychat.svg
+  local icon_size
+  for icon_size in 16 24 32 48 64 128 256 512; do
+    if [[ -f "${ROOT}/packaging/aidylink/icons/aidychat-${icon_size}.png" ]]; then
+      sudo install -D -m 0644 \
+        "${ROOT}/packaging/aidylink/icons/aidychat-${icon_size}.png" \
+        "/usr/share/icons/hicolor/${icon_size}x${icon_size}/apps/aidychat.png"
+    fi
+  done
+  if [[ -f "${ROOT}/packaging/aidylink/aidychat.png" ]]; then
+    sudo install -D -m 0644 "${ROOT}/packaging/aidylink/aidychat.png" /usr/share/pixmaps/aidychat.png
+  fi
   install -d "${desktop_dir}" "${service_dir}"
   install -m 0644 "${desktop_entry}" "${desktop_dir}/aidychat.desktop"
   rm -f "${desktop_dir}/aidylink.desktop"
+  mkdir -p "${HOME}/.local/share/icons/hicolor"
+  rm -f "${HOME}/.local/share/icons/hicolor/scalable/apps/aidychat.svg"
+  for icon_size in 16 24 32 48 64 128 256 512; do
+    if [[ -f "${ROOT}/packaging/aidylink/icons/aidychat-${icon_size}.png" ]]; then
+      install -D -m 0644 \
+        "${ROOT}/packaging/aidylink/icons/aidychat-${icon_size}.png" \
+        "${HOME}/.local/share/icons/hicolor/${icon_size}x${icon_size}/apps/aidychat.png"
+    fi
+  done
   install -m 0644 "${ROOT}/packaging/aidylink/aidylink.service" "${service_dir}/aidylink.service"
   if command -v xdg-user-dir >/dev/null 2>&1; then
     user_desktop="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
@@ -289,6 +310,10 @@ install_aidylink() {
   install -m 0755 "${desktop_entry}" "${user_desktop}/AidyChat.desktop"
   rm -f "${user_desktop}/AidyLink.desktop" "${user_desktop}/aidylink.desktop"
   systemctl --user daemon-reload >/dev/null 2>&1 || true
+  if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    sudo gtk-update-icon-cache -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
+    gtk-update-icon-cache -f "${HOME}/.local/share/icons/hicolor" >/dev/null 2>&1 || true
+  fi
   if command -v update-desktop-database >/dev/null 2>&1; then
     sudo update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
     update-desktop-database "${desktop_dir}" >/dev/null 2>&1 || true

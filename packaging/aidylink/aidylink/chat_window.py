@@ -14,6 +14,7 @@ from typing import Any, Callable
 import gi
 
 gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
 
 from .cloud import AidyChatBridge
