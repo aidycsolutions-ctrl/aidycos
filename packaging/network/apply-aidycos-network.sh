@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Give NetworkManager ownership of Wi-Fi left on Debian ifupdown after install.
-# Jugoo only talks to NetworkManager; unmanaged wlan looks unavailable / blank.
+# Jugoo only talks to NetworkManager; unmanaged/unavailable wifi cannot scan.
 set -euo pipefail
 
 NM_CONF_D=/etc/NetworkManager/conf.d
@@ -25,6 +25,24 @@ has_non_loopback_iface_config() {
   grep -Eiq '^[[:space:]]*(allow-hotplug|auto)[[:space:]]+(wlan|wlp|wlx|wifi)' "${file}" \
     || grep -Eiq '^[[:space:]]*iface[[:space:]]+(wlan|wlp|wlx)[[:alnum:]:._-]*[[:space:]]+inet' "${file}" \
     || grep -Eiq '^[[:space:]]*wpa-ssid[[:space:]]+' "${file}"
+}
+
+interfaces_still_claim_wifi() {
+  has_non_loopback_iface_config "${INTERFACES}" && return 0
+  if [[ -d "${INTERFACES_D}" ]]; then
+    local dropin
+    shopt -s nullglob
+    for dropin in "${INTERFACES_D}"/*; do
+      [[ -f "${dropin}" ]] || continue
+      [[ "$(basename "${dropin}")" == *aidycos-backup* ]] && continue
+      if has_non_loopback_iface_config "${dropin}"; then
+        shopt -u nullglob
+        return 0
+      fi
+    done
+    shopt -u nullglob
+  fi
+  return 1
 }
 
 extract_wpa_field() {
@@ -53,7 +71,6 @@ create_nm_wifi_connection() {
   if run_root test -e "${dest}"; then
     return 0
   fi
-  # Skip if NM already knows this SSID.
   if command -v nmcli >/dev/null 2>&1; then
     if nmcli -t -f NAME,TYPE connection show 2>/dev/null | grep -Fxq "${ssid}:802-11-wireless"; then
       return 0
@@ -112,54 +129,10 @@ backup_and_loopback_only() {
   echo "Se dejó ${file} solo con loopback; NetworkManager gestiona el resto."
 }
 
-claim_wifi_devices() {
-  command -v nmcli >/dev/null 2>&1 || return 0
-  local line device state
-  while IFS=: read -r device _type state _; do
-    [[ -n "${device}" ]] || continue
-    case "${state}" in
-      unmanaged|unavailable)
-        nmcli device set "${device}" managed yes >/dev/null 2>&1 || true
-        echo "NetworkManager pasa a gestionar ${device} (antes ${state})."
-        ;;
-    esac
-  done < <(nmcli -t -f DEVICE,TYPE,STATE device status 2>/dev/null | awk -F: '$2=="wifi"{print}')
-}
-
-adopt_current_ssid_if_needed() {
-  command -v nmcli >/dev/null 2>&1 || return 0
-  local ssid=""
-  if command -v iwgetid >/dev/null 2>&1; then
-    ssid="$(iwgetid -r 2>/dev/null || true)"
-  fi
-  if [[ -z "${ssid}" ]]; then
-    ssid="$(nmcli -t -f ACTIVE,SSID dev wifi 2>/dev/null | awk -F: '$1=="yes"{print $2; exit}')"
-  fi
-  [[ -n "${ssid}" ]] || return 0
-  create_nm_wifi_connection "${ssid}" ""
-  # Ask NM to take the already-associated link when possible.
-  nmcli connection up id "${ssid}" >/dev/null 2>&1 || true
-}
-
-run_root install -d -m 0755 "${NM_CONF_D}" /var/lib/aidycos
-printf '%s\n' \
-  '[main]' \
-  'plugins=ifupdown,keyfile' \
-  '' \
-  '[ifupdown]' \
-  'managed=true' \
-  | run_root tee "${NM_MANAGED_DROPIN}" >/dev/null
-
-# Also force the main conf ifupdown.managed when present.
-if run_root test -f /etc/NetworkManager/NetworkManager.conf; then
-  if run_root grep -q '^[[:space:]]*managed[[:space:]]*=' /etc/NetworkManager/NetworkManager.conf; then
-    run_root sed -i 's/^[[:space:]]*managed[[:space:]]*=.*/managed=true/' /etc/NetworkManager/NetworkManager.conf
-  fi
-fi
-
-if [[ ! -e "${MARKER}" ]]; then
+migrate_ifupdown_wifi() {
   backup_and_loopback_only "${INTERFACES}"
   if [[ -d "${INTERFACES_D}" ]]; then
+    local dropin
     shopt -s nullglob
     for dropin in "${INTERFACES_D}"/*; do
       [[ -f "${dropin}" ]] || continue
@@ -172,21 +145,124 @@ if [[ ! -e "${MARKER}" ]]; then
     shopt -u nullglob
   fi
   import_from_wpa_supplicant_conf "${WPA_SUPPLICANT_CONF}"
+}
+
+claim_wifi_devices() {
+  command -v nmcli >/dev/null 2>&1 || return 0
+  local device state
+  while IFS=: read -r device _type state _; do
+    [[ -n "${device}" ]] || continue
+    case "${state}" in
+      unmanaged|unavailable)
+        nmcli device set "${device}" managed yes >/dev/null 2>&1 || true
+        echo "NetworkManager pasa a gestionar ${device} (antes ${state})."
+        ;;
+    esac
+  done < <(nmcli -t -f DEVICE,TYPE,STATE device status 2>/dev/null | awk -F: '$2=="wifi"{print}')
+}
+
+wait_for_wifi_ready() {
+  command -v nmcli >/dev/null 2>&1 || return 0
+  local i device state
+  for i in $(seq 1 20); do
+    claim_wifi_devices
+    state="$(nmcli -t -f DEVICE,TYPE,STATE device status 2>/dev/null | awk -F: '$2=="wifi"{print $3; exit}')"
+    case "${state}" in
+      connected|disconnected|connecting|disconnecting|deactivating|failed|need-auth)
+        echo "Adaptador Wi-Fi listo (estado ${state})."
+        return 0
+        ;;
+    esac
+    sleep 0.5
+  done
+  echo "Aviso: el adaptador Wi-Fi sigue en estado «${state:-desconocido}» tras esperar a NetworkManager."
+  return 0
+}
+
+enable_wifi_radio() {
+  if command -v rfkill >/dev/null 2>&1; then
+    rfkill unblock wifi >/dev/null 2>&1 || true
+    rfkill unblock wlan >/dev/null 2>&1 || true
+  fi
+  if command -v nmcli >/dev/null 2>&1; then
+    nmcli radio wifi on >/dev/null 2>&1 || true
+  fi
+}
+
+force_wifi_rescan() {
+  command -v nmcli >/dev/null 2>&1 || return 0
+  local device
+  device="$(nmcli -t -f DEVICE,TYPE device status 2>/dev/null | awk -F: '$2=="wifi"{print $1; exit}')"
+  if [[ -n "${device}" ]]; then
+    nmcli device wifi rescan ifname "${device}" >/dev/null 2>&1 \
+      || nmcli device wifi rescan >/dev/null 2>&1 \
+      || true
+  else
+    nmcli device wifi rescan >/dev/null 2>&1 || true
+  fi
+  sleep 2
+  local count
+  count="$(nmcli -t -f SSID device wifi list 2>/dev/null | awk 'NF' | wc -l | tr -d ' ')"
+  echo "Escaneo Wi-Fi: ${count:-0} redes visibles para NetworkManager."
+}
+
+adopt_current_ssid_if_needed() {
+  command -v nmcli >/dev/null 2>&1 || return 0
+  local ssid=""
+  if command -v iwgetid >/dev/null 2>&1; then
+    ssid="$(iwgetid -r 2>/dev/null || true)"
+  fi
+  if [[ -z "${ssid}" ]]; then
+    ssid="$(nmcli -t -f ACTIVE,SSID dev wifi 2>/dev/null | awk -F: '$1=="yes"{print $2; exit}')"
+  fi
+  [[ -n "${ssid}" ]] || return 0
+  # Only create a blank profile when none exists; never overwrite secrets.
+  if ! nmcli -t -f NAME,TYPE connection show 2>/dev/null | grep -Fxq "${ssid}:802-11-wireless"; then
+    create_nm_wifi_connection "${ssid}" ""
+  fi
+  nmcli connection up id "${ssid}" >/dev/null 2>&1 || true
+}
+
+run_root install -d -m 0755 "${NM_CONF_D}" /var/lib/aidycos
+printf '%s\n' \
+  '[main]' \
+  'plugins=ifupdown,keyfile' \
+  '' \
+  '[ifupdown]' \
+  'managed=true' \
+  | run_root tee "${NM_MANAGED_DROPIN}" >/dev/null
+
+if run_root test -f /etc/NetworkManager/NetworkManager.conf; then
+  if run_root grep -q '^[[:space:]]*managed[[:space:]]*=' /etc/NetworkManager/NetworkManager.conf; then
+    run_root sed -i 's/^[[:space:]]*managed[[:space:]]*=.*/managed=true/' /etc/NetworkManager/NetworkManager.conf
+  fi
+fi
+
+if [[ ! -e "${MARKER}" ]] || interfaces_still_claim_wifi; then
+  migrate_ifupdown_wifi
   run_root install -D -m 0644 /dev/null "${MARKER}"
 fi
 
 run_root systemctl enable NetworkManager.service >/dev/null 2>&1 || true
 run_root systemctl restart NetworkManager.service >/dev/null 2>&1 || true
-# Prefer NM over legacy networking.service when both exist.
+
 if systemctl list-unit-files networking.service >/dev/null 2>&1; then
   run_root systemctl disable networking.service >/dev/null 2>&1 || true
   run_root systemctl stop networking.service >/dev/null 2>&1 || true
 fi
 
-# Always re-claim wifi devices: installer Wi-Fi often stays unmanaged=false.
+# Kill leftover ifupdown-style wpa_supplicant instances that hold the iface.
+# NetworkManager starts its own wpa_supplicant via D-Bus.
+if systemctl list-unit-files 'wpa_supplicant@*.service' >/dev/null 2>&1; then
+  run_root systemctl stop 'wpa_supplicant@*.service' >/dev/null 2>&1 || true
+  run_root systemctl disable 'wpa_supplicant@*.service' >/dev/null 2>&1 || true
+fi
+
 sleep 1
-claim_wifi_devices
+enable_wifi_radio
+wait_for_wifi_ready
 adopt_current_ssid_if_needed
+force_wifi_rescan
 claim_wifi_devices
 
-echo "NetworkManager gestiona las interfaces (ifupdown managed=true)."
+echo "NetworkManager gestiona las interfaces (ifupdown managed=true) y el Wi-Fi puede escanear."

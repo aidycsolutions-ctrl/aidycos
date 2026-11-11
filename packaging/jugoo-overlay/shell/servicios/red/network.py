@@ -460,6 +460,50 @@ def _cached_property(proxy: Gio.DBusProxy, name: str, default: Any = None) -> An
     return variant.unpack()
 
 
+def _dbus_get_property(
+    bus: Gio.DBusConnection,
+    object_path: str,
+    interface: str,
+    name: str,
+    default: Any = None,
+) -> Any:
+    """Synchronous Properties.Get — avoids empty Gio.DBusProxy property cache races."""
+    try:
+        result = bus.call_sync(
+            NM_BUS_NAME,
+            object_path,
+            NM_DBUS_PROPERTIES,
+            "Get",
+            GLib.Variant("(ss)", (interface, name)),
+            GLib.VariantType("(v)"),
+            Gio.DBusCallFlags.NONE,
+            NETWORK_DBUS_TIMEOUT_MS,
+            None,
+        )
+        return result.unpack()[0]
+    except GLib.Error:
+        return default
+
+
+def _proxy_property(
+    proxy: Gio.DBusProxy,
+    name: str,
+    default: Any = None,
+    *,
+    bus: Gio.DBusConnection | None = None,
+) -> Any:
+    cached = _cached_property(proxy, name, None)
+    if cached is not None:
+        return cached
+    if bus is None:
+        return default
+    interface = proxy.get_interface_name() or ""
+    path = proxy.get_object_path() or ""
+    if not interface or not path:
+        return default
+    return _dbus_get_property(bus, path, interface, name, default)
+
+
 def _decode_ssid(raw: Any) -> str:
     if raw is None:
         return ""
@@ -471,8 +515,13 @@ def _decode_ssid(raw: Any) -> str:
 
 
 def read_wireless_radio_state(nm_proxy: Gio.DBusProxy) -> tuple[bool, bool]:
-    enabled = bool(_cached_property(nm_proxy, "WirelessEnabled", False))
-    hardware = bool(_cached_property(nm_proxy, "WirelessHardwareEnabled", False))
+    bus = nm_proxy.get_connection()
+    enabled = bool(
+        _proxy_property(nm_proxy, "WirelessEnabled", False, bus=bus),
+    )
+    hardware = bool(
+        _proxy_property(nm_proxy, "WirelessHardwareEnabled", False, bus=bus),
+    )
     return enabled, hardware
 
 
@@ -488,6 +537,10 @@ def wifi_scan_allowed(snapshot: NetworkSnapshot) -> bool:
     return wifi.state not in ("unavailable", "unmanaged", "unknown")
 
 
+# After Debian ifupdown→NM handoff the device often stays unavailable for seconds.
+_WIFI_SCAN_READY_DELAYS_MS = (500, 1000, 2000, 4000, 8000, 12000)
+
+
 def read_access_point_snapshot(
     bus: Gio.DBusConnection,
     access_point_path: str,
@@ -496,30 +549,63 @@ def read_access_point_snapshot(
 ) -> WifiAccessPointSnapshot | None:
     if not access_point_path or access_point_path == "/":
         return None
-    try:
-        proxy = Gio.DBusProxy.new_sync(
+    ssid = _decode_ssid(
+        _dbus_get_property(
             bus,
-            Gio.DBusProxyFlags.NONE,
-            None,
-            NM_BUS_NAME,
             access_point_path,
             NM_ACCESS_POINT_INTERFACE,
-            None,
-        )
-    except GLib.Error:
-        return None
-
-    ssid = _decode_ssid(_cached_property(proxy, "Ssid", b""))
+            "Ssid",
+            b"",
+        ),
+    )
     if not ssid:
         return None
-    wpa_flags = int(_cached_property(proxy, "WpaFlags", 0) or 0)
-    rsn_flags = int(_cached_property(proxy, "RsnFlags", 0) or 0)
+    wpa_flags = int(
+        _dbus_get_property(
+            bus,
+            access_point_path,
+            NM_ACCESS_POINT_INTERFACE,
+            "WpaFlags",
+            0,
+        )
+        or 0,
+    )
+    rsn_flags = int(
+        _dbus_get_property(
+            bus,
+            access_point_path,
+            NM_ACCESS_POINT_INTERFACE,
+            "RsnFlags",
+            0,
+        )
+        or 0,
+    )
+    strength = int(
+        _dbus_get_property(
+            bus,
+            access_point_path,
+            NM_ACCESS_POINT_INTERFACE,
+            "Strength",
+            0,
+        )
+        or 0,
+    )
+    frequency = int(
+        _dbus_get_property(
+            bus,
+            access_point_path,
+            NM_ACCESS_POINT_INTERFACE,
+            "Frequency",
+            0,
+        )
+        or 0,
+    )
     return WifiAccessPointSnapshot(
         path=access_point_path,
         ssid=ssid,
-        strength=int(_cached_property(proxy, "Strength", 0) or 0),
+        strength=strength,
         secured=bool(wpa_flags or rsn_flags),
-        frequency_mhz=int(_cached_property(proxy, "Frequency", 0) or 0),
+        frequency_mhz=frequency,
         active=access_point_path == active_path,
     )
 
@@ -653,6 +739,92 @@ def parse_nmcli_wifi_credentials(stdout: str) -> WifiCredentials | None:
     )
 
 
+def _split_nmcli_terse_line(line: str) -> list[str]:
+    """Split nmcli -t output honoring backslash-escaped colons."""
+    parts: list[str] = []
+    buf: list[str] = []
+    escaped = False
+    for char in line:
+        if escaped:
+            buf.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == ":":
+            parts.append("".join(buf))
+            buf = []
+            continue
+        buf.append(char)
+    parts.append("".join(buf))
+    return parts
+
+
+def _read_wifi_access_points_nmcli(
+    *,
+    saved_ssids: frozenset[str] | set[str] = frozenset(),
+) -> tuple[WifiAccessPointSnapshot, ...]:
+    """Fallback when D-Bus AP objects are empty/racy but nmcli already sees SSIDs."""
+    import shutil
+    import subprocess
+
+    nmcli = shutil.which("nmcli")
+    if not nmcli:
+        return ()
+    try:
+        completed = subprocess.run(
+            [
+                nmcli,
+                "-t",
+                "-f",
+                "IN-USE,SSID,SIGNAL,SECURITY,FREQ",
+                "device",
+                "wifi",
+                "list",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ()
+    if completed.returncode != 0 or not completed.stdout.strip():
+        return ()
+
+    points: list[WifiAccessPointSnapshot] = []
+    for index, line in enumerate(completed.stdout.splitlines()):
+        parts = _split_nmcli_terse_line(line)
+        if len(parts) < 4:
+            continue
+        in_use, ssid, signal, security = parts[0], parts[1], parts[2], parts[3]
+        freq = parts[4] if len(parts) > 4 else "0"
+        ssid = ssid.strip()
+        if not ssid:
+            continue
+        try:
+            strength = int(str(signal).strip() or "0")
+        except ValueError:
+            strength = 0
+        try:
+            frequency = int(str(freq).strip() or "0")
+        except ValueError:
+            frequency = 0
+        points.append(
+            WifiAccessPointSnapshot(
+                # Synthetic path: connect_wifi uses SSID via nmcli, not the D-Bus AP path.
+                path=f"/nmcli/{index}/{ssid}",
+                ssid=ssid,
+                strength=strength,
+                secured=bool(str(security).strip()) and str(security).strip().upper() != "--",
+                frequency_mhz=frequency,
+                active=in_use.strip() == "*",
+            ),
+        )
+    return merge_access_points_by_ssid(points, saved_ssids=saved_ssids)
+
+
 def read_wifi_access_points(
     bus: Gio.DBusConnection,
     device_path: str,
@@ -677,10 +849,12 @@ def read_wifi_access_points(
             None,
         )
         access_point_paths = tuple(str(path) for path in result.unpack()[0])
-        active_path = str(_cached_property(wireless_proxy, "ActiveAccessPoint", "/") or "/")
+        active_path = str(
+            _proxy_property(wireless_proxy, "ActiveAccessPoint", "/", bus=bus) or "/",
+        )
     except GLib.Error as exc:
         _logger.debug("GetAllAccessPoints failed for %s: %s", device_path, exc.message)
-        return ()
+        return _read_wifi_access_points_nmcli(saved_ssids=saved_ssids)
 
     points: list[WifiAccessPointSnapshot] = []
     for path in access_point_paths:
@@ -691,7 +865,11 @@ def read_wifi_access_points(
         )
         if snapshot is not None:
             points.append(snapshot)
-    return merge_access_points_by_ssid(points, saved_ssids=saved_ssids)
+    merged = merge_access_points_by_ssid(points, saved_ssids=saved_ssids)
+    if merged:
+        return merged
+    # D-Bus listed paths but SSID cache was empty, or NM has no AP objects yet.
+    return _read_wifi_access_points_nmcli(saved_ssids=saved_ssids)
 
 
 def _wifi_connection_settings_variant(ssid: str, password: str) -> GLib.Variant:
@@ -1235,11 +1413,38 @@ class NetworkService:
         return False
 
     def _request_wifi_scan_idle(self) -> bool:
+        if not self._snapshot.wireless_hardware_enabled:
+            self._wifi_connection_error = "Wi-Fi no disponible en este equipo."
+            self._schedule_refresh()
+            return False
+        if not self._snapshot.wireless_enabled:
+            # Turn the radio on, then retry scan when NM reports ready.
+            self._wifi_connection_error = "Activando Wi-Fi para buscar redes…"
+            self._set_wireless_enabled_idle(True)
+            self._schedule_wifi_scan_when_ready()
+            self._schedule_refresh()
+            return False
         if not wifi_scan_allowed(self._snapshot):
-            _logger.debug("Skipping Wi-Fi scan: interface not ready")
+            wifi = self._snapshot.wifi
+            if wifi is None:
+                self._wifi_connection_error = (
+                    "Sin adaptador Wi-Fi gestionado por NetworkManager."
+                )
+            else:
+                self._wifi_connection_error = (
+                    "Wi-Fi aún no está listo para buscar redes. Reintentando…"
+                )
+            _logger.info(
+                "Deferring Wi-Fi scan: state=%s",
+                None if wifi is None else wifi.state,
+            )
+            self._schedule_wifi_scan_when_ready()
+            self._schedule_refresh()
             return False
         device_path = self._wifi_device_path()
         if self._bus is None or device_path is None:
+            self._wifi_connection_error = "Sin adaptador Wi-Fi gestionado por NetworkManager."
+            self._schedule_refresh()
             return False
         try:
             wireless_proxy = Gio.DBusProxy.new_sync(
@@ -1259,13 +1464,29 @@ class NetworkService:
                 None,
             )
             self._wifi_scan_pending = False
+            self._wifi_connection_error = "Buscando redes…"
+            self._schedule_refresh()
+            # Follow-ups re-read APs (D-Bus + nmcli fallback) until the list fills.
             self._schedule_wifi_scan_followup()
         except GLib.Error as exc:
-            if "Scanning not allowed while unavailable" in exc.message:
-                _logger.debug("Wi-Fi scan deferred: %s", exc.message)
+            message = exc.message or ""
+            if "Scanning not allowed while unavailable" in message:
+                _logger.debug("Wi-Fi scan deferred: %s", message)
+                self._wifi_connection_error = (
+                    "Wi-Fi aún no está listo para buscar redes. Reintentando…"
+                )
                 self._schedule_wifi_scan_when_ready()
+                self._schedule_refresh()
+            elif "Not authorized" in message or "NotAuthorized" in message:
+                self._wifi_connection_error = (
+                    "Sin permiso para buscar redes Wi-Fi (polkit)."
+                )
+                _logger.warning("RequestScan failed: %s", message)
+                self._schedule_refresh()
             else:
-                _logger.warning("RequestScan failed: %s", exc.message)
+                self._wifi_connection_error = f"No se pudo buscar redes: {message}"
+                _logger.warning("RequestScan failed: %s", message)
+                self._schedule_refresh()
         return False
 
     def _saved_wifi_profiles(self) -> dict[str, tuple[str, ...]]:
@@ -2161,12 +2382,15 @@ class NetworkService:
         self._wifi_scan_pending = True
         if self._wifi_scan_followup_source_id or self._wifi_scan_followup_delays:
             return
-        self._wifi_scan_followup_delays = list(NETWORK_WIFI_SCAN_FOLLOWUP_DELAYS_MS)
+        self._wifi_scan_followup_delays = list(_WIFI_SCAN_READY_DELAYS_MS)
         self._queue_wifi_scan_followup_tick()
 
     def _schedule_wifi_scan_followup(self) -> None:
-        self._wifi_scan_followup_delays = list(NETWORK_WIFI_SCAN_FOLLOWUP_DELAYS_MS)
+        self._wifi_scan_followup_delays = list(_WIFI_SCAN_READY_DELAYS_MS)
         self._refresh_snapshot(emit=True, force_connectivity_check=False)
+        if self._wifi_connection_error == "Buscando redes…":
+            # Keep status honest while NM fills the AP cache / nmcli fallback.
+            pass
         if not self._wifi_scan_followup_source_id:
             self._queue_wifi_scan_followup_tick()
 
@@ -2185,11 +2409,26 @@ class NetworkService:
             self._request_wifi_scan_idle()
         else:
             self._refresh_snapshot(emit=True, force_connectivity_check=False)
+            if (
+                self._wifi_connection_error == "Buscando redes…"
+                and self._snapshot.wifi_access_points
+            ):
+                self._wifi_connection_error = ""
+                self._refresh_snapshot(emit=True, force_connectivity_check=False)
         if self._wifi_scan_followup_delays:
             self._queue_wifi_scan_followup_tick()
         elif self._wifi_scan_pending and not wifi_scan_allowed(self._snapshot):
-            _logger.debug("Wi-Fi scan follow-up finished while interface still unavailable")
+            _logger.info("Wi-Fi scan follow-up finished while interface still unavailable")
             self._wifi_scan_pending = False
+            self._wifi_connection_error = (
+                "Wi-Fi no gestionado o no listo. Revisa NetworkManager "
+                "(nmcli device) o vuelve a aplicar AidyCOS."
+            )
+            self._schedule_refresh()
+        elif self._wifi_connection_error == "Buscando redes…":
+            # Clear transient status even if the list stayed empty.
+            self._wifi_connection_error = ""
+            self._schedule_refresh()
         return False
 
     def _refresh_snapshot(

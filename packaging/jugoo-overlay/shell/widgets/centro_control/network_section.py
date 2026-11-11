@@ -329,7 +329,22 @@ class ControlCenterNetworkSection(ShellModule):
         self._maybe_prompt_password_after_error(snapshot)
 
         if not snapshot.wifi_access_points:
-            empty = Gtk.Label(label="No se encontraron redes", xalign=0)
+            wifi = snapshot.wifi
+            if snapshot.wifi_connection_error.startswith(
+                ("Activando Wi-Fi", "Wi-Fi aún no está listo", "Buscando redes"),
+            ):
+                empty_text = snapshot.wifi_connection_error
+            elif wifi is not None and wifi.state in {"unavailable", "unmanaged", "unknown"}:
+                empty_text = (
+                    "Wi-Fi no gestionado o no listo para buscar. "
+                    "Espera unos segundos y pulsa «Buscar redes»."
+                )
+            elif wifi is None:
+                empty_text = "Sin adaptador Wi-Fi gestionado por NetworkManager."
+            else:
+                empty_text = "No se encontraron redes. Pulsa «Buscar redes»."
+            empty = Gtk.Label(label=empty_text, xalign=0)
+            empty.set_line_wrap(True)
             empty.get_style_context().add_class("control-center-detail-muted")
             self._wifi_list.add(empty)
             self._wifi_list.show_all()
