@@ -45,7 +45,7 @@ Vista previa del perfil AidyCOS para Debian 13:
   * Configurar GRUB sin menú, modo gráfico con fallbacks y el splash de Plymouth con logo (apply-aidycos-boot.sh).
   * Preferir la resolución del monitor externo detectado para GRUB/Plymouth cuando exista.
   * Desactivar drop-ins legados de AidyC que vuelvan a mostrar texto de arranque.
-  * Seleccionar SDDM y habilitar el arranque gráfico; logo en todas las pantallas de acceso.
+  * Seleccionar SDDM y habilitar el arranque gráfico; logo y formulario de acceso en todas las pantallas.
   * Activar NumLock en la pantalla de acceso y en Hyprland.
   * Crear configuración inicial de Hyprland si no existe.
   * Ocultar GRUB y los mensajes de arranque; mostrar el logo en Plymouth y SDDM.
@@ -844,7 +844,7 @@ configure_login() {
       echo "SDDM usa autenticación por contraseña sin espera de huella."
     fi
   fi
-  echo "SDDM usa el tema AidyCOS con logo en cada pantalla y NumLock activo."
+  echo "SDDM usa el tema AidyCOS con logo y formulario de acceso en cada pantalla y NumLock activo."
 }
 configure_login
 
@@ -855,7 +855,7 @@ systemctl --user enable --now aidycos-update-check.timer >/dev/null 2>&1 || true
 cat <<EOF
 
 AidyCOS quedó aplicado sobre Debian 13.
-GRUB queda oculto en modo gráfico (con resoluciones de respaldo; prioriza el monitor externo si estaba conectado al aplicar el perfil). Plymouth muestra solo el logo AidyCOS y SDDM lo replica en cada pantalla de acceso.
+GRUB queda oculto en modo gráfico (con resoluciones de respaldo; prioriza el monitor externo si estaba conectado al aplicar el perfil). Plymouth muestra solo el logo AidyCOS y SDDM muestra logo y formulario de acceso en cada pantalla.
 En SDDM selecciona la sesión Hyprland la primera vez; luego se recordará. NumLock queda activo en SDDM y Hyprland. Si se modificó tu configuración de Hyprland, revisa el respaldo indicado arriba.
 EOF
 

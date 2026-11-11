@@ -5,6 +5,7 @@ import QtQuick.Layouts 1.15
 Item {
     id: root
     // SDDM instantiates this view per output; fill that screen completely.
+    // Login form is shown on every connected screen.
     width: Screen.width
     height: Screen.height
 
@@ -14,22 +15,6 @@ Item {
     readonly property color mutedColor: "#A8A8A8"
     readonly property color borderColor: "#2A2A2A"
     readonly property color accentColor: "#1EC8E8"
-    // SDDM exposes primaryScreen as a bool on multi-seat/multi-head greeters.
-    readonly property bool isPrimaryScreen: {
-        if (typeof primaryScreen === "boolean")
-            return primaryScreen
-        if (typeof Qt !== "undefined" && Qt.application && Qt.application.screens && Screen) {
-            var screens = Qt.application.screens
-            for (var i = 0; i < screens.length; i++) {
-                if (screens[i].serialNumber === Screen.serialNumber
-                        && screens[i].name === Screen.name
-                        && screens[i].virtualX === Screen.virtualX
-                        && screens[i].virtualY === Screen.virtualY)
-                    return i === 0
-            }
-        }
-        return true
-    }
 
     property int sessionIndex: sessionModel.lastIndex
     property string errorText: ""
@@ -59,12 +44,9 @@ Item {
 
     Image {
         anchors.horizontalCenter: parent.horizontalCenter
-        anchors.verticalCenter: root.isPrimaryScreen ? undefined : parent.verticalCenter
-        anchors.top: root.isPrimaryScreen ? parent.top : undefined
-        anchors.topMargin: root.isPrimaryScreen ? Math.max(28, parent.height * 0.05) : 0
-        width: root.isPrimaryScreen
-               ? Math.min(280, parent.width * 0.26, parent.height * 0.30)
-               : Math.min(parent.width, parent.height) * 0.42
+        anchors.top: parent.top
+        anchors.topMargin: Math.max(28, parent.height * 0.05)
+        width: Math.min(280, parent.width * 0.26, parent.height * 0.30)
         height: width
         source: "aidycos.png"
         fillMode: Image.PreserveAspectFit
@@ -75,18 +57,17 @@ Item {
     // Application-level shortcuts survive IM/compose quirks that skip TextField.onAccepted.
     Shortcut {
         sequences: ["Return", "Enter"]
-        enabled: root.isPrimaryScreen && usernameField.activeFocus && !root.loginInProgress
+        enabled: usernameField.activeFocus && !root.loginInProgress
         onActivated: passwordField.forceActiveFocus()
     }
     Shortcut {
         sequences: ["Return", "Enter"]
-        enabled: root.isPrimaryScreen && passwordField.activeFocus && !root.loginInProgress
+        enabled: passwordField.activeFocus && !root.loginInProgress
         onActivated: root.doLogin()
     }
 
     Item {
         id: form
-        visible: root.isPrimaryScreen
         width: Math.min(380, parent.width * 0.86)
         height: formColumn.implicitHeight + 48
         anchors.horizontalCenter: parent.horizontalCenter
@@ -222,7 +203,6 @@ Item {
 
     Connections {
         target: sddm
-        enabled: root.isPrimaryScreen
         function onLoginFailed() {
             root.loginInProgress = false
             root.statusText = ""
@@ -238,8 +218,6 @@ Item {
     }
 
     Component.onCompleted: {
-        if (!root.isPrimaryScreen)
-            return
         if (usernameField.text.length > 0)
             passwordField.forceActiveFocus()
         else
