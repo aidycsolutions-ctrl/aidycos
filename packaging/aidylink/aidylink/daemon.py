@@ -480,7 +480,14 @@ async def run_daemon(cfg: LinkConfig | None = None) -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     daemon = AidylinkDaemon(config)
-    await daemon.start()
+    try:
+        await daemon.start()
+    except Exception:
+        try:
+            await daemon.stop()
+        except Exception:
+            pass
+        raise
 
     stop_event = asyncio.Event()
 
@@ -494,8 +501,10 @@ async def run_daemon(cfg: LinkConfig | None = None) -> None:
         except NotImplementedError:
             signal.signal(sig, lambda *_: _stop())
 
-    await stop_event.wait()
-    await daemon.stop()
+    try:
+        await stop_event.wait()
+    finally:
+        await daemon.stop()
 
 
 def control_request(payload: dict[str, Any], *, timeout: float = 5.0) -> dict[str, Any]:
