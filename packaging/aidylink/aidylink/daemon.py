@@ -37,6 +37,7 @@ class AidylinkDaemon:
             on_presence=self.discovery.accept_presence,
             presence_body=self.discovery.presence_body,
             on_pair_request=self.pairing.handle_request,
+            on_pair_ask=self._on_pair_ask,
         )
         self.cloud = AidyChatBridge(cfg)
         self.router = MessageRouter(cfg, self.discovery, self.lan, self.cloud)
@@ -51,6 +52,30 @@ class AidylinkDaemon:
         self._media_dir = data_dir() / "media"
         self._media_dir.mkdir(parents=True, exist_ok=True)
         self._mobile_fanout_task: asyncio.Task | None = None
+
+    async def _on_pair_ask(self, body: dict[str, Any], peer_host: str) -> dict[str, Any]:
+        name = str(body.get("display_name") or peer_host or "PC")
+        notify("AidyChat", f"{name} quiere conectarse. Ábrelo para aprobar.")
+        return await self.pairing.wait_ask(body, peer_host)
+
+    def _apply_pair_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        if not result.get("ok"):
+            return result
+        self.cfg.team_id = str(result["team_id"])
+        self.cfg.team_secret = str(result["team_secret"])
+        save_config(self.cfg)
+        self.discovery.peers.clear()
+        self.discovery.mismatches.clear()
+        host = str(result.get("host") or "").strip()
+        if host and host not in ("local",):
+            self.discovery.remember_host(host)
+        self.discovery.request_rescan()
+        if not result.get("already_member"):
+            notify(
+                "AidyChat",
+                f"Emparejado con {result.get('host_name') or 'otro PC'}",
+            )
+        return result
 
     def _on_lan_message(self, message: LinkMessage) -> None:
         self._materialize_media(message)
@@ -393,22 +418,21 @@ class AidylinkDaemon:
             hosts.extend(p.host for p in self.discovery.list_online())
             hosts.extend(self.discovery._known_hosts.keys())
             result = await self.pairing.join(pin, hosts=hosts)
-            if result.get("ok"):
-                self.cfg.team_id = str(result["team_id"])
-                self.cfg.team_secret = str(result["team_secret"])
-                save_config(self.cfg)
-                self.discovery.peers.clear()
-                self.discovery.mismatches.clear()
-                host = str(result.get("host") or "").strip()
-                if host and host not in ("local",):
-                    self.discovery.remember_host(host)
-                self.discovery.request_rescan()
-                if not result.get("already_member"):
-                    notify(
-                        "AidyChat",
-                        f"Emparejado con {result.get('host_name') or 'otro PC'}",
-                    )
-            return result
+            return self._apply_pair_result(result)
+        if cmd == "pair_ask":
+            host = str(req.get("host") or "").strip()
+            port = req.get("port")
+            result = await self.pairing.ask_host(
+                host,
+                message_port=int(port) if port else None,
+            )
+            return self._apply_pair_result(result)
+        if cmd == "pair_pending":
+            return {"ok": True, "asks": self.pairing.list_pending_asks()}
+        if cmd == "pair_decide":
+            ask_id = str(req.get("ask_id") or "").strip()
+            approve = bool(req.get("approve"))
+            return self.pairing.decide_ask(ask_id, approve=approve)
         if cmd == "send":
             target = str(req.get("to") or "")
             text = str(req.get("text") or "")

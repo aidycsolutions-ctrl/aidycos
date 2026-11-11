@@ -1,4 +1,4 @@
-"""LAN pairing — durable group code + optional short-lived PIN for mobile QR."""
+"""LAN pairing — one-tap approve, durable group code, optional mobile PIN."""
 
 from __future__ import annotations
 
@@ -8,7 +8,8 @@ import json
 import logging
 import secrets
 import time
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from typing import Any
 
 from . import PROTOCOL
@@ -18,6 +19,7 @@ from .netutil import detect_lan_ip, lan_subnet_hosts
 LOGGER = logging.getLogger(__name__)
 
 PAIR_TTL_S = 180.0
+PAIR_ASK_TTL_S = 90.0
 PAIR_CONNECT_TIMEOUT_S = 1.5
 PAIR_SCAN_CONCURRENCY = 64
 
@@ -32,16 +34,28 @@ class PairingSession:
         return time.time() <= self.expires_at
 
 
+@dataclass
+class PendingAsk:
+    ask_id: str
+    from_name: str
+    from_node_id: str
+    from_host: str
+    created_at: float = field(default_factory=time.time)
+    future: asyncio.Future | None = None
+
+    @property
+    def active(self) -> bool:
+        if self.future is not None and self.future.done():
+            return False
+        return (time.time() - self.created_at) <= PAIR_ASK_TTL_S
+
+
 def generate_pin() -> str:
     return f"{secrets.randbelow(1_000_000):06d}"
 
 
 def group_code_for(cfg: LinkConfig) -> str:
-    """Stable 6-digit code for this PC's group. Survives Wi‑Fi changes.
-
-    Anyone who enters this code while on the same LAN receives the current
-    team_id/team_secret. No need to open a temporary host session.
-    """
+    """Stable 6-digit code for this PC's group. Survives Wi‑Fi changes."""
     material = f"aidylink-group-v1:{cfg.team_id}:{cfg.team_secret}"
     digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
     return f"{int(digest[:8], 16) % 1_000_000:06d}"
@@ -52,12 +66,20 @@ class PairingService:
         self.cfg = cfg
         self._session: PairingSession | None = None
         self._paired_at: float = 0.0
+        self._asks: dict[str, PendingAsk] = {}
 
     def group_code(self) -> str:
         return group_code_for(self.cfg)
 
+    def _purge_asks(self) -> None:
+        dead = [ask_id for ask_id, ask in self._asks.items() if not ask.active]
+        for ask_id in dead:
+            ask = self._asks.pop(ask_id, None)
+            if ask and ask.future is not None and not ask.future.done():
+                ask.future.set_result({"ok": False, "error": "expired"})
+
     def start_host(self) -> dict[str, Any]:
-        """Start a short-lived PIN (mainly for mobile QR). PC join uses group_code."""
+        """Start a short-lived PIN (mainly for mobile QR)."""
         pin = generate_pin()
         self._paired_at = 0.0
         self._session = PairingSession(pin=pin, expires_at=time.time() + PAIR_TTL_S)
@@ -120,13 +142,145 @@ class PairingService:
             "ts": int(time.time()),
         }
 
+    def list_pending_asks(self) -> list[dict[str, Any]]:
+        self._purge_asks()
+        out: list[dict[str, Any]] = []
+        for ask in self._asks.values():
+            if not ask.active:
+                continue
+            out.append(
+                {
+                    "ask_id": ask.ask_id,
+                    "from_name": ask.from_name,
+                    "from_node": ask.from_node_id,
+                    "from_host": ask.from_host,
+                    "expires_in": max(
+                        0, int(ask.created_at + PAIR_ASK_TTL_S - time.time())
+                    ),
+                }
+            )
+        return out
+
+    def decide_ask(self, ask_id: str, *, approve: bool) -> dict[str, Any]:
+        self._purge_asks()
+        ask = self._asks.get(str(ask_id or "").strip())
+        if ask is None or not ask.active:
+            return {"ok": False, "error": "La solicitud ya no está disponible"}
+        if ask.future is None or ask.future.done():
+            self._asks.pop(ask.ask_id, None)
+            return {"ok": False, "error": "La solicitud ya se resolvió"}
+        if approve:
+            ask.future.set_result({"ok": True, "body": self._grant_body()})
+            self._paired_at = time.time()
+        else:
+            ask.future.set_result({"ok": False, "error": "rejected"})
+        return {"ok": True, "approved": bool(approve)}
+
+    async def wait_ask(self, body: dict[str, Any], peer_host: str) -> dict[str, Any]:
+        """Block the LAN connection until the local user approves/rejects."""
+        self._purge_asks()
+        from_name = str(body.get("display_name") or peer_host or "PC").strip()[:40]
+        from_node = str(body.get("node_id") or "").strip()
+        ask_id = uuid.uuid4().hex[:12]
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
+        ask = PendingAsk(
+            ask_id=ask_id,
+            from_name=from_name or "PC",
+            from_node_id=from_node,
+            from_host=(peer_host or "").strip(),
+            future=future,
+        )
+        self._asks[ask_id] = ask
+        LOGGER.info("pair ask from %s (%s)", ask.from_name, ask.from_host)
+        try:
+            result = await asyncio.wait_for(future, timeout=PAIR_ASK_TTL_S)
+        except asyncio.TimeoutError:
+            result = {"ok": False, "error": "expired"}
+        finally:
+            self._asks.pop(ask_id, None)
+        return result if isinstance(result, dict) else {"ok": False, "error": "failed"}
+
+    async def ask_host(
+        self,
+        host: str,
+        *,
+        message_port: int | None = None,
+    ) -> dict[str, Any]:
+        """Ask another PC to approve joining its group (one-tap connect)."""
+        host = (host or "").strip()
+        if not host:
+            return {"ok": False, "error": "Falta la IP del otro computador"}
+        port = int(message_port or self.cfg.message_port)
+        body = {
+            "protocol": PROTOCOL,
+            "type": "pair_ask",
+            "node_id": self.cfg.node_id,
+            "display_name": self.cfg.display_name,
+            "ts": int(time.time()),
+        }
+        line = (json.dumps({"body": body}, ensure_ascii=False) + "\n").encode("utf-8")
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port),
+                timeout=3.0,
+            )
+        except (OSError, asyncio.TimeoutError):
+            return {
+                "ok": False,
+                "error": "No se pudo contactar ese PC. ¿Sigue en la misma Wi‑Fi?",
+            }
+        try:
+            writer.write(line)
+            await writer.drain()
+            raw = await asyncio.wait_for(reader.readline(), timeout=PAIR_ASK_TTL_S + 5.0)
+        except (OSError, asyncio.TimeoutError):
+            return {
+                "ok": False,
+                "error": "El otro PC no respondió a tiempo (debe pulsar Aprobar).",
+            }
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+        if not raw:
+            return {"ok": False, "error": "Sin respuesta del otro PC"}
+        try:
+            reply = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return {"ok": False, "error": "Respuesta inválida"}
+        if not isinstance(reply, dict):
+            return {"ok": False, "error": "Respuesta inválida"}
+        if not reply.get("ok"):
+            err = str(reply.get("error") or "")
+            if err == "rejected":
+                return {"ok": False, "error": "El otro PC rechazó la conexión"}
+            if err == "expired":
+                return {"ok": False, "error": "Se agotó el tiempo para aprobar"}
+            return {"ok": False, "error": err or "No se pudo emparejar"}
+        grant = reply.get("body")
+        if not isinstance(grant, dict) or grant.get("type") != "pair_grant":
+            return {"ok": False, "error": "El otro PC no envió credenciales"}
+        team_id = str(grant.get("team_id") or "").strip()
+        team_secret = str(grant.get("team_secret") or "").strip()
+        if not team_id or not team_secret:
+            return {"ok": False, "error": "Credenciales incompletas"}
+        return {
+            "ok": True,
+            "team_id": team_id,
+            "team_secret": team_secret,
+            "host": host,
+            "host_name": str(grant.get("host_name") or host),
+        }
+
     def handle_request(self, body: dict[str, Any]) -> dict[str, Any] | None:
         """Accept temporary PIN (consumes) or permanent group_code (reusable)."""
         pin = str(body.get("pin") or body.get("group_code") or "").strip()
         if not pin:
             return {"ok": False, "error": "pin"}
 
-        # Permanent group code: always available, never expires, Wi‑Fi-proof.
         if secrets.compare_digest(pin, self.group_code()):
             self._paired_at = time.time()
             return {"ok": True, "body": self._grant_body()}
@@ -134,7 +288,6 @@ class PairingService:
         session = self._session
         if session and session.active and secrets.compare_digest(pin, session.pin):
             grant = self._grant_body()
-            # Temporary mobile PIN is one-shot.
             self._session = None
             self._paired_at = time.time()
             return {"ok": True, "body": grant}
@@ -150,7 +303,6 @@ class PairingService:
         pin = (pin or "").strip()
         if not pin.isdigit() or len(pin) != 6:
             return {"ok": False, "error": "El código debe tener 6 dígitos"}
-        # Same code as ours → already in the group.
         if secrets.compare_digest(pin, self.group_code()):
             return {
                 "ok": True,
@@ -253,7 +405,6 @@ class PairingService:
             "ok": False,
             "error": (
                 "Nadie aceptó ese código en esta Wi‑Fi. En el otro PC abre "
-                "Emparejar y mira su código de grupo (no caduca). "
-                "Ambos deben estar en la misma red."
+                "Emparejar y mira su código de grupo, o pulsa Conectar en el chip."
             ),
         }

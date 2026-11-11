@@ -138,12 +138,12 @@ def build_printers_page() -> Gtk.Widget:
                 f"Predeterminada: {default}."
             )
 
-    def notify(message: str, *, error: bool = False) -> None:
+    def notify(message: str, *, error: bool = False, popup: bool = False) -> None:
         set_status(message)
-        # Only pop a dialog on errors; success stays in the status line so the
-        # file chooser can close without another window stacking on Hyprland.
-        if error:
-            _show_message(parent_window(), message, error=True)
+        # Popups only when asked (import result / errors). Avoid stacking them
+        # on top of the file chooser during export success.
+        if error or popup:
+            _show_message(parent_window(), message, error=error)
 
     def on_manage(_btn: Gtk.Button) -> None:
         try:
@@ -212,22 +212,31 @@ def build_printers_page() -> Gtk.Widget:
             suggest=suggest,
         )
         if not chosen:
+            notify(
+                "No se eligió ningún catálogo JSON. Vuelve a Importar y pulsa Abrir.",
+                error=True,
+            )
             return
         try:
             result = import_share_catalog(chosen)
-            parts = []
+            parts = [f"Archivo: {chosen}"]
             if result.added:
-                parts.append(f"añadidas: {', '.join(result.added)}")
+                parts.append(f"Añadidas: {', '.join(result.added)}")
             if result.updated:
-                parts.append(f"actualizadas: {', '.join(result.updated)}")
+                parts.append(f"Actualizadas: {', '.join(result.updated)}")
             if result.skipped:
-                parts.append(f"ya estaban: {', '.join(result.skipped)}")
+                parts.append(
+                    "Ya estaban en este PC (no hace falta reimportarlas): "
+                    + ", ".join(result.skipped)
+                )
             if result.default_set:
-                parts.append(f"predeterminada: {result.default_set}")
-            notify("; ".join(parts) if parts else "Nada que importar.")
+                parts.append(f"Predeterminada: {result.default_set}")
+            if not (result.added or result.updated or result.skipped):
+                parts.append("El JSON no trajo impresoras nuevas.")
+            notify("\n".join(parts), popup=True)
             reload()
         except PrintersError as error:
-            notify(str(error), error=True)
+            notify(f"Al leer {chosen}:\n{error}", error=True)
 
     def on_share_local(_btn: Gtk.Button) -> None:
         try:
@@ -279,6 +288,24 @@ def _show_message(parent: Gtk.Window | None, message: str, *, error: bool = Fals
     _flush_gtk()
 
 
+def _native_dialog_path(dialog: Gtk.FileChooserNative) -> str | None:
+    """Resolve the chosen path from a native/portal file chooser."""
+    filename = dialog.get_filename()
+    if filename:
+        return filename
+    gio_file = dialog.get_file()
+    if gio_file is not None:
+        path = gio_file.get_path()
+        if path:
+            return path
+        uri = gio_file.get_uri()
+        if uri and uri.startswith("file://"):
+            from urllib.parse import unquote, urlparse
+
+            return unquote(urlparse(uri).path)
+    return None
+
+
 def _choose_catalog_path(
     parent: Gtk.Window | None,
     *,
@@ -301,6 +328,10 @@ def _choose_catalog_path(
     filt.set_name("Catálogo AidyCOS (*.json)")
     filt.add_pattern("*.json")
     dialog.add_filter(filt)
+    all_filt = Gtk.FileFilter()
+    all_filt.set_name("Todos los archivos")
+    all_filt.add_pattern("*")
+    dialog.add_filter(all_filt)
     suggest_path = Path(suggest).expanduser()
     if action == Gtk.FileChooserAction.SAVE:
         dialog.set_do_overwrite_confirmation(True)
@@ -310,12 +341,15 @@ def _choose_catalog_path(
     else:
         if suggest_path.is_file():
             dialog.set_filename(str(suggest_path))
+            folder = suggest_path.parent
+            if folder.is_dir():
+                dialog.set_current_folder(str(folder))
         elif suggest_path.is_dir():
             dialog.set_current_folder(str(suggest_path))
 
     response = dialog.run()
     chosen = (
-        dialog.get_filename()
+        _native_dialog_path(dialog)
         if response in (Gtk.ResponseType.OK, Gtk.ResponseType.ACCEPT)
         else None
     )

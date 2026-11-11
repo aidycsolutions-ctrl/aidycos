@@ -386,6 +386,9 @@ class AidylinkWindow(Gtk.Window):
         self._standalone = standalone
         self._mismatches: list[dict[str, Any]] = []
         self._messages: list[dict[str, Any]] = []
+        self._connecting = False
+        self._pending_ask_dialog: Gtk.Dialog | None = None
+        self._seen_ask_ids: set[str] = set()
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.add(root)
@@ -442,7 +445,7 @@ class AidylinkWindow(Gtk.Window):
         self.peer_cards.set_valign(Gtk.Align.START)
         peers_wrap.pack_start(self.peer_cards, False, False, 0)
         self.peer_empty = Gtk.Label(
-            label="Buscando equipos en la red… Usa Emparejar si no aparecen.",
+            label="Buscando equipos… Si ves uno sin emparejar, pulsa Conectar.",
             xalign=0,
         )
         self.peer_empty.get_style_context().add_class("lan-empty")
@@ -511,6 +514,7 @@ class AidylinkWindow(Gtk.Window):
         self.refresh_status()
         self.refresh_peers(silent=True)
         self.refresh_inbox()
+        self._poll_pending_asks()
         return True
 
     def _set_status(self, text: str, ok: bool = True) -> None:
@@ -561,9 +565,9 @@ class AidylinkWindow(Gtk.Window):
         if peers:
             empty_text = ""
         elif self._mismatches:
-            empty_text = "Equipos cerca sin el mismo código. Pulsa uno o Emparejar."
+            empty_text = "Equipos cerca sin emparejar. Pulsa Conectar; el otro PC aprueba."
         else:
-            empty_text = "Buscando equipos… Empareja con el código si no aparecen."
+            empty_text = "Buscando equipos… Si no aparecen, usa Emparejar con el código."
         self.peer_empty.set_text(empty_text)
         for peer in peers:
             card = Gtk.Button(label=str(peer.get("display_name") or "PC"))
@@ -577,16 +581,19 @@ class AidylinkWindow(Gtk.Window):
                 card.get_style_context().add_class("wa-peer-selected")
         for hint in self._mismatches:
             name = str(hint.get("display_name") or hint.get("host") or "PC")
-            card = Gtk.Button(label=f"{name} · sin emparejar")
+            card = Gtk.Button(label=f"{name} · Conectar")
             card.set_relief(Gtk.ReliefStyle.NONE)
             card.get_style_context().add_class("wa-peer")
             card.get_style_context().add_class("wa-peer-mismatch")
             card.peer_data = None
             card.mismatch_data = hint
             card.set_tooltip_text(
-                "Mismo Wi‑Fi, pero otro código de grupo. Pulsa Emparejar para unirlos."
+                "Pide conexión a este PC. En el otro saldrá Aprobar / Rechazar."
             )
-            card.connect("clicked", lambda *_: self.open_pair_dialog())
+            card.connect(
+                "clicked",
+                lambda _btn, data=hint: self._ask_connect(data),
+            )
             self.peer_cards.add(card)
         if self._selected_peer_data is None and previous is not None:
             # Keep selection object if peer briefly disappeared from discovery.
@@ -1019,6 +1026,148 @@ class AidylinkWindow(Gtk.Window):
     def _selected_peer(self) -> dict[str, Any] | None:
         return self._selected_peer_data
 
+    def _ask_connect(self, hint: dict[str, Any]) -> None:
+        """One-tap: ask the other PC to Approve joining its group."""
+        host = str(hint.get("host") or "").strip()
+        name = str(hint.get("display_name") or host or "PC").strip() or "PC"
+        if not host:
+            self._append_line("⚠ No se conoce la IP de ese equipo.")
+            return
+        if self._connecting:
+            self._append_line("Ya hay una solicitud de conexión en curso…")
+            return
+        self._connecting = True
+        self.pair_btn.set_sensitive(False)
+        self._append_line(f"Esperando que {name} apruebe la conexión…")
+
+        def work() -> None:
+            try:
+                resp = control_request(
+                    {"cmd": "pair_ask", "host": host},
+                    timeout=100.0,
+                )
+                error = None
+            except Exception as exc:
+                resp, error = None, exc
+            GLib.idle_add(finish, resp, error)
+
+        def finish(resp: dict[str, Any] | None, error: Exception | None) -> bool:
+            self._connecting = False
+            self.pair_btn.set_sensitive(True)
+            if error:
+                self._append_line(f"⚠ Conexión falló: {error}")
+                return GLib.SOURCE_REMOVE
+            if not resp or not resp.get("ok"):
+                detail = ((resp or {}).get("error") if resp else None) or "No se pudo conectar"
+                self._append_line(f"⚠ {detail}")
+                return GLib.SOURCE_REMOVE
+            host_name = str(resp.get("host_name") or name)
+            self._append_line(f"✓ Conectado con {host_name}. Ya pueden chatear.")
+            self.refresh_status()
+            self.refresh_peers()
+            return GLib.SOURCE_REMOVE
+
+        import threading
+
+        threading.Thread(target=work, daemon=True, name="aidychat-pair-ask").start()
+
+    def _poll_pending_asks(self) -> None:
+        if self._pending_ask_dialog is not None:
+            return
+        try:
+            resp = control_request({"cmd": "pair_pending"}, timeout=1.0)
+        except Exception:
+            return
+        if not resp.get("ok"):
+            return
+        asks = resp.get("asks") or []
+        if not isinstance(asks, list):
+            return
+        active_ids = {
+            str(item.get("ask_id") or "")
+            for item in asks
+            if isinstance(item, dict) and item.get("ask_id")
+        }
+        self._seen_ask_ids &= active_ids
+        for item in asks:
+            if not isinstance(item, dict):
+                continue
+            ask_id = str(item.get("ask_id") or "")
+            if not ask_id or ask_id in self._seen_ask_ids:
+                continue
+            self._seen_ask_ids.add(ask_id)
+            self._show_approve_dialog(item)
+            break
+
+    def _show_approve_dialog(self, ask: dict[str, Any]) -> None:
+        ask_id = str(ask.get("ask_id") or "")
+        name = str(ask.get("from_name") or ask.get("from_host") or "PC")
+        host = str(ask.get("from_host") or "")
+        dialog = Gtk.Dialog(title="Solicitud de conexión", transient_for=self, flags=0)
+        dialog.add_buttons(
+            "Rechazar", Gtk.ResponseType.REJECT,
+            "Aprobar", Gtk.ResponseType.ACCEPT,
+        )
+        dialog.set_default_size(420, 160)
+        box = dialog.get_content_area()
+        box.set_spacing(8)
+        box.set_border_width(16)
+        where = f" ({host})" if host else ""
+        box.pack_start(
+            Gtk.Label(
+                label=f"{name}{where} quiere conectarse a tu grupo AidyChat.",
+                xalign=0,
+                wrap=True,
+            ),
+            False,
+            False,
+            0,
+        )
+        box.pack_start(
+            Gtk.Label(
+                label="Si apruebas, compartirán el mismo chat local.",
+                xalign=0,
+                wrap=True,
+            ),
+            False,
+            False,
+            0,
+        )
+        self._pending_ask_dialog = dialog
+        decided = {"done": False}
+
+        def decide(approve: bool) -> None:
+            if decided["done"]:
+                return
+            decided["done"] = True
+            try:
+                control_request(
+                    {"cmd": "pair_decide", "ask_id": ask_id, "approve": approve},
+                    timeout=3.0,
+                )
+            except Exception as exc:
+                self._append_line(f"⚠ No se pudo responder: {exc}")
+            if approve:
+                self._append_line(f"✓ Aprobaste a {name}.")
+            else:
+                self._append_line(f"Rechazaste a {name}.")
+            self._pending_ask_dialog = None
+            self.refresh_status()
+            self.refresh_peers()
+
+        def on_response(_dlg: Gtk.Dialog, response: int) -> None:
+            approve = response == Gtk.ResponseType.ACCEPT
+            decide(approve)
+            dialog.destroy()
+
+        def on_delete(*_args: Any) -> bool:
+            decide(False)
+            return False
+
+        dialog.connect("response", on_response)
+        dialog.connect("delete-event", on_delete)
+        dialog.show_all()
+
     def open_pair_dialog(self) -> None:
         cfg = load_config()
         if cfg is None:
@@ -1048,8 +1197,8 @@ class AidylinkWindow(Gtk.Window):
         box.pack_start(
             Gtk.Label(
                 label=(
-                    "Este es tu código de grupo (no caduca). Compártelo una vez. "
-                    "Si cambian de Wi‑Fi, al estar otra vez en la misma red se ven solos."
+                    "Código de grupo (no caduca). Lo habitual: si ves el otro PC, "
+                    "pulsa Conectar y en el otro Aprueba. El código sirve si no aparecen."
                 ),
                 xalign=0,
                 wrap=True,

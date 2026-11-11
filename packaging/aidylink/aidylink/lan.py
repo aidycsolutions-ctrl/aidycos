@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from . import PROTOCOL
 from .config import LinkConfig
@@ -13,6 +13,8 @@ from .crypto import sign_payload, verify_payload
 from .messages import LinkMessage
 
 LOGGER = logging.getLogger(__name__)
+
+PairAskHandler = Callable[[dict[str, Any], str], Awaitable[dict[str, Any]]]
 
 
 class LanTransport:
@@ -24,12 +26,14 @@ class LanTransport:
         on_presence: Callable[[dict[str, Any], str], None] | None = None,
         presence_body: Callable[[], dict[str, Any]] | None = None,
         on_pair_request: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
+        on_pair_ask: PairAskHandler | None = None,
     ) -> None:
         self.cfg = cfg
         self.on_message = on_message
         self.on_presence = on_presence
         self.presence_body = presence_body
         self.on_pair_request = on_pair_request
+        self.on_pair_ask = on_pair_ask
         self._server: asyncio.AbstractServer | None = None
 
     async def start(self) -> None:
@@ -134,6 +138,17 @@ class LanTransport:
                     writer.write(b'{"ok":false,"error":"pairing"}\n')
                 else:
                     writer.write((json.dumps(reply, ensure_ascii=False) + "\n").encode("utf-8"))
+                await writer.drain()
+                return
+
+            if msg_type == "pair_ask":
+                if self.on_pair_ask is None:
+                    writer.write(b'{"ok":false,"error":"pairing"}\n')
+                else:
+                    reply = await self.on_pair_ask(body, peername)
+                    writer.write(
+                        (json.dumps(reply, ensure_ascii=False) + "\n").encode("utf-8")
+                    )
                 await writer.drain()
                 return
 

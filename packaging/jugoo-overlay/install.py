@@ -609,8 +609,11 @@ def install_network_wifi(root: Path) -> None:
         Path("servicios/red/network_hotspot.py"),
         Path("servicios/red/wifi_connect_plan.py"),
         Path("widgets/centro_control/network_section.py"),
+        Path("widgets/centro_control/popup.py"),
     ):
-        install_overlay_file(overlay / relative, root / "shell" / relative)
+        source = overlay / relative
+        if source.is_file():
+            install_overlay_file(source, root / "shell" / relative)
 
     models = root / "shell/models.py"
     models_text = models.read_text(encoding="utf-8")
@@ -651,38 +654,73 @@ def install_network_wifi(root: Path) -> None:
         )
 
     popup = root / "shell/widgets/centro_control/popup.py"
-    if popup.is_file() and "on_forget_wifi=" not in popup.read_text(encoding="utf-8"):
-        patched = try_replace_once(
-            popup,
-            "                on_apply_hotspot=network_service.apply_hotspot_config,\n"
-            "            )\n",
-            "                on_apply_hotspot=network_service.apply_hotspot_config,\n"
-            "                on_forget_wifi=network_service.forget_wifi,\n"
-            "                on_request_wifi_credentials="
-            "network_service.request_active_wifi_credentials,\n"
-            "            )\n",
-            "conectar forget/share Wi-Fi en el centro de control",
+    if popup.is_file():
+        popup_text = popup.read_text(encoding="utf-8")
+        # Broken AidyCOS/older Jugoo wiring: lambda only took (path, password), but
+        # network_section passes (path, password, ssid). That TypeError swallowed
+        # every UI connect while plain `nmcli device wifi connect` still worked.
+        broken_lambda = (
+            "                on_connect_wifi=lambda path, password: "
+            "network_service.connect_wifi(\n"
+            "                    path,\n"
+            "                    password,\n"
+            "                ),\n"
         )
-        if not patched:
-            # Newer checkouts may already pass connect_wifi without the lambda wrapper.
+        fixed_connect = "                on_connect_wifi=network_service.connect_wifi,\n"
+        if broken_lambda in popup_text:
             try_replace_once(
                 popup,
-                "                on_apply_hotspot=network_service.apply_hotspot_config,\n",
+                broken_lambda,
+                fixed_connect,
+                "pasar SSID al conectar Wi-Fi desde el centro de control",
+            )
+            popup_text = popup.read_text(encoding="utf-8")
+        elif (
+            "on_connect_wifi=lambda path, password:" in popup_text
+            and "on_connect_wifi=network_service.connect_wifi," not in popup_text
+        ):
+            try_replace_once(
+                popup,
+                "                on_connect_wifi=lambda path, password: network_service.connect_wifi(\n"
+                "                    path,\n"
+                "                    password,\n"
+                "                ),\n",
+                fixed_connect,
+                "pasar SSID al conectar Wi-Fi desde el centro de control",
+            )
+            popup_text = popup.read_text(encoding="utf-8")
+
+        if "on_forget_wifi=" not in popup_text:
+            patched = try_replace_once(
+                popup,
+                "                on_apply_hotspot=network_service.apply_hotspot_config,\n"
+                "            )\n",
                 "                on_apply_hotspot=network_service.apply_hotspot_config,\n"
                 "                on_forget_wifi=network_service.forget_wifi,\n"
                 "                on_request_wifi_credentials="
-                "network_service.request_active_wifi_credentials,\n",
+                "network_service.request_active_wifi_credentials,\n"
+                "            )\n",
                 "conectar forget/share Wi-Fi en el centro de control",
             )
-        elif "on_request_wifi_credentials=" not in popup.read_text(encoding="utf-8"):
-            try_replace_once(
-                popup,
-                "                on_forget_wifi=network_service.forget_wifi,\n",
-                "                on_forget_wifi=network_service.forget_wifi,\n"
-                "                on_request_wifi_credentials="
-                "network_service.request_active_wifi_credentials,\n",
-                "conectar request_wifi_credentials en el centro de control",
-            )
+            if not patched:
+                try_replace_once(
+                    popup,
+                    "                on_apply_hotspot=network_service.apply_hotspot_config,\n",
+                    "                on_apply_hotspot=network_service.apply_hotspot_config,\n"
+                    "                on_forget_wifi=network_service.forget_wifi,\n"
+                    "                on_request_wifi_credentials="
+                    "network_service.request_active_wifi_credentials,\n",
+                    "conectar forget/share Wi-Fi en el centro de control",
+                )
+            elif "on_request_wifi_credentials=" not in popup.read_text(encoding="utf-8"):
+                try_replace_once(
+                    popup,
+                    "                on_forget_wifi=network_service.forget_wifi,\n",
+                    "                on_forget_wifi=network_service.forget_wifi,\n"
+                    "                on_request_wifi_credentials="
+                    "network_service.request_active_wifi_credentials,\n",
+                    "conectar request_wifi_credentials en el centro de control",
+                )
 
     style = root / "shell/style.css"
     style_text = style.read_text(encoding="utf-8")

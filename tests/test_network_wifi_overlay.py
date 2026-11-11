@@ -149,11 +149,75 @@ class NetworkWifiOverlayTests(unittest.TestCase):
             self.assertIn("saved: bool = False", models_text)
 
             popup_text = popup.read_text(encoding="utf-8")
+            self.assertIn("on_connect_wifi=network_service.connect_wifi,", popup_text)
+            self.assertNotIn("on_connect_wifi=lambda path, password:", popup_text)
             self.assertIn("on_forget_wifi=network_service.forget_wifi", popup_text)
             self.assertIn(
                 "on_request_wifi_credentials=network_service.request_active_wifi_credentials",
                 popup_text,
             )
+
+    def test_overlay_fixes_two_arg_connect_lambda(self) -> None:
+        """Regression: UI passed ssid but popup lambda only accepted path+password."""
+        overlay = _load_overlay()
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            popup = root / "shell/widgets/centro_control/popup.py"
+            style = root / "shell/style.css"
+            models = root / "shell/models.py"
+            for path in (
+                root / "shell/servicios/red/network.py",
+                root / "shell/servicios/red/network_hotspot.py",
+                root / "shell/widgets/centro_control/network_section.py",
+                models,
+                popup,
+                style,
+            ):
+                path.parent.mkdir(parents=True, exist_ok=True)
+            (root / "shell/servicios/red/network.py").write_text(OLD_NETWORK_PY, encoding="utf-8")
+            (root / "shell/servicios/red/network_hotspot.py").write_text("# stub\n", encoding="utf-8")
+            (root / "shell/widgets/centro_control/network_section.py").write_text(
+                OLD_NETWORK_SECTION_PY, encoding="utf-8"
+            )
+            models.write_text(OLD_MODELS_PY, encoding="utf-8")
+            style.write_text("/* base */\n", encoding="utf-8")
+            # Already has forget/share wiring, but still the broken 2-arg lambda (/opt bug).
+            popup.write_text(
+                OLD_POPUP_PY.replace(
+                    "                on_apply_hotspot=network_service.apply_hotspot_config,\n"
+                    "            )\n",
+                    "                on_apply_hotspot=network_service.apply_hotspot_config,\n"
+                    "                on_forget_wifi=network_service.forget_wifi,\n"
+                    "                on_request_wifi_credentials="
+                    "network_service.request_active_wifi_credentials,\n"
+                    "            )\n",
+                ),
+                encoding="utf-8",
+            )
+            # Avoid replacing the whole popup with the overlay copy so we exercise
+            # the lambda rewrite path used on already-deployed trees.
+            popup_overlay = (
+                ROOT
+                / "packaging"
+                / "jugoo-overlay"
+                / "shell"
+                / "widgets"
+                / "centro_control"
+                / "popup.py"
+            )
+            renamed = None
+            if popup_overlay.is_file():
+                renamed = popup_overlay.with_suffix(".py._test_hide")
+                popup_overlay.rename(renamed)
+            try:
+                overlay.install_network_wifi(root)
+            finally:
+                if renamed is not None and renamed.is_file():
+                    renamed.rename(popup_overlay)
+
+            popup_text = popup.read_text(encoding="utf-8")
+            self.assertIn("on_connect_wifi=network_service.connect_wifi,", popup_text)
+            self.assertNotIn("on_connect_wifi=lambda path, password:", popup_text)
 
             style_text = style.read_text(encoding="utf-8")
             self.assertIn("control-center-wifi-share", style_text)
