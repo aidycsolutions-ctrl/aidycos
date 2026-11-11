@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -122,12 +123,18 @@ class PrintersOverlayTests(unittest.TestCase):
             schema_text = schema.read_text(encoding="utf-8")
             self.assertIn('IMPRESORAS = "impresoras"', schema_text)
             self.assertIn('"Impresoras"', schema_text)
+            self.assertIn("catálogo", schema_text)
             pages_text = pages.read_text(encoding="utf-8")
             self.assertIn("build_printers_page", pages_text)
             self.assertIn("CategoryId.IMPRESORAS", pages_text)
             self.assertIn("IMPRESORAS", pane.read_text(encoding="utf-8"))
             self.assertIn("IMPRESORAS", settings_overlay.read_text(encoding="utf-8"))
             self.assertIn("settings-printer-row", style.read_text(encoding="utf-8"))
+            page_text = (
+                root / "shell/widgets/configuraciones/printers_page.py"
+            ).read_text(encoding="utf-8")
+            self.assertIn("Exportar catálogo", page_text)
+            self.assertIn("Importar catálogo", page_text)
 
     def test_service_parses_spanish_lpstat(self) -> None:
         service = _load_service()
@@ -149,6 +156,7 @@ class PrintersOverlayTests(unittest.TestCase):
 
         def fake_run(argv, **_kwargs):
             key = tuple(argv)
+
             class Result:
                 returncode = 0
                 stdout = calls[key]
@@ -173,6 +181,103 @@ class PrintersOverlayTests(unittest.TestCase):
         self.assertFalse(by_name["HP_Smart_Tank_WiFi"].enabled)
         self.assertTrue(by_name["HP_Smart_Tank_WiFi"].is_default)
         self.assertIn("ipp://", by_name["HP_Smart_Tank_WiFi"].device_uri)
+
+    def test_export_import_share_catalog(self) -> None:
+        service = _load_service()
+        snapshot = service.PrintersSnapshot(
+            printers=(
+                service.PrinterInfo(
+                    name="HP_Smart_Tank_585",
+                    enabled=True,
+                    accepting=True,
+                    is_default=False,
+                    state_text="idle",
+                    device_uri="hp:/usb/Smart_Tank",
+                ),
+                service.PrinterInfo(
+                    name="HP_Smart_Tank_WiFi",
+                    enabled=True,
+                    accepting=True,
+                    is_default=True,
+                    state_text="idle",
+                    device_uri="ipp://192.168.1.10/ipp/print",
+                ),
+            ),
+            default_name="HP_Smart_Tank_WiFi",
+        )
+        entries = service.shareable_entries(snapshot)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].name, "HP_Smart_Tank_WiFi")
+
+        with_local = service.shareable_entries(snapshot, include_local_via_cups=True)
+        self.assertEqual(len(with_local), 2)
+        local = next(item for item in with_local if item.share_kind == "cups-shared")
+        self.assertTrue(local.device_uri.startswith("ipp://"))
+        self.assertIn("/printers/HP_Smart_Tank_585", local.device_uri)
+
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "shared-printers.json"
+            catalog = service.build_share_catalog(entries)
+            path.write_text(
+                json.dumps(service.catalog_to_dict(catalog), indent=2) + "\n",
+                encoding="utf-8",
+            )
+            loaded = service.load_share_catalog(path)
+            self.assertEqual(loaded.printers[0].device_uri, "ipp://192.168.1.10/ipp/print")
+
+            recorded: list[tuple[str, ...]] = []
+
+            def fake_run(argv, **_kwargs):
+                recorded.append(tuple(argv))
+
+                class Result:
+                    returncode = 0
+                    stdout = ""
+                    stderr = ""
+
+                return Result()
+
+            original_run = service.subprocess.run
+            original_which = service.shutil.which
+            original_list = service.list_printers
+            service.subprocess.run = fake_run
+            service.shutil.which = lambda name: f"/usr/bin/{name}"
+            service.list_printers = lambda: service.PrintersSnapshot(
+                printers=(),
+                default_name=None,
+            )
+            try:
+                result = service.import_share_catalog(path)
+            finally:
+                service.subprocess.run = original_run
+                service.shutil.which = original_which
+                service.list_printers = original_list
+
+            self.assertEqual(result.added, ("HP_Smart_Tank_WiFi",))
+            self.assertEqual(result.default_set, "HP_Smart_Tank_WiFi")
+            self.assertTrue(
+                any(cmd[:1] == ("lpadmin",) for cmd in recorded),
+                recorded,
+            )
+            self.assertIn(("lpoptions", "-d", "HP_Smart_Tank_WiFi"), recorded)
+
+    def test_catalog_rejects_local_uri(self) -> None:
+        service = _load_service()
+        with self.assertRaises(service.PrintersError):
+            service.catalog_from_dict(
+                {
+                    "version": 1,
+                    "source_host": "pc",
+                    "exported_at": "",
+                    "printers": [
+                        {
+                            "name": "USB",
+                            "device_uri": "usb://HP/Tank",
+                            "is_default": False,
+                        }
+                    ],
+                }
+            )
 
 
 if __name__ == "__main__":

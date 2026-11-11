@@ -386,6 +386,15 @@ fi
 if ! command -v system-config-printer >/dev/null 2>&1; then
   sudo apt-get install -y --no-install-recommends system-config-printer cups-client
 fi
+# Desktop user can add/share printers from Configuración → Impresoras (lpadmin).
+if getent group lpadmin >/dev/null 2>&1; then
+  if id -nG "${USER}" 2>/dev/null | tr ' ' '\n' | grep -qx lpadmin; then
+    :
+  else
+    sudo usermod -aG lpadmin "${USER}"
+    echo "Usuario ${USER} añadido al grupo lpadmin (cierra sesión para aplicarlo)."
+  fi
+fi
 # Keep Synaptic/Flatpak available on older profiles that predate the module list.
 if ! command -v synaptic >/dev/null 2>&1; then
   sudo apt-get install -y --no-install-recommends synaptic pkexec polkitd
@@ -399,6 +408,11 @@ if ! command -v firefox-esr >/dev/null 2>&1 && ! command -v firefox >/dev/null 2
 fi
 if ! dpkg-query -W -f='${db:Status-Status}' adwaita-icon-theme 2>/dev/null | grep -qx installed; then
   sudo apt-get install -y --no-install-recommends adwaita-icon-theme hicolor-icon-theme
+fi
+# Adwaita 48 moved fullcolor app icons (system-software-update / -install) to
+# AdwaitaLegacy; apt only Suggests that package, so install it explicitly.
+if ! dpkg-query -W -f='${db:Status-Status}' adwaita-icon-theme-legacy 2>/dev/null | grep -qx installed; then
+  sudo apt-get install -y --no-install-recommends adwaita-icon-theme-legacy
 fi
 # --no-install-recommends skips Adwaita's SVG loader; Jugoo then shows empty rectangles.
 for pkg in librsvg2-common gvfs-fuse python3-gi-cairo; do

@@ -743,10 +743,17 @@ def install_printers(root: Path) -> None:
             '    CategoryId.ATAJOS: ("Atajos", "Atajos de teclado activos (solo lectura)"),\n'
             '    CategoryId.IMPRESORAS: (\n'
             '        "Impresoras",\n'
-            '        "Gestionar impresoras CUPS y abrir el gestor del sistema.",\n'
+            '        "Gestionar impresoras CUPS y compartir el catálogo con otros PCs.",\n'
             "    ),\n"
             '    CategoryId.AVANZADO: ("Avanzado", "Rendimiento e integraciones"),\n',
             "añadir metadatos de Impresoras",
+        )
+    else:
+        try_replace_once(
+            schema,
+            '"Gestionar impresoras CUPS y abrir el gestor del sistema."',
+            '"Gestionar impresoras CUPS y compartir el catálogo con otros PCs."',
+            "actualizar descripción de Impresoras",
         )
 
     pages = root / "shell/widgets/configuraciones/pages.py"

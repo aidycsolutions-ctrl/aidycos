@@ -5,6 +5,9 @@ depends_on = ["desktop-runtime"]
 [packages]
 apt = [
   "adwaita-icon-theme",
+  # Fullcolor legacy names (system-software-update, system-software-install,
+  # etc.) live here; Adwaita 48 only Suggests this package.
+  "adwaita-icon-theme-legacy",
   "dbus-user-session",
   "firmware-atheros",
   "firmware-brcm80211",

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import gi
 
 gi.require_version("Gtk", "3.0")
@@ -13,6 +15,12 @@ from ...servicios.impresoras import (
     PrintersError,
     PrintersSnapshot,
     cancel_jobs,
+    default_catalog_path,
+    enable_lan_sharing,
+    export_share_catalog,
+    import_share_catalog,
+    is_local_uri,
+    is_network_uri,
     launch_cups_web,
     launch_printer_manager,
     list_printers,
@@ -32,7 +40,10 @@ def build_printers_page() -> Gtk.Widget:
     page.pack_start(heading, False, False, 0)
 
     sub = Gtk.Label(
-        label="Gestiona impresoras locales, la predeterminada y abre el gestor completo.",
+        label=(
+            "Gestiona impresoras locales, exporta un catálogo AidyCOS para otros PCs "
+            "e importa el mismo archivo en cada equipo."
+        ),
         xalign=0,
     )
     sub.get_style_context().add_class("settings-page-subtitle")
@@ -41,6 +52,7 @@ def build_printers_page() -> Gtk.Widget:
 
     toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
     toolbar.get_style_context().add_class("settings-printers-toolbar")
+    toolbar.set_homogeneous(False)
 
     refresh_btn = Gtk.Button(label="Actualizar")
     refresh_btn.get_style_context().add_class("settings-browse-button")
@@ -59,6 +71,39 @@ def build_printers_page() -> Gtk.Widget:
 
     page.pack_start(toolbar, False, False, 0)
 
+    share_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+    share_bar.get_style_context().add_class("settings-printers-toolbar")
+
+    export_btn = Gtk.Button(label="Exportar catálogo…")
+    export_btn.get_style_context().add_class("settings-browse-button")
+    export_btn.set_tooltip_text(
+        "Guardar las impresoras de red en un JSON para otros PCs AidyCOS"
+    )
+    share_bar.pack_start(export_btn, False, False, 0)
+
+    import_btn = Gtk.Button(label="Importar catálogo…")
+    import_btn.get_style_context().add_class("settings-browse-button")
+    import_btn.set_tooltip_text(
+        "Leer un catálogo AidyCOS y añadir esas impresoras en este equipo"
+    )
+    share_bar.pack_start(import_btn, False, False, 0)
+
+    share_local_btn = Gtk.Button(label="Compartir locales en LAN")
+    share_local_btn.get_style_context().add_class("settings-browse-button")
+    share_local_btn.set_tooltip_text(
+        "Activa CUPS sharing para impresoras USB/locales y las incluye al exportar"
+    )
+    share_bar.pack_start(share_local_btn, False, False, 0)
+
+    page.pack_start(share_bar, False, False, 0)
+
+    include_local = Gtk.CheckButton(label="Al exportar, incluir locales vía este PC")
+    include_local.set_tooltip_text(
+        "Convierte colas USB/locales en ipp://este-pc/printers/NOMBRE (requiere "
+        "«Compartir locales en LAN»)."
+    )
+    page.pack_start(include_local, False, False, 0)
+
     status = Gtk.Label(xalign=0)
     status.get_style_context().add_class("settings-page-note")
     status.set_line_wrap(True)
@@ -71,6 +116,10 @@ def build_printers_page() -> Gtk.Widget:
     def set_status(message: str) -> None:
         status.set_text(message)
 
+    def parent_window() -> Gtk.Window | None:
+        top = page.get_toplevel()
+        return top if isinstance(top, Gtk.Window) else None
+
     def reload(*_args) -> None:
         snapshot = list_printers()
         _rebuild_list(list_host, snapshot, set_status, reload)
@@ -80,8 +129,10 @@ def build_printers_page() -> Gtk.Widget:
             set_status("No hay impresoras configuradas. Usa «Abrir gestor» para añadir una.")
         else:
             default = snapshot.default_name or "ninguna"
+            network = sum(1 for item in snapshot.printers if is_network_uri(item.device_uri))
             set_status(
-                f"{len(snapshot.printers)} impresora(s). Predeterminada: {default}."
+                f"{len(snapshot.printers)} impresora(s) ({network} de red). "
+                f"Predeterminada: {default}."
             )
 
     def on_manage(_btn: Gtk.Button) -> None:
@@ -98,11 +149,121 @@ def build_printers_page() -> Gtk.Widget:
         except PrintersError as error:
             set_status(str(error))
 
+    def on_export(_btn: Gtk.Button) -> None:
+        chosen = _choose_catalog_path(
+            parent_window(),
+            title="Exportar catálogo de impresoras AidyCOS",
+            action=Gtk.FileChooserAction.SAVE,
+            suggest=str(default_catalog_path()),
+        )
+        if not chosen:
+            return
+        try:
+            path = export_share_catalog(
+                chosen,
+                include_local_via_cups=include_local.get_active(),
+            )
+            # Keep a local copy under ~/.local/share/aidycos for convenience.
+            try:
+                export_share_catalog(
+                    default_catalog_path(),
+                    include_local_via_cups=include_local.get_active(),
+                )
+            except PrintersError:
+                pass
+            set_status(
+                f"Catálogo exportado en {path}. Cópialo a los otros PCs e "
+                "impórtalo desde esta misma página."
+            )
+        except PrintersError as error:
+            set_status(str(error))
+
+    def on_import(_btn: Gtk.Button) -> None:
+        default = default_catalog_path()
+        suggest = str(default if default.is_file() else Path.home())
+        chosen = _choose_catalog_path(
+            parent_window(),
+            title="Importar catálogo de impresoras AidyCOS",
+            action=Gtk.FileChooserAction.OPEN,
+            suggest=suggest,
+        )
+        if not chosen:
+            return
+        try:
+            result = import_share_catalog(chosen)
+            parts = []
+            if result.added:
+                parts.append(f"añadidas: {', '.join(result.added)}")
+            if result.updated:
+                parts.append(f"actualizadas: {', '.join(result.updated)}")
+            if result.skipped:
+                parts.append(f"ya estaban: {', '.join(result.skipped)}")
+            if result.default_set:
+                parts.append(f"predeterminada: {result.default_set}")
+            set_status("; ".join(parts) if parts else "Nada que importar.")
+            reload()
+        except PrintersError as error:
+            set_status(str(error))
+
+    def on_share_local(_btn: Gtk.Button) -> None:
+        try:
+            enable_lan_sharing()
+            include_local.set_active(True)
+            set_status(
+                "Compartido CUPS activado para impresoras locales. "
+                "Exporta el catálogo para que los otros PCs usen ipp://este-pc/…"
+            )
+        except PrintersError as error:
+            set_status(str(error))
+
     refresh_btn.connect("clicked", reload)
     manage_btn.connect("clicked", on_manage)
     cups_btn.connect("clicked", on_cups)
+    export_btn.connect("clicked", on_export)
+    import_btn.connect("clicked", on_import)
+    share_local_btn.connect("clicked", on_share_local)
     reload()
     return page
+
+
+def _choose_catalog_path(
+    parent: Gtk.Window | None,
+    *,
+    title: str,
+    action: Gtk.FileChooserAction,
+    suggest: str,
+) -> Path | None:
+    dialog = Gtk.FileChooserDialog(title=title, parent=parent, action=action)
+    dialog.add_buttons(
+        Gtk.STOCK_CANCEL,
+        Gtk.ResponseType.CANCEL,
+        Gtk.STOCK_SAVE if action == Gtk.FileChooserAction.SAVE else Gtk.STOCK_OPEN,
+        Gtk.ResponseType.OK,
+    )
+    filt = Gtk.FileFilter()
+    filt.set_name("Catálogo AidyCOS (*.json)")
+    filt.add_pattern("*.json")
+    dialog.add_filter(filt)
+    suggest_path = Path(suggest).expanduser()
+    if action == Gtk.FileChooserAction.SAVE:
+        dialog.set_do_overwrite_confirmation(True)
+        if suggest_path.parent.is_dir():
+            dialog.set_current_folder(str(suggest_path.parent))
+        dialog.set_current_name(suggest_path.name or "shared-printers.json")
+    else:
+        if suggest_path.is_file():
+            dialog.set_filename(str(suggest_path))
+        elif suggest_path.is_dir():
+            dialog.set_current_folder(str(suggest_path))
+    response = dialog.run()
+    chosen = dialog.get_filename() if response == Gtk.ResponseType.OK else None
+    dialog.destroy()
+    if not chosen:
+        return None
+    path = Path(chosen)
+    if action == Gtk.FileChooserAction.SAVE and path.suffix.casefold() != ".json":
+        path = path.with_suffix(".json")
+    return path
 
 
 def _rebuild_list(
@@ -222,6 +383,10 @@ def _detail_text(printer: PrinterInfo) -> str:
     parts = [printer.state_text]
     if not printer.accepting:
         parts.append("No acepta trabajos")
+    if is_network_uri(printer.device_uri):
+        parts.append("Red (exportable)")
+    elif is_local_uri(printer.device_uri):
+        parts.append("Local (comparte en LAN para exportar)")
     if printer.device_uri:
         parts.append(printer.device_uri)
     return " · ".join(part for part in parts if part)
