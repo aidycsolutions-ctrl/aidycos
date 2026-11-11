@@ -44,6 +44,16 @@ apt = [
   "slurp",
   "synaptic",
   "thunar",
+  # USB remount stack: apt installs with --no-install-recommends, so Thunar's
+  # Recommends (udisks2/gvfs/thunar-volman) never land on a clean AidyCOS box.
+  "udisks2",
+  "gvfs",
+  "gvfs-backends",
+  "thunar-volman",
+  "ntfs-3g",
+  "exfatprogs",
+  "dosfstools",
+  "usbutils",
   "wireless-regdb",
   "wpasupplicant",
   "zenity",

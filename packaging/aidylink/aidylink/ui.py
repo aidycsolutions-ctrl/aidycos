@@ -704,6 +704,11 @@ class AidylinkWindow(Gtk.Window):
             try:
                 from gi.repository import GdkPixbuf
 
+                original = GdkPixbuf.Pixbuf.new_from_file(media_path)
+                # Tiny test / corrupt thumbnails look like pink blocks when
+                # stretched; show a file chip instead.
+                if original.get_width() < 8 or original.get_height() < 8:
+                    raise ValueError("thumbnail too small")
                 pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(media_path, 240, 240, True)
                 image = Gtk.Image.new_from_pixbuf(pb)
                 image.set_halign(Gtk.Align.START)

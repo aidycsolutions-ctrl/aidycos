@@ -7,12 +7,14 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 from . import PROTOCOL
 from .config import LinkConfig
 from .crypto import sign_payload, verify_payload
 from .netutil import detect_lan_ip, lan_broadcast_addresses, lan_subnet_hosts
+from .paths import data_dir
 
 LOGGER = logging.getLogger(__name__)
 
@@ -21,7 +23,8 @@ BEACON_INTERVAL_S = 2.5
 TCP_SCAN_INTERVAL_S = 6.0
 TCP_CONNECT_TIMEOUT_S = 1.2
 TCP_SCAN_CONCURRENCY = 64
-MISMATCH_TTL_S = 45.0
+MISMATCH_TTL_S = 180.0
+KNOWN_HOSTS_MAX = 64
 
 
 @dataclass
@@ -58,10 +61,13 @@ class DiscoveryService:
         self.on_peer = on_peer
         self.peers: dict[str, Peer] = {}
         self.mismatches: dict[str, MismatchHint] = {}
+        self._known_hosts: dict[str, float] = {}
+        self._known_path = data_dir() / "known_hosts.json"
         self._transport: asyncio.DatagramTransport | None = None
         self._beacon_task: asyncio.Task | None = None
         self._tcp_task: asyncio.Task | None = None
         self.lan_ip = detect_lan_ip()
+        self._load_known_hosts()
 
     def list_online(self) -> list[Peer]:
         now = time.time()
@@ -138,9 +144,51 @@ class DiscoveryService:
         self.peers[node_id] = peer
         self.mismatches.pop(remote_host, None)
         self.mismatches.pop(peer.host, None)
+        self.remember_host(peer.host or remote_host)
         if self.on_peer:
             self.on_peer(peer)
         return peer
+
+    def _load_known_hosts(self) -> None:
+        if not self._known_path.is_file():
+            return
+        try:
+            raw = json.loads(self._known_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        hosts = raw.get("hosts") if isinstance(raw, dict) else None
+        if not isinstance(hosts, dict):
+            return
+        now = time.time()
+        for host, seen in hosts.items():
+            host = str(host or "").strip()
+            if not host:
+                continue
+            try:
+                ts = float(seen)
+            except (TypeError, ValueError):
+                ts = now
+            self._known_hosts[host] = ts
+
+    def _save_known_hosts(self) -> None:
+        items = sorted(self._known_hosts.items(), key=lambda kv: kv[1], reverse=True)
+        trimmed = dict(items[:KNOWN_HOSTS_MAX])
+        self._known_hosts = trimmed
+        try:
+            self._known_path.parent.mkdir(parents=True, exist_ok=True)
+            self._known_path.write_text(
+                json.dumps({"hosts": trimmed}, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            LOGGER.debug("known_hosts save failed: %s", exc)
+
+    def remember_host(self, host: str) -> None:
+        host = (host or "").strip()
+        if not host or host == self.lan_ip or host.startswith("127."):
+            return
+        self._known_hosts[host] = time.time()
+        self._save_known_hosts()
 
     def _note_mismatch(
         self,
@@ -160,6 +208,7 @@ class DiscoveryService:
             last_seen=time.time(),
             display_name=name,
         )
+        self.remember_host(host)
 
     async def start(self) -> None:
         loop = asyncio.get_running_loop()
@@ -279,6 +328,10 @@ class DiscoveryService:
         for hint in self.list_mismatches():
             if hint.host not in targets:
                 targets.insert(0, hint.host)
+        # Keep probing previously seen machines even after Wi‑Fi/subnet changes.
+        for host in sorted(self._known_hosts.keys(), key=lambda h: self._known_hosts[h], reverse=True):
+            if host not in targets and host != self.lan_ip:
+                targets.insert(0, host)
         if not targets:
             return
 

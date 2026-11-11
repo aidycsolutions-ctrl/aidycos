@@ -38,6 +38,7 @@ Vista previa del perfil AidyCOS para Debian 13:
   * Sembrar fondo AidyCOS e iconos del escritorio (AidyChat, Firefox, Archivos, Terminal, paquetes, OnlyOffice).
   * Instalar Firefox ESR como navegador por defecto del perfil.
   * Instalar Synaptic, Flatpak/Flathub y el agente Polkit para descargar OnlyOffice u otras apps.
+  * Instalar udisks2/gvfs/thunar-volman para montar memorias y dispositivos USB.
   * Instalar botones de cerrar, maximizar y minimizar, y atajos de Hyprland para ventanas y escritorios.
   * Configurar GRUB sin menú, modo gráfico con fallbacks y el splash de Plymouth con logo (apply-aidycos-boot.sh).
   * Preferir la resolución del monitor externo detectado para GRUB/Plymouth cuando exista.

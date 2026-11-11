@@ -15,6 +15,13 @@ class ModuleTests(unittest.TestCase):
         self.assertEqual(plan.packages.count("wtype"), 1)
         self.assertEqual(plan.modules[0].name, "desktop-runtime")
 
+    def test_desktop_module_includes_usb_mount_stack(self):
+        # --no-install-recommends would otherwise skip Thunar's USB Recommends.
+        modules = load_modules()
+        plan = build_plan(["aidyc-desktop"], modules, Distribution("debian", "13"), "apt")
+        for pkg in ("udisks2", "gvfs", "thunar-volman", "usbutils"):
+            self.assertIn(pkg, plan.packages)
+
     def test_unknown_module_fails(self):
         with self.assertRaisesRegex(ModuleError, "desconocido"):
             resolve_modules(["missing"], {})
