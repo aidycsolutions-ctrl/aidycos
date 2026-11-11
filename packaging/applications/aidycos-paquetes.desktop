@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Instalar paquetes
+Name[es]=Instalar paquetes
+Comment=Buscar e instalar programas del repositorio Debian (Synaptic)
+Comment[es]=Buscar e instalar programas del repositorio Debian (Synaptic)
+Exec=synaptic-pkexec
+Icon=system-software-install
+Terminal=false
+Categories=System;PackageManager;Settings;
+Keywords=apt;paquetes;instalar;synaptic;software;
+StartupNotify=true

@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Launch OnlyOffice Desktop Editors, or install it from Flathub on first use.
+set -euo pipefail
+
+APP_ID="${AIDYCOS_ONLYOFFICE_FLATPAK:-org.onlyoffice.desktopeditors}"
+REMOTE="${AIDYCOS_FLATPAK_REMOTE:-flathub}"
+REMOTE_URL="${AIDYCOS_FLATPAK_REMOTE_URL:-https://dl.flathub.org/repo/flathub.flatpakrepo}"
+
+notify() {
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send -a "OnlyOffice" -i x-office-document "$1" "$2" || true
+  else
+    printf '%s: %s\n' "$1" "$2" >&2
+  fi
+}
+
+ensure_flatpak() {
+  if command -v flatpak >/dev/null 2>&1; then
+    return 0
+  fi
+  notify "OnlyOffice" "Falta Flatpak. Ábrelo desde Instalar paquetes (Synaptic) o vuelve a actualizar AidyCOS."
+  return 1
+}
+
+ensure_flathub() {
+  if flatpak remote-list --columns=name 2>/dev/null | grep -qx "${REMOTE}"; then
+    return 0
+  fi
+  if flatpak remote-add --user --if-not-exists "${REMOTE}" "${REMOTE_URL}"; then
+    return 0
+  fi
+  if command -v pkexec >/dev/null 2>&1; then
+    pkexec flatpak remote-add --if-not-exists "${REMOTE}" "${REMOTE_URL}" || true
+  fi
+  flatpak remote-list --columns=name 2>/dev/null | grep -qx "${REMOTE}"
+}
+
+already_installed() {
+  flatpak info --user "${APP_ID}" >/dev/null 2>&1 \
+    || flatpak info "${APP_ID}" >/dev/null 2>&1
+}
+
+confirm_install() {
+  local message
+  message="OnlyOffice no está instalado todavía.
+
+¿Quieres descargarlo desde Flathub ahora?
+Necesitas Internet; la primera descarga puede tardar unos minutos."
+  if command -v zenity >/dev/null 2>&1 && { [[ -n "${DISPLAY:-}" ]] || [[ -n "${WAYLAND_DISPLAY:-}" ]]; }; then
+    zenity --question --title="Instalar OnlyOffice" --width=420 --text="${message}"
+    return $?
+  fi
+  if [[ -t 0 ]]; then
+    printf '%s\n' "${message}"
+    read -r -p "Escribe S para instalar: " answer
+    [[ "${answer}" == [sS] || "${answer}" == [sS][iíIÍ] ]]
+    return $?
+  fi
+  notify "OnlyOffice" "Confirma la instalación desde una terminal o vuelve a abrir el icono con pantalla gráfica."
+  return 1
+}
+
+run_onlyoffice() {
+  if flatpak info --user "${APP_ID}" >/dev/null 2>&1; then
+    exec flatpak run --user "${APP_ID}" "$@"
+  fi
+  exec flatpak run "${APP_ID}" "$@"
+}
+
+ensure_flatpak || exit 1
+
+if already_installed; then
+  run_onlyoffice "$@"
+fi
+
+ensure_flathub || {
+  notify "OnlyOffice" "No se pudo añadir el remoto Flathub."
+  exit 1
+}
+
+confirm_install || exit 0
+
+notify "OnlyOffice" "Descargando OnlyOffice desde Flathub…"
+if flatpak install -y --user "${REMOTE}" "${APP_ID}"; then
+  notify "OnlyOffice" "Instalación terminada. Abriendo OnlyOffice…"
+  run_onlyoffice "$@"
+fi
+
+if command -v pkexec >/dev/null 2>&1 && pkexec flatpak install -y "${REMOTE}" "${APP_ID}"; then
+  notify "OnlyOffice" "Instalación terminada. Abriendo OnlyOffice…"
+  run_onlyoffice "$@"
+fi
+
+notify "OnlyOffice" "No se pudo instalar OnlyOffice. Revisa la conexión o usa Instalar paquetes."
+exit 1

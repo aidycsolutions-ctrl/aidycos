@@ -266,7 +266,7 @@ def install_desktop_icons(root: Path) -> None:
     if "DESKTOP_ICONS_ENABLED" not in config_text:
         config_text = config_text.rstrip() + (
             "\n\n# AidyCOS: escritorio con accesos directos habilitados.\n"
-            "DESKTOP_ICONS_ENABLED = False\n"
+            "DESKTOP_ICONS_ENABLED = True\n"
             "DESKTOP_ICONS_PATH = \"desktop-icons.json\"\n"
             "DESKTOP_ICON_SIZE = 48\n"
             "DESKTOP_ICON_LABEL_WIDTH = 96\n"
@@ -276,8 +276,8 @@ def install_desktop_icons(root: Path) -> None:
         )
     else:
         config_text = re.sub(
-            r"^(\s*DESKTOP_ICONS_ENABLED\s*=\s*)True(\s*)$",
-            r"\g<1>False\g<2>",
+            r"^(\s*DESKTOP_ICONS_ENABLED\s*=\s*)False(\s*)$",
+            r"\g<1>True\g<2>",
             config_text,
             count=1,
             flags=re.MULTILINE,
@@ -589,6 +589,171 @@ def install_battery(root: Path) -> None:
         schema.write_text(schema_text, encoding="utf-8")
 
 
+def install_printers(root: Path) -> None:
+    """Add Configuraciones → Impresoras (CUPS list + system-config-printer)."""
+    overlay = Path(__file__).parent / "shell"
+    for relative in (
+        Path("servicios/impresoras/__init__.py"),
+        Path("servicios/impresoras/service.py"),
+        Path("widgets/configuraciones/printers_page.py"),
+    ):
+        install_overlay_file(overlay / relative, root / "shell" / relative)
+
+    schema = root / "shell/settings/schema.py"
+    schema_text = schema.read_text(encoding="utf-8")
+    if "IMPRESORAS" not in schema_text:
+        try_replace_once(
+            schema,
+            '    ATAJOS = "atajos"\n    AVANZADO = "avanzado"\n',
+            '    ATAJOS = "atajos"\n'
+            '    IMPRESORAS = "impresoras"\n'
+            '    AVANZADO = "avanzado"\n',
+            "registrar categoría Impresoras",
+        )
+        try_replace_once(
+            schema,
+            '    CategoryId.ATAJOS: ("Atajos", "Atajos de teclado activos (solo lectura)"),\n'
+            '    CategoryId.AVANZADO: ("Avanzado", "Rendimiento e integraciones"),\n',
+            '    CategoryId.ATAJOS: ("Atajos", "Atajos de teclado activos (solo lectura)"),\n'
+            '    CategoryId.IMPRESORAS: (\n'
+            '        "Impresoras",\n'
+            '        "Gestionar impresoras CUPS y abrir el gestor del sistema.",\n'
+            "    ),\n"
+            '    CategoryId.AVANZADO: ("Avanzado", "Rendimiento e integraciones"),\n',
+            "añadir metadatos de Impresoras",
+        )
+
+    pages = root / "shell/widgets/configuraciones/pages.py"
+    try_replace_once(
+        pages,
+        "from .shortcuts_page import build_shortcuts_page\n",
+        "from .printers_page import build_printers_page\n"
+        "from .shortcuts_page import build_shortcuts_page\n",
+        "importar página de impresoras",
+    )
+    try_replace_once(
+        pages,
+        "    if category is CategoryId.ATAJOS:\n"
+        "        return build_shortcuts_page()\n",
+        "    if category is CategoryId.ATAJOS:\n"
+        "        return build_shortcuts_page()\n"
+        "    if category is CategoryId.IMPRESORAS:\n"
+        "        return build_printers_page()\n",
+        "mostrar página de impresoras",
+    )
+
+    # Insert catalog-free Impresoras next to Atajos (before Avanzado).
+    pane = root / "shell/widgets/configuraciones/pane.py"
+    pane_text = pane.read_text(encoding="utf-8")
+    if "IMPRESORAS" not in pane_text:
+        old_ordered = '''def ordered_categories(manager: SettingsManager) -> tuple[CategoryId, ...]:
+    """Nav order for the live Settings UI (launcher settings mode).
+
+    ``CategoryId.ATAJOS`` is catalog-free (no SettingDef) so it never appears in
+    ``categories_present()``; insert it once before Avanzado for the real menu.
+    """
+    ordered = (CategoryId.GENERAL,) + tuple(
+        category
+        for category in manager.categories_present()
+        if category is not CategoryId.GENERAL
+    )
+    if CategoryId.ATAJOS in ordered:
+        return ordered
+    insert_at = len(ordered)
+    for index, category in enumerate(ordered):
+        if category is CategoryId.AVANZADO:
+            insert_at = index
+            break
+    return ordered[:insert_at] + (CategoryId.ATAJOS,) + ordered[insert_at:]
+'''
+        new_ordered = '''def ordered_categories(manager: SettingsManager) -> tuple[CategoryId, ...]:
+    """Nav order for the live Settings UI (launcher settings mode).
+
+    Catalog-free categories (Atajos, Impresoras) never appear in
+    ``categories_present()``; insert them once before Avanzado.
+    """
+    ordered = (CategoryId.GENERAL,) + tuple(
+        category
+        for category in manager.categories_present()
+        if category is not CategoryId.GENERAL
+    )
+    extras = []
+    if CategoryId.ATAJOS not in ordered:
+        extras.append(CategoryId.ATAJOS)
+    if hasattr(CategoryId, "IMPRESORAS") and CategoryId.IMPRESORAS not in ordered:
+        extras.append(CategoryId.IMPRESORAS)
+    if not extras:
+        return ordered
+    insert_at = len(ordered)
+    for index, category in enumerate(ordered):
+        if category is CategoryId.AVANZADO:
+            insert_at = index
+            break
+    return ordered[:insert_at] + tuple(extras) + ordered[insert_at:]
+'''
+        if old_ordered in pane_text:
+            backup = pane.with_suffix(pane.suffix + ".aidycos-backup")
+            if not backup.exists():
+                shutil.copy2(pane, backup)
+            pane.write_text(pane_text.replace(old_ordered, new_ordered, 1), encoding="utf-8")
+        else:
+            print(f"Aviso: se omite el orden de Impresoras en pane.py: {pane}", flush=True)
+
+    settings_overlay = root / "shell/widgets/configuraciones/overlay.py"
+    overlay_text = settings_overlay.read_text(encoding="utf-8")
+    if "IMPRESORAS" not in overlay_text:
+        old_block = '''        # Atajos is catalog-free (read-only registry page); always offer it.
+        if CategoryId.ATAJOS not in ordered:
+            insert_at = len(ordered)
+            for index, cat in enumerate(ordered):
+                if cat is CategoryId.AVANZADO:
+                    insert_at = index
+                    break
+            ordered = ordered[:insert_at] + (CategoryId.ATAJOS,) + ordered[insert_at:]
+'''
+        new_block = '''        # Catalog-free pages (Atajos, Impresoras); always offer them.
+        extras = []
+        if CategoryId.ATAJOS not in ordered:
+            extras.append(CategoryId.ATAJOS)
+        if hasattr(CategoryId, "IMPRESORAS") and CategoryId.IMPRESORAS not in ordered:
+            extras.append(CategoryId.IMPRESORAS)
+        if extras:
+            insert_at = len(ordered)
+            for index, cat in enumerate(ordered):
+                if cat is CategoryId.AVANZADO:
+                    insert_at = index
+                    break
+            ordered = ordered[:insert_at] + tuple(extras) + ordered[insert_at:]
+'''
+        if old_block in overlay_text:
+            backup = settings_overlay.with_suffix(settings_overlay.suffix + ".aidycos-backup")
+            if not backup.exists():
+                shutil.copy2(settings_overlay, backup)
+            settings_overlay.write_text(
+                overlay_text.replace(old_block, new_block, 1),
+                encoding="utf-8",
+            )
+        else:
+            print(
+                f"Aviso: se omite el menú de Impresoras en overlay.py: {settings_overlay}",
+                flush=True,
+            )
+
+    style = root / "shell/style.css"
+    style_text = style.read_text(encoding="utf-8")
+    if "settings-printer-row" not in style_text:
+        css = (
+            "\nbox.settings-printer-row {\n"
+            "    padding: 8px 0;\n"
+            "    border-bottom: 1px solid alpha(@shell_text_primary, 0.12);\n"
+            "}\n"
+        )
+        backup = style.with_suffix(style.suffix + ".aidycos-backup")
+        if not backup.exists():
+            shutil.copy2(style, backup)
+        style.write_text(style_text.rstrip() + "\n" + css, encoding="utf-8")
+
+
 def install_native_workspace_dispatch(root: Path) -> None:
     """Use Hyprland's built-in workspace dispatcher for strip clicks."""
     service = root / "shell/servicios/escritorio/hyprland.py"
@@ -694,6 +859,7 @@ def main() -> None:
             encoding="utf-8",
         )
     install_battery(root)
+    install_printers(root)
     install_native_workspace_dispatch(root)
     assistant_card = root / "shell/widgets/notificaciones/assistant_card.py"
     if assistant_card.is_file():

@@ -4,7 +4,10 @@ depends_on = ["desktop-runtime"]
 
 [packages]
 apt = [
+  "adwaita-icon-theme",
   "dbus-user-session",
+  "flatpak",
+  "firefox-esr",
   "gir1.2-dbusmenu-gtk3-0.4",
   "gir1.2-gtk-3.0",
   "gir1.2-gtklayershell-0.1",
@@ -12,10 +15,13 @@ apt = [
   "grim",
   "fonts-noto-color-emoji",
   "git",
+  "hicolor-icon-theme",
   "hyprland-protocols",
   "locales",
   "libnotify-bin",
   "network-manager",
+  "pkexec",
+  "polkitd",
   "upower",
   "pipewire-audio",
   "python3",
@@ -27,10 +33,13 @@ apt = [
   "qml6-module-qtquick-virtualkeyboard",
   "sddm",
   "slurp",
+  "synaptic",
   "thunar",
   "zenity",
   "wireplumber",
   "xwayland",
   "cups",
   "cups-browsed",
+  "cups-client",
+  "system-config-printer",
 ]

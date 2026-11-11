@@ -77,6 +77,15 @@ class JugooDeploymentTests(unittest.TestCase):
         self.assertIn("exec-once = /usr/local/bin/jugoo", installer)
         self.assertIn("feature/atajos-aidyc-escritorio", installer)
         self.assertIn("seed-desktop-defaults.py", installer)
+        self.assertIn("bind = ALT, F4, exec, jugoo action session", installer)
+        self.assertIn("aidycos-impresoras.desktop", installer)
+        self.assertIn("aidycos-paquetes.desktop", installer)
+        self.assertIn("aidycos-onlyoffice.desktop", installer)
+        self.assertIn("aidycos-onlyoffice", installer)
+        self.assertIn("hyprpolkitagent", installer)
+        self.assertIn("DESKTOP_ICONS_ENABLED = True", (
+            ROOT / "packaging" / "jugoo-overlay" / "install.py"
+        ).read_text(encoding="utf-8"))
 
     def test_overlay_keeps_desktop_layer_transparent(self) -> None:
         spec = importlib.util.spec_from_file_location(

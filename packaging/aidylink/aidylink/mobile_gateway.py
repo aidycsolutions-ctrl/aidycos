@@ -19,14 +19,16 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
 
+from pathlib import Path
+
 from . import MOBILE_PORT, PROTOCOL
 from .config import LinkConfig
-from .messages import LinkMessage
+from .messages import MAX_ATTACHMENT_BYTES, LinkMessage
 from .netutil import detect_lan_ip
 
 LOGGER = logging.getLogger(__name__)
 
-SendHandler = Callable[[str, str, str, str], Awaitable[dict[str, Any]]]
+SendHandler = Callable[..., Awaitable[dict[str, Any]]]
 PeersProvider = Callable[[], list[dict[str, Any]]]
 PinChecker = Callable[[str], bool]
 
@@ -55,7 +57,7 @@ input,button,select{font:inherit}
 input[type=text]{width:100%;padding:12px 14px;border:1px solid #d1d7db;border-radius:10px}
 button.primary{background:var(--green);color:#fff;border:0;border-radius:24px;padding:12px 18px;font-weight:600}
 button.primary:disabled{opacity:.5}
-#status{color:#fecaca;font-size:13px;min-height:1.2em}
+#status{color:#b91c1c;font-size:13px;min-height:1.2em}
 #peers{display:flex;gap:8px;overflow-x:auto;padding:8px 10px;background:#f0f2f5;border-bottom:1px solid #d1d7db}
 .chip{flex:0 0 auto;background:#fff;border:1px solid #e9edef;border-radius:18px;padding:8px 12px;font-size:13px}
 .chip.on{background:var(--out);border-color:#25d366}
@@ -67,9 +69,13 @@ button.primary:disabled{opacity:.5}
 .bubble .who{font-size:12px;font-weight:600;color:#027a67;margin-bottom:2px}
 .bubble .txt{font-size:14.5px;white-space:pre-wrap;word-break:break-word}
 .bubble .t{font-size:11px;color:var(--muted);text-align:right;margin-top:2px}
+.bubble img.media{display:block;max-width:100%;max-height:260px;border-radius:6px;margin:2px 0 4px}
+.bubble a.file{display:inline-block;margin:2px 0 4px;color:#027a67;font-size:14px;word-break:break-all}
 #composer{display:flex;gap:8px;padding:8px;background:#f0f2f5;align-items:center}
-#composer input{flex:1;border-radius:22px;padding:12px 16px;border:0;background:#fff}
-#composer button{border:0;background:var(--green);color:#fff;width:44px;height:44px;border-radius:22px;font-size:18px}
+#composer input[type=text]{flex:1;border-radius:22px;padding:12px 16px;border:0;background:#fff}
+#composer button.send{border:0;background:var(--green);color:#fff;width:44px;height:44px;border-radius:22px;font-size:18px}
+#composer button.attach{border:0;background:#fff;color:#54656f;width:44px;height:44px;border-radius:22px;font-size:20px}
+#uploadHint{display:none;padding:6px 12px;background:#fff3cd;color:#664d03;font-size:12px}
 .sys{align-self:center;background:rgba(255,255,255,.85);color:var(--muted);font-size:12px;padding:4px 10px;border-radius:8px}
 </style>
 </head>
@@ -91,30 +97,55 @@ button.primary:disabled{opacity:.5}
   </section>
   <section id="chat" hidden>
     <div id="peers"></div>
+    <div id="uploadHint">Enviando archivo…</div>
     <div id="log"></div>
     <form id="composer">
+      <button type="button" class="attach" id="attach" aria-label="Adjuntar">📎</button>
+      <input id="file" type="file" accept="image/*,*/*" hidden/>
       <input id="text" type="text" placeholder="Mensaje" autocomplete="off" enterkeyhint="send"/>
-      <button type="submit" aria-label="Enviar">➤</button>
+      <button type="submit" class="send" aria-label="Enviar">➤</button>
     </form>
   </section>
 </div>
 <script>
+const MAX_BYTES=15*1024*1024;
+const TOKEN_KEY='aidychat_mobile_token';
+const NAME_KEY='aidychat_mobile_name';
 const qs=new URLSearchParams(location.search);
 const hashPin=(location.hash||'').replace(/^#/,'').replace(/^p=/i,'');
 const $=(id)=>document.getElementById(id);
 const pinFromUrl=(qs.get('pin')||hashPin||'').replace(/\D/g,'').slice(0,6);
 if(pinFromUrl) $('pin').value=pinFromUrl;
-const savedName=localStorage.getItem('aidychat_mobile_name')||'';
+const savedName=localStorage.getItem(NAME_KEY)||'';
 if(savedName) $('name').value=savedName;
 
-let ws=null, selfId='', selectedTo='*', peers=[];
+let ws=null, selfId='', selectedTo='*', peers=[], busy=false;
+let token=localStorage.getItem(TOKEN_KEY)||'';
+let pickingFile=false, reconnecting=false, everJoined=false, wantLive=false;
+const seenIds=new Set();
+let pendingHello=null;
 
 function setStatus(t){$('status').textContent=t||'';}
+function setUpload(t){
+  const el=$('uploadHint');
+  if(!t){el.style.display='none'; el.textContent=''; return;}
+  el.style.display='block'; el.textContent=t;
+}
 function hhmm(ts){
   const d=new Date((ts||0)*1000);
   return d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
 }
+function mediaSrc(msg){
+  if(msg.media_url) return msg.media_url;
+  if(msg.msg_id) return '/media/'+encodeURIComponent(msg.msg_id);
+  return '';
+}
 function addBubble(msg){
+  const mid=String(msg.msg_id||'');
+  if(mid){
+    if(seenIds.has(mid)) return;
+    seenIds.add(mid);
+  }
   const me=msg.from_id===selfId;
   const row=document.createElement('div');
   row.className='row'+(me?' me':'');
@@ -123,7 +154,32 @@ function addBubble(msg){
   if(!me && msg.from_name){
     const w=document.createElement('div'); w.className='who'; w.textContent=msg.from_name; b.appendChild(w);
   }
-  const t=document.createElement('div'); t.className='txt'; t.textContent=msg.text||msg.filename||''; b.appendChild(t);
+  const kind=msg.kind||'text';
+  const src=mediaSrc(msg);
+  const isImage=kind==='image' || (msg.mime||'').startsWith('image/');
+  const isVideo=kind==='video' || (msg.mime||'').startsWith('video/');
+  if(isImage && src){
+    const img=document.createElement('img');
+    img.className='media'; img.loading='lazy'; img.alt=msg.filename||'Imagen';
+    img.src=src;
+    img.onclick=()=>window.open(src,'_blank');
+    b.appendChild(img);
+  } else if(isVideo && src){
+    const v=document.createElement('video');
+    v.className='media'; v.controls=true; v.preload='metadata'; v.src=src;
+    b.appendChild(v);
+  } else if((kind==='file' || kind==='image' || kind==='video') && src){
+    const a=document.createElement('a');
+    a.className='file'; a.href=src; a.target='_blank'; a.rel='noopener';
+    a.textContent='📎 '+(msg.filename||'Archivo');
+    b.appendChild(a);
+  }
+  const body=msg.text||'';
+  if(body){
+    const t=document.createElement('div'); t.className='txt'; t.textContent=body; b.appendChild(t);
+  } else if(!src && (kind==='file'||kind==='video')){
+    const t=document.createElement('div'); t.className='txt'; t.textContent=msg.filename||'Archivo'; b.appendChild(t);
+  }
   const tm=document.createElement('div'); tm.className='t'; tm.textContent=hhmm(msg.ts); b.appendChild(tm);
   row.appendChild(b); $('log').appendChild(row); $('log').scrollTop=$('log').scrollHeight;
 }
@@ -141,51 +197,244 @@ function renderPeers(){
     box.appendChild(c);
   });
 }
-function connect(){
+function showChat(hostName){
+  $('sub').textContent=(hostName||'PC')+(ws&&ws.readyState===1?' · conectado':' · reconectando…');
+  $('gate').hidden=true;
+  $('chat').hidden=false;
+  everJoined=true;
+}
+function openSocket(hello){
+  return new Promise((resolve,reject)=>{
+    pendingHello=hello;
+    const proto=location.protocol==='https:'?'wss':'ws';
+    const sock=new WebSocket(`${proto}://${location.host}/ws`);
+    let settled=false;
+    const done=(fn,arg)=>{ if(settled) return; settled=true; fn(arg); };
+    sock.onopen=()=>{
+      ws=sock;
+      sock.send(JSON.stringify(Object.assign({type:'hello',protocol:'aidylink/1'}, hello)));
+    };
+    sock.onmessage=(ev)=>{
+      let data; try{data=JSON.parse(ev.data);}catch(_){return;}
+      if(data.type==='hello_ok'){
+        selfId=data.self_id;
+        if(data.token){ token=data.token; localStorage.setItem(TOKEN_KEY, token); }
+        peers=data.peers||[];
+        showChat(data.host_name);
+        renderPeers();
+        (data.history||[]).forEach(addBubble);
+        if(!data.resume) addSys('Listo. Fotos/vídeos: clip 📎 (máx. 15 MB).');
+        setStatus('');
+        $('join').disabled=false;
+        done(resolve, data);
+      } else if(data.type==='peers'){ peers=data.peers||[]; renderPeers(); }
+      else if(data.type==='message'){ addBubble(data.message||data); }
+      else if(data.type==='error'){
+        setUpload(''); busy=false;
+        if(!everJoined){ setStatus(data.error||'Error'); $('join').disabled=false; }
+        else alert(data.error||'Error');
+        done(reject, new Error(data.error||'Error'));
+      }
+    };
+    sock.onclose=()=>{
+      ws=null;
+      if(!settled){ done(reject, new Error('Conexión cerrada')); return; }
+      if(pickingFile){ $('sub').textContent='PC · eligiendo archivo…'; return; }
+      if(wantLive && token){
+        $('sub').textContent='PC · reconectando…';
+        scheduleReconnect();
+        return;
+      }
+      if(everJoined){
+        setStatus('Desconectado. Pulsa Entrar o recarga.');
+        $('join').disabled=false;
+      }
+    };
+    sock.onerror=()=>{ if(!everJoined) setStatus('No se pudo conectar al PC. ¿Misma Wi‑Fi?'); };
+  });
+}
+function scheduleReconnect(){
+  if(reconnecting||!wantLive||!token) return;
+  reconnecting=true;
+  setTimeout(async()=>{
+    reconnecting=false;
+    if(!wantLive||(ws&&ws.readyState===1)) return;
+    try{
+      await openSocket({token, name:($('name').value||savedName||'Móvil').trim()});
+    }catch(_){
+      setTimeout(scheduleReconnect, 1500);
+    }
+  }, 400);
+}
+async function ensureLive(){
+  if(ws&&ws.readyState===1&&token) return;
+  const name=($('name').value||savedName||'').trim();
+  if(token){
+    await openSocket({token, name:name||'Móvil'});
+    return;
+  }
+  throw new Error('Sin sesión. Entra otra vez con el código.');
+}
+async function connect(){
   const name=($('name').value||'').trim();
   const pin=($('pin').value||'').replace(/\D/g,'');
   if(name.length<2){setStatus('Escribe tu nombre'); return;}
-  if(!/^\d{6}$/.test(pin)){setStatus('El código debe tener 6 dígitos'); return;}
-  localStorage.setItem('aidychat_mobile_name', name);
+  localStorage.setItem(NAME_KEY, name);
   setStatus('Conectando…');
   $('join').disabled=true;
-  const proto=location.protocol==='https:'?'wss':'ws';
-  ws=new WebSocket(`${proto}://${location.host}/ws`);
-  ws.onopen=()=>ws.send(JSON.stringify({type:'hello',pin,name,protocol:'aidylink/1'}));
-  ws.onmessage=(ev)=>{
-    let data; try{data=JSON.parse(ev.data);}catch(_){return;}
-    if(data.type==='hello_ok'){
-      selfId=data.self_id; peers=data.peers||[];
-      $('sub').textContent=(data.host_name||'PC')+' · conectado';
-      $('gate').hidden=true; $('chat').hidden=false;
-      renderPeers();
-      (data.history||[]).forEach(addBubble);
-      addSys('Listo. Misma Wi‑Fi, mensajes por este PC.');
-      setStatus('');
-    } else if(data.type==='peers'){ peers=data.peers||[]; renderPeers(); }
-    else if(data.type==='message'){ addBubble(data.message||data); }
-    else if(data.type==='error'){ setStatus(data.error||'Error'); $('join').disabled=false; }
-  };
-  ws.onclose=()=>{
-    setStatus('Desconectado. Vuelve a entrar con el código.');
+  wantLive=true;
+  try{
+    if(token){
+      try{ await openSocket({token, name}); return; }
+      catch(_){ /* token viejo: probar pin */ }
+    }
+    if(!/^\d{6}$/.test(pin)){ setStatus('El código debe tener 6 dígitos'); $('join').disabled=false; return; }
+    await openSocket({pin, name});
+  }catch(err){
+    setStatus(err.message||'No se pudo conectar');
     $('join').disabled=false;
-    $('gate').hidden=false; $('chat').hidden=true;
-  };
-  ws.onerror=()=>setStatus('No se pudo conectar al PC. ¿Misma Wi‑Fi?');
+  }
+}
+function compressImage(file){
+  return new Promise((resolve,reject)=>{
+    const url=URL.createObjectURL(file);
+    const img=new Image();
+    img.onload=()=>{
+      const max=1600;
+      let w=img.width, h=img.height;
+      if(w>max || h>max){
+        const scale=Math.min(max/w, max/h);
+        w=Math.round(w*scale); h=Math.round(h*scale);
+      }
+      const canvas=document.createElement('canvas');
+      canvas.width=w; canvas.height=h;
+      canvas.getContext('2d').drawImage(img,0,0,w,h);
+      URL.revokeObjectURL(url);
+      canvas.toBlob((blob)=>{
+        if(!blob){ reject(new Error('No se pudo comprimir la foto')); return; }
+        resolve({
+          blob,
+          filename:(file.name||'foto').replace(/\.[^.]+$/,'')+'.jpg',
+          mime:'image/jpeg'
+        });
+      }, 'image/jpeg', 0.82);
+    };
+    img.onerror=()=>{URL.revokeObjectURL(url); reject(new Error('No se pudo leer la imagen'));};
+    img.src=url;
+  });
+}
+async function prepareFile(file){
+  if(file.size>MAX_BYTES) throw new Error('Máximo 15 MB (el vídeo/foto es más grande)');
+  if((file.type||'').startsWith('image/') && file.size>250000){
+    return compressImage(file);
+  }
+  return {blob:file, filename:file.name||'archivo', mime:file.type||'application/octet-stream'};
+}
+async function sendFile(file){
+  if(busy) return;
+  busy=true;
+  pickingFile=false;
+  setUpload('Preparando '+(file.name||'archivo')+'…');
+  try{
+    // La cámara suele matar el WebSocket: subimos por HTTP y luego reconectamos.
+    if(!(ws&&ws.readyState===1)||!token){
+      setUpload('Reconectando…');
+      try{ await ensureLive(); }catch(_){ /* upload usa token guardado */ }
+    }
+    if(!token) throw new Error('Sin sesión. Entra otra vez con el código del QR.');
+    const payload=await prepareFile(file);
+    if(payload.blob.size>MAX_BYTES) throw new Error('Máximo 15 MB por archivo');
+    setUpload('Enviando '+(payload.filename||'archivo')+'…');
+    const caption=($('text').value||'').trim();
+    const resp=await fetch('/api/upload', {
+      method:'POST',
+      headers:{
+        'Authorization':'Bearer '+token,
+        'X-Aidy-To': selectedTo,
+        'X-Aidy-Filename': payload.filename||'archivo',
+        'X-Aidy-Mime': payload.mime||'application/octet-stream',
+        'X-Aidy-Text': caption,
+        'Content-Type': 'application/octet-stream'
+      },
+      body: payload.blob
+    });
+    const data=await resp.json().catch(()=>({}));
+    if(!resp.ok || data.ok===false){
+      throw new Error(data.error||('Error al subir ('+resp.status+')'));
+    }
+    if(data.message) addBubble(data.message);
+    $('text').value='';
+    setUpload('');
+    if(!(ws&&ws.readyState===1)) scheduleReconnect();
+  }catch(err){
+    setUpload('');
+    alert(err.message||String(err));
+    scheduleReconnect();
+  }finally{
+    busy=false;
+    pickingFile=false;
+  }
 }
 $('join').onclick=connect;
-$('composer').onsubmit=(e)=>{
+$('attach').onclick=()=>{
+  pickingFile=true;
+  $('file').click();
+  // Si el usuario cancela el picker, soltar el flag.
+  setTimeout(()=>{ if(pickingFile && !busy) pickingFile=false; }, 120000);
+};
+$('file').onchange=()=>{
+  const f=$('file').files && $('file').files[0];
+  $('file').value='';
+  if(f) sendFile(f);
+  else pickingFile=false;
+};
+$('composer').onsubmit=async (e)=>{
   e.preventDefault();
   const text=($('text').value||'').trim();
-  if(!text||!ws||ws.readyState!==1) return;
-  ws.send(JSON.stringify({type:'send',to:selectedTo,text}));
-  $('text').value='';
+  if(!text||busy) return;
+  try{
+    await ensureLive();
+    ws.send(JSON.stringify({type:'send',to:selectedTo,text}));
+    $('text').value='';
+  }catch(err){
+    alert(err.message||String(err));
+  }
 };
-if(pinFromUrl && savedName){ /* wait for tap */ }
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState==='visible' && wantLive && token && !(ws&&ws.readyState===1)){
+    scheduleReconnect();
+  }
+});
+window.addEventListener('pageshow', ()=>{
+  if(wantLive && token && !(ws&&ws.readyState===1)) scheduleReconnect();
+});
+if(token && savedName){
+  // Reanudar sesión previa sin pedir PIN otra vez.
+  wantLive=true;
+  connect();
+}
 </script>
 </body>
 </html>
 """
+
+
+TOKEN_TTL_S = 12 * 3600.0
+
+
+@dataclass
+class MobileIdentity:
+    node_id: str
+    display_name: str
+    token: str
+    expires_at: float = field(default_factory=lambda: time.time() + TOKEN_TTL_S)
+
+    @property
+    def active(self) -> bool:
+        return time.time() <= self.expires_at
+
+    def touch(self) -> None:
+        self.expires_at = time.time() + TOKEN_TTL_S
 
 
 @dataclass
@@ -216,7 +465,44 @@ class MobileGateway:
         self.port = int(port or MOBILE_PORT)
         self._server: asyncio.AbstractServer | None = None
         self._sessions: dict[str, MobileSession] = {}
+        self._idents: dict[str, MobileIdentity] = {}  # token -> identity
         self._history: list[dict[str, Any]] = []
+        self._media_index: dict[str, Path] = {}
+
+    def _purge_idents(self) -> None:
+        dead = [tok for tok, ident in self._idents.items() if not ident.active]
+        for tok in dead:
+            self._idents.pop(tok, None)
+
+    def resolve_token(self, token: str) -> MobileIdentity | None:
+        self._purge_idents()
+        ident = self._idents.get((token or "").strip())
+        if ident is None or not ident.active:
+            return None
+        ident.touch()
+        return ident
+
+    def _register_identity(
+        self,
+        *,
+        name: str,
+        token: str | None = None,
+        node_id: str | None = None,
+    ) -> MobileIdentity:
+        self._purge_idents()
+        if token:
+            existing = self._idents.get(token)
+            if existing and existing.active:
+                existing.display_name = name or existing.display_name
+                existing.touch()
+                return existing
+        ident = MobileIdentity(
+            node_id=node_id or f"mobile:{uuid.uuid4().hex[:12]}",
+            display_name=name,
+            token=token or secrets.token_urlsafe(18),
+        )
+        self._idents[ident.token] = ident
+        return ident
 
     @property
     def lan_ip(self) -> str:
@@ -243,13 +529,30 @@ class MobileGateway:
             for s in self._sessions.values()
         ]
 
-    def remember(self, message: LinkMessage | dict[str, Any]) -> None:
+    def _public_message(self, message: LinkMessage | dict[str, Any]) -> dict[str, Any]:
         data = message.as_dict() if isinstance(message, LinkMessage) else dict(message)
-        # Never push huge base64 blobs to phones.
         data.pop("media_b64", None)
+        msg_id = str(data.get("msg_id") or "")
+        media_path = str(data.get("media_path") or "")
+        if msg_id and media_path and Path(media_path).is_file():
+            self._media_index[msg_id] = Path(media_path)
+            data["media_url"] = f"/media/{msg_id}"
+            data["has_media"] = True
+        elif msg_id and msg_id in self._media_index:
+            data["media_url"] = f"/media/{msg_id}"
+            data["has_media"] = True
+        # Paths are host-local; phones should use media_url.
+        data.pop("media_path", None)
+        return data
+
+    def remember(self, message: LinkMessage | dict[str, Any]) -> None:
+        data = self._public_message(message)
         self._history.append(data)
         if len(self._history) > 200:
             self._history = self._history[-200:]
+        if len(self._media_index) > 400:
+            keep = {str(item.get("msg_id") or "") for item in self._history}
+            self._media_index = {k: v for k, v in self._media_index.items() if k in keep}
 
     async def start(self) -> None:
         self._server = await asyncio.start_server(
@@ -266,14 +569,14 @@ class MobileGateway:
             except Exception:
                 pass
         self._sessions.clear()
+        self._idents.clear()
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
             self._server = None
 
     async def broadcast_message(self, message: LinkMessage | dict[str, Any]) -> None:
-        data = message.as_dict() if isinstance(message, LinkMessage) else dict(message)
-        data.pop("media_b64", None)
+        data = self._public_message(message)
         self.remember(data)
         dead: list[str] = []
         payload = json.dumps({"type": "message", "message": data}, ensure_ascii=False)
@@ -289,8 +592,7 @@ class MobileGateway:
         session = self._sessions.get(node_id)
         if session is None:
             return False
-        data = message.as_dict()
-        data.pop("media_b64", None)
+        data = self._public_message(message)
         self.remember(data)
         try:
             await self._ws_send_text(
@@ -354,6 +656,26 @@ class MobileGateway:
                 ).encode("utf-8")
                 await self._http_response(writer, 200, body, content_type="application/json")
                 return
+            if method == "GET" and path.startswith("/media/"):
+                await self._serve_media(writer, path[len("/media/") :])
+                return
+            if method == "POST" and path == "/api/upload":
+                await self._http_upload(reader, writer, headers)
+                return
+            if method == "OPTIONS" and path == "/api/upload":
+                await self._http_response(
+                    writer,
+                    200,
+                    b"",
+                    extra_headers=[
+                        ("Access-Control-Allow-Methods", "POST, OPTIONS"),
+                        (
+                            "Access-Control-Allow-Headers",
+                            "Authorization, Content-Type, X-Aidy-To, X-Aidy-Filename, X-Aidy-Mime, X-Aidy-Text",
+                        ),
+                    ],
+                )
+                return
             if method == "GET" and path == "/ws":
                 await self._websocket(reader, writer, headers)
                 return
@@ -365,6 +687,111 @@ class MobileGateway:
                 await writer.wait_closed()
             except Exception:
                 pass
+
+    def _bearer_token(self, headers: dict[str, str]) -> str:
+        auth = headers.get("authorization", "").strip()
+        if auth.lower().startswith("bearer "):
+            return auth[7:].strip()
+        return headers.get("x-aidy-token", "").strip()
+
+    async def _http_upload(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        headers: dict[str, str],
+    ) -> None:
+        ident = self.resolve_token(self._bearer_token(headers))
+        if ident is None:
+            body = json.dumps(
+                {
+                    "ok": False,
+                    "error": "Sesión expirada. En el PC: Emparejar → Mostrar código y entra de nuevo.",
+                }
+            ).encode("utf-8")
+            await self._http_response(writer, 401, body, content_type="application/json")
+            return
+        try:
+            length = int(headers.get("content-length") or "0")
+        except ValueError:
+            length = 0
+        if length <= 0:
+            body = json.dumps({"ok": False, "error": "archivo vacío"}).encode("utf-8")
+            await self._http_response(writer, 400, body, content_type="application/json")
+            return
+        if length > MAX_ATTACHMENT_BYTES:
+            body = json.dumps(
+                {"ok": False, "error": "Máximo 15 MB por archivo"}
+            ).encode("utf-8")
+            await self._http_response(writer, 413, body, content_type="application/json")
+            return
+        try:
+            raw = await asyncio.wait_for(reader.readexactly(length), timeout=180.0)
+        except Exception:
+            body = json.dumps(
+                {"ok": False, "error": "No se pudo recibir el archivo completo"}
+            ).encode("utf-8")
+            await self._http_response(writer, 400, body, content_type="application/json")
+            return
+
+        filename = headers.get("x-aidy-filename") or "archivo"
+        mime = headers.get("x-aidy-mime") or "application/octet-stream"
+        to_id = headers.get("x-aidy-to") or "*"
+        text = headers.get("x-aidy-text") or ""
+        # Header values may be latin-1; filenames often need utf-8 recovery.
+        try:
+            filename = filename.encode("latin-1").decode("utf-8")
+        except Exception:
+            pass
+        try:
+            text = text.encode("latin-1").decode("utf-8")
+        except Exception:
+            pass
+
+        media_b64 = base64.b64encode(raw).decode("ascii")
+        result = await self.send_from_mobile(
+            ident.node_id,
+            ident.display_name,
+            to_id,
+            text,
+            media_b64=media_b64,
+            filename=filename,
+            mime=mime,
+        )
+        if isinstance(result.get("message"), dict):
+            result["message"] = self._public_message(result["message"])
+        status = 200 if result.get("ok") else 400
+        await self._http_response(
+            writer,
+            status,
+            json.dumps(result, ensure_ascii=False).encode("utf-8"),
+            content_type="application/json",
+        )
+
+    async def _serve_media(self, writer: asyncio.StreamWriter, msg_id: str) -> None:
+        from urllib.parse import unquote
+
+        key = unquote(msg_id or "").strip()
+        path = self._media_index.get(key)
+        if path is None or not path.is_file():
+            await self._http_response(writer, 404, b"media not found")
+            return
+        try:
+            body = path.read_bytes()
+        except OSError:
+            await self._http_response(writer, 404, b"media not found")
+            return
+        import mimetypes
+
+        ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        await self._http_response(
+            writer,
+            200,
+            body,
+            content_type=ctype,
+            extra_headers=[
+                ("Content-Disposition", f'inline; filename="{path.name}"'),
+            ],
+        )
 
     async def _read_headers(self, reader: asyncio.StreamReader) -> dict[str, str]:
         headers: dict[str, str] = {}
@@ -459,61 +886,114 @@ class MobileGateway:
                         await self._ws_send_text(
                             writer,
                             json.dumps(
-                                {"type": "error", "error": "Primero envía hello con pin y nombre"}
-                            ),
-                        )
-                        continue
-                    pin = str(msg.get("pin") or "").strip()
-                    name = str(msg.get("name") or "").strip()[:40]
-                    if len(name) < 2:
-                        await self._ws_send_text(
-                            writer, json.dumps({"type": "error", "error": "Nombre demasiado corto"})
-                        )
-                        continue
-                    if not self.check_pin(pin):
-                        await self._ws_send_text(
-                            writer,
-                            json.dumps(
                                 {
                                     "type": "error",
-                                    "error": "Código incorrecto o expirado. En el PC: Emparejar → Mostrar código.",
+                                    "error": "Primero envía hello con pin/token y nombre",
                                 }
                             ),
                         )
                         continue
-                    node_id = f"mobile:{uuid.uuid4().hex[:12]}"
+                    pin = str(msg.get("pin") or "").strip()
+                    resume_token = str(msg.get("token") or "").strip()
+                    name = str(msg.get("name") or "").strip()[:40]
+                    resume = False
+                    ident: MobileIdentity | None = None
+                    if resume_token:
+                        ident = self.resolve_token(resume_token)
+                        if ident is None:
+                            await self._ws_send_text(
+                                writer,
+                                json.dumps(
+                                    {
+                                        "type": "error",
+                                        "error": "Sesión expirada. Entra otra vez con el código del QR.",
+                                    }
+                                ),
+                            )
+                            continue
+                        if name:
+                            ident.display_name = name
+                        resume = True
+                    else:
+                        if len(name) < 2:
+                            await self._ws_send_text(
+                                writer,
+                                json.dumps(
+                                    {"type": "error", "error": "Nombre demasiado corto"}
+                                ),
+                            )
+                            continue
+                        if not self.check_pin(pin):
+                            await self._ws_send_text(
+                                writer,
+                                json.dumps(
+                                    {
+                                        "type": "error",
+                                        "error": (
+                                            "Código incorrecto o expirado. "
+                                            "En el PC: Emparejar → Mostrar código."
+                                        ),
+                                    }
+                                ),
+                            )
+                            continue
+                        ident = self._register_identity(name=name)
+
+                    # Replace any previous live socket for this phone.
+                    old = self._sessions.get(ident.node_id)
+                    if old is not None and old.writer is not writer:
+                        try:
+                            old.writer.close()
+                        except Exception:
+                            pass
                     session = MobileSession(
-                        node_id=node_id,
-                        display_name=name,
-                        token=secrets.token_urlsafe(16),
+                        node_id=ident.node_id,
+                        display_name=ident.display_name,
+                        token=ident.token,
                         writer=writer,
                     )
-                    self._sessions[node_id] = session
+                    self._sessions[ident.node_id] = session
                     peers = self.list_lan_peers()
                     await self._ws_send_text(
                         writer,
                         json.dumps(
                             {
                                 "type": "hello_ok",
-                                "self_id": node_id,
+                                "self_id": ident.node_id,
+                                "token": ident.token,
+                                "resume": resume,
                                 "host_name": self.cfg.display_name,
                                 "team_id": self.cfg.team_id,
                                 "peers": peers,
-                                "history": self._history[-80:],
+                                "history": [] if resume else self._history[-80:],
                             },
                             ensure_ascii=False,
                         ),
                     )
-                    LOGGER.info("mobile joined: %s (%s)", name, node_id)
+                    LOGGER.info(
+                        "mobile %s: %s (%s)",
+                        "resumed" if resume else "joined",
+                        ident.display_name,
+                        ident.node_id,
+                    )
                     continue
 
                 if mtype == "send":
                     text = str(msg.get("text") or "").strip()
                     to_id = str(msg.get("to") or "*").strip() or "*"
-                    if not text:
+                    media_b64 = str(msg.get("media_b64") or "").strip()
+                    filename = str(msg.get("filename") or "").strip()
+                    mime = str(msg.get("mime") or "").strip()
+                    if not text and not media_b64:
                         continue
                     result = await self.send_from_mobile(
-                        session.node_id, session.display_name, to_id, text
+                        session.node_id,
+                        session.display_name,
+                        to_id,
+                        text,
+                        media_b64=media_b64,
+                        filename=filename,
+                        mime=mime,
                     )
                     if not result.get("ok"):
                         await self._ws_send_text(
@@ -529,7 +1009,9 @@ class MobileGateway:
             LOGGER.debug("ws session ended: %s", exc)
         finally:
             if session is not None:
-                self._sessions.pop(session.node_id, None)
+                current = self._sessions.get(session.node_id)
+                if current is not None and current.writer is writer:
+                    self._sessions.pop(session.node_id, None)
             try:
                 writer.close()
                 await writer.wait_closed()

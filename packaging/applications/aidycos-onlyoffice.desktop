@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=OnlyOffice
+Name[es]=OnlyOffice
+Comment=Abrir OnlyOffice o descargarlo desde Flathub
+Comment[es]=Abrir OnlyOffice o descargarlo desde Flathub
+Exec=aidycos-onlyoffice
+Icon=x-office-document
+Terminal=false
+Categories=Office;WordProcessor;Spreadsheet;Presentation;
+Keywords=office;documentos;onlyoffice;flatpak;
+StartupNotify=true

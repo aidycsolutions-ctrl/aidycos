@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Gestor de impresoras
+Comment=Añadir, quitar y configurar impresoras CUPS
+Exec=system-config-printer
+Icon=printer
+Terminal=false
+Categories=Settings;HardwareSettings;System;Printing;
+Keywords=impresora;printer;cups;cola;impresión;
+StartupNotify=true

@@ -89,10 +89,46 @@ class AidylinkDaemon:
         from_name: str,
         to_id: str,
         text: str,
+        *,
+        media_b64: str = "",
+        filename: str = "",
+        mime: str = "",
     ) -> dict[str, Any]:
+        from .messages import MAX_ATTACHMENT_BYTES
+
         text = (text or "").strip()
-        if not text:
+        media_b64 = (media_b64 or "").strip()
+        filename = (filename or "").strip()
+        mime = (mime or "").strip()
+        if not text and not media_b64:
             return {"ok": False, "error": "mensaje vacío"}
+
+        kind = "text"
+        if media_b64:
+            try:
+                raw = base64.b64decode(media_b64, validate=False)
+            except Exception:
+                return {"ok": False, "error": "archivo inválido"}
+            if not raw:
+                return {"ok": False, "error": "archivo vacío"}
+            if len(raw) > MAX_ATTACHMENT_BYTES:
+                return {"ok": False, "error": "Máximo 15 MB por archivo"}
+            if not mime:
+                mime = "application/octet-stream"
+            if mime.startswith("image/"):
+                kind = "image"
+            elif mime.startswith("video/"):
+                kind = "video"
+            else:
+                kind = "file"
+            if not filename:
+                if kind == "image":
+                    filename = "foto.jpg"
+                elif kind == "video":
+                    filename = "video.mp4"
+                else:
+                    filename = "archivo.bin"
+
         target = (to_id or "*").strip() or "*"
         message = LinkMessage.create(
             from_id=from_id,
@@ -101,33 +137,41 @@ class AidylinkDaemon:
             text=text,
             team_id=self.cfg.team_id,
             via="lan",
+            kind=kind,
+            filename=filename,
+            mime=mime,
+            media_b64=media_b64,
         )
-        # Always keep a local copy so the PC chat shows the phone.
+
+        route = "host"
+        detail = ""
+        mobile_ids = {m["node_id"] for m in self.mobile.list_sessions()}
+        if target in mobile_ids:
+            route = "mobile"
+        elif target not in ("*", self.cfg.node_id):
+            # Keep media_b64 for LAN transit, then save a local copy.
+            result = await self.router.send_message(target, message)
+            if result.route == "failed":
+                return {
+                    "ok": False,
+                    "route": "failed",
+                    "error": result.detail or "No se pudo enviar",
+                    "detail": result.detail,
+                }
+            route = result.route
+            detail = result.detail
+            if result.message is not None:
+                message = result.message
+
+        self._materialize_media(message)
         self._persist(message)
         await self.mobile.broadcast_message(message)
-        notify(message.from_name, text)
-
-        if target == "*" or target == self.cfg.node_id:
-            return {"ok": True, "route": "host", "message": message.as_dict()}
-
-        # Another phone connected to this PC.
-        for mobile in self.mobile.list_sessions():
-            if mobile["node_id"] == target:
-                ok = await self.mobile.deliver_to(target, message)
-                return {
-                    "ok": ok,
-                    "route": "mobile" if ok else "failed",
-                    "message": message.as_dict(),
-                    "error": None if ok else "móvil desconectado",
-                }
-
-        result = await self.router.send_message(target, message)
+        notify(message.from_name, message.display_text() or filename or "Archivo")
         return {
-            "ok": result.route != "failed",
-            "route": result.route,
-            "detail": result.detail,
-            "message": (result.message or message).as_dict(),
-            "error": None if result.route != "failed" else result.detail,
+            "ok": True,
+            "route": route,
+            "detail": detail,
+            "message": message.as_dict(),
         }
 
     def _safe_name(self, name: str) -> str:

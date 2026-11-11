@@ -25,6 +25,7 @@ fi
 if [[ "${DRY_RUN}" == 1 ]]; then
   cat <<'EOF'
 Vista previa del perfil AidyCOS para Debian 13:
+  * Preparar sudo/curl en instalaciones mínimas (sin escritorio) si hace falta.
   * Verificar fuentes oficiales de Debian y añadir trixie-backports si faltan paquetes.
   * Instalar el conjunto de paquetes del perfil Hyprland/SDDM/Wayland/Jugoo.
   * Instalar la CLI AidyCOS y Jugoo para el usuario actual.
@@ -34,23 +35,132 @@ Vista previa del perfil AidyCOS para Debian 13:
   * Instalar AidyChat nativo, icono/acceso de escritorio y daemon de usuario para notificaciones.
   * Habilitar NetworkManager y UPower para los indicadores de Wi-Fi y batería de Jugoo.
   * Instalar los ajustes de Jugoo para volumen, fondo de escritorio, iconos y atajos.
-  * Sembrar fondo AidyCOS e iconos útiles; permitir cambiarlos en Configuración.
+  * Sembrar fondo AidyCOS e iconos del escritorio (AidyChat, Firefox, Archivos, Terminal, paquetes, OnlyOffice).
+  * Instalar Firefox ESR como navegador por defecto del perfil.
+  * Instalar Synaptic, Flatpak/Flathub y el agente Polkit para descargar OnlyOffice u otras apps.
   * Instalar botones de cerrar, maximizar y minimizar, y atajos de Hyprland para ventanas y escritorios.
-  * Configurar GRUB sin menú, modo gráfico con fallbacks y el splash de Plymouth con logo.
+  * Configurar GRUB sin menú, modo gráfico con fallbacks y el splash de Plymouth con logo (apply-aidycos-boot.sh).
   * Preferir la resolución del monitor externo detectado para GRUB/Plymouth cuando exista.
+  * Desactivar drop-ins legados de AidyC que vuelvan a mostrar texto de arranque.
   * Seleccionar SDDM y habilitar el arranque gráfico; logo en todas las pantallas de acceso.
   * Activar NumLock en la pantalla de acceso y en Hyprland.
   * Crear configuración inicial de Hyprland si no existe.
   * Ocultar GRUB y los mensajes de arranque; mostrar el logo en Plymouth y SDDM.
   * Retrasar cups-browsed hasta el entorno gráfico.
+  * Instalar el gestor de impresoras y Alt+F4 para el menú de apagado.
   * Mantener usuario, contraseña y autologin actuales; cambiar el gestor de sesión a SDDM y respaldar los ajustes Hyprland tocados.
 No se hicieron cambios.
 EOF
   exit 0
 fi
 
-if ! command -v sudo >/dev/null; then echo "Se requiere sudo para instalar paquetes del sistema." >&2; exit 1; fi
-sudo -v
+# Resolve the first interactive desktop user (uid >= 1000), preferring AIDYCOS_USER.
+aidycos_target_user() {
+  local candidate=""
+  if [[ -n "${AIDYCOS_USER:-}" && "${AIDYCOS_USER}" != "root" ]]; then
+    if getent passwd "${AIDYCOS_USER}" >/dev/null; then
+      printf '%s\n' "${AIDYCOS_USER}"
+      return 0
+    fi
+    echo "AIDYCOS_USER=${AIDYCOS_USER} no existe en el sistema." >&2
+    return 1
+  fi
+  if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    printf '%s\n' "${SUDO_USER}"
+    return 0
+  fi
+  candidate="$(getent passwd | awk -F: '$3 >= 1000 && $3 < 65534 && $1 != "nobody" { print $1; exit }')"
+  if [[ -n "${candidate}" ]]; then
+    printf '%s\n' "${candidate}"
+    return 0
+  fi
+  return 1
+}
+
+aidycos_print_sudo_fix() {
+  local user_name="$1"
+  cat <<EOF >&2
+Tu usuario «${user_name}» aún no puede usar sudo.
+
+Como root, ejecuta exactamente esto (copia/pega):
+
+  su -
+  apt-get update
+  apt-get install -y sudo curl ca-certificates
+  usermod -aG sudo ${user_name}
+  printf '%s\n' '%sudo ALL=(ALL:ALL) ALL' >/etc/sudoers.d/10-aidycos-sudo
+  chmod 440 /etc/sudoers.d/10-aidycos-sudo
+  exit
+  reboot
+
+Después entra otra vez como «${user_name}» y vuelve a lanzar el instalador.
+EOF
+}
+
+aidycos_ensure_sudoers_group_rule() {
+  local rule_file=/etc/sudoers.d/10-aidycos-sudo
+  if [[ -e "${rule_file}" ]]; then
+    return 0
+  fi
+  if grep -RqsE '^[[:space:]]*%sudo[[:space:]]+' /etc/sudoers /etc/sudoers.d 2>/dev/null; then
+    return 0
+  fi
+  printf '%s\n' '%sudo ALL=(ALL:ALL) ALL' >"${rule_file}"
+  chmod 440 "${rule_file}"
+}
+
+# Root on a minimal Debian: install sudo/curl, enable the user, and re-run as that user.
+aidycos_bootstrap_from_root() {
+  local target home_dir
+  target="$(aidycos_target_user)" || {
+    echo "No hay un usuario normal (uid >= 1000). Crea uno y vuelve a ejecutar, o usa AIDYCOS_USER=nombre." >&2
+    exit 1
+  }
+  echo "Instalación mínima detectada (root). Preparando sudo para «${target}»…"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y --no-install-recommends sudo curl ca-certificates
+  getent group sudo >/dev/null || groupadd --system sudo
+  usermod -aG sudo "${target}"
+  aidycos_ensure_sudoers_group_rule
+  home_dir="$(getent passwd "${target}" | cut -d: -f6)"
+  if [[ -z "${home_dir}" || ! -d "${home_dir}" ]]; then
+    echo "No se pudo resolver el HOME de «${target}»." >&2
+    exit 1
+  fi
+  echo "Continuando la instalación como «${target}»…"
+  exec runuser -u "${target}" -- \
+    env HOME="${home_dir}" USER="${target}" LOGNAME="${target}" \
+    bash "${ROOT}/scripts/install-debian-profile.sh" "$@"
+}
+
+aidycos_ensure_admin() {
+  local me
+  me="$(id -un)"
+
+  if [[ "${EUID}" -eq 0 ]]; then
+    aidycos_bootstrap_from_root "$@"
+    exit 1
+  fi
+
+  if ! command -v sudo >/dev/null; then
+    aidycos_print_sudo_fix "${me}"
+    exit 1
+  fi
+
+  if sudo -n true 2>/dev/null; then
+    return 0
+  fi
+
+  if sudo -v 2>/dev/null; then
+    return 0
+  fi
+
+  aidycos_print_sudo_fix "${me}"
+  exit 1
+}
+
+aidycos_ensure_admin "$@"
 
 APT_SOURCES_DIR=/etc/apt/sources.list.d
 STANDARD_SOURCE="${APT_SOURCES_DIR}/aidycos-debian.sources"
@@ -123,16 +233,34 @@ sudo apt-get install -y --no-install-recommends "${BOOTSTRAP[@]}"
 "${ROOT}/scripts/install-local.sh"
 "${HOME}/.local/bin/aidycos" install aidyc-desktop --apply
 sudo apt-get install -y --no-install-recommends -t trixie-backports \
-  hyprland xdg-desktop-portal-hyprland hyprland-guiutils
+  hyprland xdg-desktop-portal-hyprland hyprland-guiutils hyprpolkitagent
 sudo apt-get install -y --no-install-recommends plymouth plymouth-themes
+# Polkit agent is required so Synaptic/Flatpak can ask for the admin password in GUI.
+POLKIT_AGENT=""
+for candidate in \
+  /usr/libexec/hyprpolkitagent \
+  /usr/lib/x86_64-linux-gnu/libexec/hyprpolkitagent \
+  /usr/bin/hyprpolkitagent
+do
+  if [[ -x "${candidate}" ]]; then
+    POLKIT_AGENT="${candidate}"
+    break
+  fi
+done
+if [[ -z "${POLKIT_AGENT}" ]]; then
+  if apt_has_candidate mate-polkit; then
+    sudo apt-get install -y --no-install-recommends mate-polkit
+  fi
+  if [[ -x /usr/libexec/mate-polkit/polkit-mate-authentication-agent-1 ]]; then
+    POLKIT_AGENT=/usr/libexec/mate-polkit/polkit-mate-authentication-agent-1
+  fi
+fi
+if [[ -z "${POLKIT_AGENT}" ]]; then
+  POLKIT_AGENT=/usr/libexec/hyprpolkitagent
+fi
 
-PLYMOUTH_DIR=/usr/share/plymouth/themes/aidycos
-sudo install -D -m 0644 "${ROOT}/packaging/plymouth/AidyCOS.png" "${PLYMOUTH_DIR}/AidyCOS.png"
-sudo install -m 0644 "${ROOT}/packaging/plymouth/aidycos.plymouth" "${PLYMOUTH_DIR}/aidycos.plymouth"
-sudo install -m 0644 "${ROOT}/packaging/plymouth/aidycos.script" "${PLYMOUTH_DIR}/aidycos.script"
-sudo install -D -m 0644 "${ROOT}/packaging/plymouth/AidyCOS.png" /usr/share/backgrounds/aidycos.png
-sudo plymouth-set-default-theme aidycos
-sudo update-initramfs -u -k all
+# Plymouth theme + quiet GRUB are applied together later by apply-aidycos-boot.sh
+# (after packages/desktop pieces), so /usr/sbin tools are resolved by absolute path.
 
 SDDM_THEME_DIR=/usr/share/sddm/themes/aidycos
 sudo install -d -m 0755 "${SDDM_THEME_DIR}"
@@ -198,7 +326,6 @@ install_jugoo() {
     fi
   fi
   (cd "${jugoo_dir}" && python3 -m shell --install)
-  python3 "${ROOT}/scripts/seed-desktop-defaults.py" || true
   # shell --install may create a user-local launcher and service. Keep the
   # launcher as a compatibility shim, and override the unit's command so both
   # entry points always execute the same system-managed checkout.
@@ -238,11 +365,61 @@ install_jugoo
 # Separate AidyC updater: the dock icon opens an installed copy, so updates
 # need an explicit launcher that checks GitHub and compares Debian versions.
 sudo install -m 0755 "${ROOT}/scripts/aidyc-update" /usr/local/bin/aidyc-update
+sudo install -m 0755 "${ROOT}/scripts/aidycos-onlyoffice" /usr/local/bin/aidycos-onlyoffice
 install -D -m 0644 "${ROOT}/packaging/applications/aidyc-update.desktop" \
   "${HOME}/.local/share/applications/aidyc-update.desktop"
+# Friendly Spanish entry for the CUPS printer manager.
+install -D -m 0644 "${ROOT}/packaging/applications/aidycos-impresoras.desktop" \
+  "${HOME}/.local/share/applications/aidycos-impresoras.desktop"
+# Synaptic + OnlyOffice helpers so users can install office and other apps.
+install -D -m 0644 "${ROOT}/packaging/applications/aidycos-paquetes.desktop" \
+  "${HOME}/.local/share/applications/aidycos-paquetes.desktop"
+install -D -m 0644 "${ROOT}/packaging/applications/aidycos-onlyoffice.desktop" \
+  "${HOME}/.local/share/applications/aidycos-onlyoffice.desktop"
 if command -v update-desktop-database >/dev/null 2>&1; then
   update-desktop-database "${HOME}/.local/share/applications" >/dev/null 2>&1 || true
 fi
+# Ensure the GUI printer manager is present even on older installs.
+if ! command -v system-config-printer >/dev/null 2>&1; then
+  sudo apt-get install -y --no-install-recommends system-config-printer cups-client
+fi
+# Keep Synaptic/Flatpak available on older profiles that predate the module list.
+if ! command -v synaptic >/dev/null 2>&1; then
+  sudo apt-get install -y --no-install-recommends synaptic pkexec polkitd
+fi
+if ! command -v flatpak >/dev/null 2>&1; then
+  sudo apt-get install -y --no-install-recommends flatpak
+fi
+# Firefox ESR is the default browser; older profiles only seeded the desktop icon.
+if ! command -v firefox-esr >/dev/null 2>&1 && ! command -v firefox >/dev/null 2>&1; then
+  sudo apt-get install -y --no-install-recommends firefox-esr
+fi
+if ! dpkg-query -W -f='${db:Status-Status}' adwaita-icon-theme 2>/dev/null | grep -qx installed; then
+  sudo apt-get install -y --no-install-recommends adwaita-icon-theme hicolor-icon-theme
+fi
+if command -v flatpak >/dev/null 2>&1; then
+  sudo flatpak remote-add --if-not-exists flathub \
+    https://dl.flathub.org/repo/flathub.flatpakrepo >/dev/null 2>&1 || true
+  flatpak --user remote-add --if-not-exists flathub \
+    https://dl.flathub.org/repo/flathub.flatpakrepo >/dev/null 2>&1 || true
+fi
+# Seed wallpaper/icons after .desktop helpers exist (OnlyOffice, Synaptic, AidyChat).
+python3 "${ROOT}/scripts/seed-desktop-defaults.py" || true
+# GTK apps need an explicit icon theme on minimal Hyprland sessions.
+GTK3_SETTINGS="${XDG_CONFIG_HOME:-${HOME}/.config}/gtk-3.0/settings.ini"
+GTK4_SETTINGS="${XDG_CONFIG_HOME:-${HOME}/.config}/gtk-4.0/settings.ini"
+for gtk_settings in "${GTK3_SETTINGS}" "${GTK4_SETTINGS}"; do
+  mkdir -p "$(dirname "${gtk_settings}")"
+  if [[ ! -f "${gtk_settings}" ]]; then
+    printf '[Settings]\ngtk-icon-theme-name=Adwaita\ngtk-theme-name=Adwaita\n' >"${gtk_settings}"
+  elif ! grep -qE '^[[:space:]]*gtk-icon-theme-name[[:space:]]*=' "${gtk_settings}"; then
+    if grep -qE '^[[:space:]]*\[Settings\]' "${gtk_settings}"; then
+      sed -i '/^[[:space:]]*\[Settings\]/a gtk-icon-theme-name=Adwaita' "${gtk_settings}"
+    else
+      printf '\n[Settings]\ngtk-icon-theme-name=Adwaita\n' >>"${gtk_settings}"
+    fi
+  fi
+done
 
 # Jugoo's network and battery indicators use NetworkManager and UPower.
 sudo systemctl enable --now NetworkManager.service
@@ -356,12 +533,14 @@ bind = SUPER, SPACE, exec, jugoo action launcher
 bind = CTRL, SPACE, exec, jugoo action launcher
 bind = CTRL, E, exec, /usr/bin/env GDK_BACKEND=wayland /usr/bin/thunar
 bind = , Print, exec, ~/.local/bin/captura.sh
+bind = ALT, F4, exec, jugoo action session
 bind = SUPER, LEFT, workspace, -1
 bind = SUPER, RIGHT, workspace, +1
 bind = SUPER, Y, workspace, +1
 bind = SUPER SHIFT, U, exec, aidycos-update --check
 exec-once = /usr/local/bin/aidycos-prefer-external-display
 EOF
+  printf 'exec-once = %s\n' "${POLKIT_AGENT}" >>"${HYPR_AIDYCOS_CONF}"
 else
   missing=0
   grep -qE '^[[:space:]]*numlock_by_default[[:space:]]*=[[:space:]]*true' "${HYPR_AIDYCOS_CONF}" || missing=1
@@ -375,6 +554,10 @@ else
      && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*,[[:space:]]*Print,' "${HYPR_CONF}"; }; then
     missing=1
   fi
+  if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*ALT,[[:space:]]*F4,[[:space:]]*exec,[[:space:]]*jugoo action session' "${HYPR_AIDYCOS_CONF}" \
+     && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*ALT,[[:space:]]*F4,[[:space:]]*exec,[[:space:]]*jugoo action session' "${HYPR_CONF}"; }; then
+    missing=1
+  fi
   grep -qF 'bind = SUPER, LEFT, workspace, -1' "${HYPR_AIDYCOS_CONF}" || grep -qF 'bind = SUPER, LEFT, workspace, -1' "${HYPR_CONF}" 2>/dev/null || missing=1
   grep -qF 'bind = SUPER, RIGHT, workspace, +1' "${HYPR_AIDYCOS_CONF}" || grep -qF 'bind = SUPER, RIGHT, workspace, +1' "${HYPR_CONF}" 2>/dev/null || missing=1
   grep -qF 'bind = SUPER, Y, workspace, +1' "${HYPR_AIDYCOS_CONF}" || grep -qF 'bind = SUPER, Y, workspace, +1' "${HYPR_CONF}" 2>/dev/null || missing=1
@@ -383,6 +566,7 @@ else
     missing=1
   fi
   grep -qF 'exec-once = /usr/local/bin/aidycos-prefer-external-display' "${HYPR_AIDYCOS_CONF}" || missing=1
+  grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*(hyprpolkitagent|polkit-mate-authentication-agent-1)' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qF 'bind = SUPER SHIFT, U, exec, aidycos-update --check' "${HYPR_AIDYCOS_CONF}" || missing=1
   if [[ "${missing}" == 1 ]]; then
     cp -a "${HYPR_AIDYCOS_CONF}" "${HYPR_AIDYCOS_CONF}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
@@ -408,6 +592,10 @@ EOF
        && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*,[[:space:]]*Print,' "${HYPR_CONF}"; }; then
       printf 'bind = , Print, exec, ~/.local/bin/captura.sh\n' >>"${HYPR_AIDYCOS_CONF}"
     fi
+    if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*ALT,[[:space:]]*F4,[[:space:]]*exec,[[:space:]]*jugoo action session' "${HYPR_AIDYCOS_CONF}" \
+       && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*ALT,[[:space:]]*F4,[[:space:]]*exec,[[:space:]]*jugoo action session' "${HYPR_CONF}"; }; then
+      printf 'bind = ALT, F4, exec, jugoo action session\n' >>"${HYPR_AIDYCOS_CONF}"
+    fi
     if ! grep -qF 'bind = SUPER, LEFT, workspace, -1' "${HYPR_AIDYCOS_CONF}" \
        && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qF 'bind = SUPER, LEFT, workspace, -1' "${HYPR_CONF}"; }; then
       printf 'bind = SUPER, LEFT, workspace, -1\n' >>"${HYPR_AIDYCOS_CONF}"
@@ -425,6 +613,9 @@ EOF
     fi
     if ! grep -qF 'exec-once = /usr/local/bin/aidycos-prefer-external-display' "${HYPR_AIDYCOS_CONF}"; then
       printf 'exec-once = /usr/local/bin/aidycos-prefer-external-display\n' >>"${HYPR_AIDYCOS_CONF}"
+    fi
+    if ! grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*(hyprpolkitagent|polkit-mate-authentication-agent-1)' "${HYPR_AIDYCOS_CONF}"; then
+      printf 'exec-once = %s\n' "${POLKIT_AGENT}" >>"${HYPR_AIDYCOS_CONF}"
     fi
     if ! grep -qF 'bind = SUPER SHIFT, U, exec, aidycos-update --check' "${HYPR_AIDYCOS_CONF}"; then
       printf 'bind = SUPER SHIFT, U, exec, aidycos-update --check\n' >>"${HYPR_AIDYCOS_CONF}"
@@ -517,93 +708,9 @@ else
   done
 fi
 
-apply_grub_profile() {
-  local grub=/etc/default/grub tmp gfxmode
-  if [[ ! -f "${grub}" ]] || ! command -v update-grub >/dev/null; then
-    echo "GRUB no está instalado; se omite su perfil."
-    return
-  fi
-  sudo install -D -m 0755 "${ROOT}/packaging/boot/aidycos-boot-gfxmode" /usr/local/bin/aidycos-boot-gfxmode
-  sudo install -D -m 0644 "${ROOT}/packaging/plymouth/AidyCOS.png" /boot/grub/AidyCOS.png
-  gfxmode="$(python3 "${ROOT}/packaging/boot/aidycos-boot-gfxmode" 2>/dev/null || true)"
-  if [[ -z "${gfxmode}" ]]; then
-    gfxmode="1920x1080x32,1680x1050x32,1600x900x32,1366x768x32,1280x720x32,1024x768x32,auto"
-  fi
-  echo "GRUB_GFXMODE preferido: ${gfxmode}"
-  if sudo grep -qE '^GRUB_TIMEOUT=0$' "${grub}" \
-     && sudo grep -qE '^GRUB_TIMEOUT_STYLE=hidden$' "${grub}" \
-     && sudo grep -qF 'GRUB_BACKGROUND="/boot/grub/AidyCOS.png"' "${grub}" \
-     && sudo grep -qF "GRUB_GFXMODE=\"${gfxmode}\"" "${grub}" \
-     && sudo grep -qE '^GRUB_GFXPAYLOAD_LINUX=keep$' "${grub}" \
-     && sudo grep -qE '^GRUB_TERMINAL_OUTPUT=gfxterm$' "${grub}" \
-     && sudo grep -qE '^GRUB_CMDLINE_LINUX_DEFAULT=.*quiet' "${grub}" \
-     && sudo grep -qE '^GRUB_CMDLINE_LINUX_DEFAULT=.*splash' "${grub}" \
-     && sudo grep -qE '^GRUB_CMDLINE_LINUX_DEFAULT=.*loglevel=3' "${grub}" \
-     && sudo grep -qE '^GRUB_CMDLINE_LINUX_DEFAULT=.*systemd.show_status=false' "${grub}" \
-     && sudo grep -qE '^GRUB_CMDLINE_LINUX_DEFAULT=.*vt.global_cursor_default=0' "${grub}" \
-     && sudo grep -qE '^GRUB_CMDLINE_LINUX_DEFAULT=.*udev.log_level=3' "${grub}" \
-     && { [[ ! -f /etc/grub.d/10_linux ]] || sudo grep -q '^quiet_boot="1"$' /etc/grub.d/10_linux; }; then
-    echo "GRUB ya tiene el perfil AidyCOS."
-    # Rebuild the generated menu as well: /etc/default/grub can be correct
-    # while /boot/grub/grub.cfg is stale from an earlier profile apply.
-    sudo update-grub
-    return
-  fi
-  sudo cp -a "${grub}" "${grub}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
-  tmp="$(mktemp)"
-  sudo awk -v gfxmode_value="${gfxmode}" '
-    BEGIN { timeout=0; style=0; background=0; gfxmode=0; payload=0; terminal=0 }
-    /^GRUB_TIMEOUT=/ { print "GRUB_TIMEOUT=0"; timeout=1; next }
-    /^GRUB_TIMEOUT_STYLE=/ { print "GRUB_TIMEOUT_STYLE=hidden"; style=1; next }
-    /^GRUB_BACKGROUND=/ { print "GRUB_BACKGROUND=\"/boot/grub/AidyCOS.png\""; background=1; next }
-    /^GRUB_GFXMODE=/ { print "GRUB_GFXMODE=\"" gfxmode_value "\""; gfxmode=1; next }
-    /^GRUB_GFXPAYLOAD_LINUX=/ { print "GRUB_GFXPAYLOAD_LINUX=keep"; payload=1; next }
-    /^GRUB_TERMINAL_OUTPUT=/ { print "GRUB_TERMINAL_OUTPUT=gfxterm"; terminal=1; next }
-    { print }
-    END {
-      if (!timeout) print "GRUB_TIMEOUT=0"
-      if (!style) print "GRUB_TIMEOUT_STYLE=hidden"
-      if (!background) print "GRUB_BACKGROUND=\"/boot/grub/AidyCOS.png\""
-      if (!gfxmode) print "GRUB_GFXMODE=\"" gfxmode_value "\""
-      if (!payload) print "GRUB_GFXPAYLOAD_LINUX=keep"
-      if (!terminal) print "GRUB_TERMINAL_OUTPUT=gfxterm"
-    }
-  ' "${grub}" >"${tmp}"
-  sudo install -m 0644 "${tmp}" "${grub}"
-  rm -f "${tmp}"
-  sudo python3 - <<'PY'
-from pathlib import Path
-import re
-
-path = Path('/etc/default/grub')
-lines = path.read_text().splitlines()
-prefix = 'GRUB_CMDLINE_LINUX_DEFAULT='
-for index, line in enumerate(lines):
-    if line.startswith(prefix):
-        match = re.fullmatch(r"GRUB_CMDLINE_LINUX_DEFAULT=([\"'])(.*)\1", line)
-        if match:
-            options = match.group(2).split()
-            for option in (
-                'quiet', 'splash', 'loglevel=3', 'systemd.show_status=false',
-                'rd.systemd.show_status=false', 'vt.global_cursor_default=0',
-                'udev.log_level=3', 'rd.udev.log_level=3',
-            ):
-                if option not in options:
-                    options.append(option)
-            lines[index] = prefix + match.group(1) + ' '.join(options) + match.group(1)
-        break
-else:
-    lines.append(prefix + '"quiet splash loglevel=3 systemd.show_status=false rd.systemd.show_status=false vt.global_cursor_default=0 udev.log_level=3 rd.udev.log_level=3"')
-path.write_text('\n'.join(lines) + '\n')
-PY
-  local linux_generator=/etc/grub.d/10_linux
-  if [[ -f "${linux_generator}" ]] && sudo grep -q '^quiet_boot="0"$' "${linux_generator}"; then
-    sudo cp -a "${linux_generator}" "${linux_generator}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
-    sudo sed -i 's/^quiet_boot="0"$/quiet_boot="1"/' "${linux_generator}"
-  fi
-  sudo update-grub
-}
-apply_grub_profile
+# Quiet boot splash: GRUB logo + Plymouth. Absolute /usr/sbin paths matter on
+# Debian user PATH (update-grub is not in /usr/bin).
+bash "${ROOT}/packaging/boot/apply-aidycos-boot.sh"
 
 if command -v systemctl >/dev/null && systemctl list-unit-files cups-browsed.service >/dev/null 2>&1; then
   override=/etc/systemd/system/cups-browsed.service.d/aidycos.conf
