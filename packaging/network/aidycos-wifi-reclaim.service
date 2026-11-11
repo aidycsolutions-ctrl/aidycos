@@ -1,0 +1,13 @@
+[Unit]
+Description=AidyCOS Wi-Fi reclaim after NetworkManager
+Documentation=file:///usr/local/libexec/aidycos/aidycos-wifi-reclaim.sh
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/aidycos/aidycos-wifi-reclaim.sh
+
+[Install]
+WantedBy=multi-user.target

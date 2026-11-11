@@ -74,6 +74,11 @@ window.aidychat-lan {
   background: #d9fdd3;
   border-color: #25d366;
 }
+.wa-peer-mismatch {
+  background: #fff7ed;
+  border-color: #fdba74;
+  color: #9a3412;
+}
 .wa-chat-head {
   background: #f0f2f5;
   padding: 8px 14px;
@@ -551,11 +556,12 @@ class AidylinkWindow(Gtk.Window):
         for child in self.peer_cards.get_children():
             self.peer_cards.remove(child)
         self._selected_peer_data = None
-        self.peer_empty.set_visible(not peers)
+        has_rows = bool(peers or self._mismatches)
+        self.peer_empty.set_visible(not has_rows)
         if peers:
             empty_text = ""
         elif self._mismatches:
-            empty_text = "Hay equipos cerca sin emparejar. Pulsa Emparejar."
+            empty_text = "Equipos cerca sin el mismo código. Pulsa uno o Emparejar."
         else:
             empty_text = "Buscando equipos… Empareja con el código si no aparecen."
         self.peer_empty.set_text(empty_text)
@@ -569,6 +575,19 @@ class AidylinkWindow(Gtk.Window):
             if selected_id and str(peer.get("node_id") or "") == selected_id:
                 self._selected_peer_data = peer
                 card.get_style_context().add_class("wa-peer-selected")
+        for hint in self._mismatches:
+            name = str(hint.get("display_name") or hint.get("host") or "PC")
+            card = Gtk.Button(label=f"{name} · sin emparejar")
+            card.set_relief(Gtk.ReliefStyle.NONE)
+            card.get_style_context().add_class("wa-peer")
+            card.get_style_context().add_class("wa-peer-mismatch")
+            card.peer_data = None
+            card.mismatch_data = hint
+            card.set_tooltip_text(
+                "Mismo Wi‑Fi, pero otro código de grupo. Pulsa Emparejar para unirlos."
+            )
+            card.connect("clicked", lambda *_: self.open_pair_dialog())
+            self.peer_cards.add(card)
         if self._selected_peer_data is None and previous is not None:
             # Keep selection object if peer briefly disappeared from discovery.
             self._selected_peer_data = previous
@@ -1018,8 +1037,8 @@ class AidylinkWindow(Gtk.Window):
         box.pack_start(
             Gtk.Label(
                 label=(
-                    "«Mostrar código» enseña un PIN (otro PC) y un QR (móvil en la misma Wi‑Fi). "
-                    "«Ingresar código» es solo para unir otro computador al grupo."
+                    "Para unir otro PC: un equipo «Mostrar código» y el otro «Ingresar código». "
+                    "El QR del código también sirve para el móvil en la misma Wi‑Fi."
                 ),
                 xalign=0,
                 wrap=True,
@@ -1073,9 +1092,11 @@ class AidylinkWindow(Gtk.Window):
             return
         pin = str(resp.get("pin") or "")
         mobile_url = str(resp.get("mobile_url") or "")
-        paired = {"done": False}
+        # Track PC pairing separately from mobile QR joins. Closing after a
+        # phone connects used to kill the PIN before the other PC could join.
+        state = {"pc_paired": False, "mobile_joined": False}
         dialog = Gtk.Dialog(title="Código de emparejado", transient_for=self, flags=0)
-        dialog.add_buttons("Listo", Gtk.ResponseType.OK)
+        dialog.add_buttons("Cerrar", Gtk.ResponseType.CANCEL)
         dialog.set_default_size(440, 520)
         box = dialog.get_content_area()
         box.set_spacing(10)
@@ -1083,7 +1104,10 @@ class AidylinkWindow(Gtk.Window):
 
         box.pack_start(
             Gtk.Label(
-                label="Móvil: escanea el QR (misma Wi‑Fi). PC: Emparejar → Ingresar código.",
+                label=(
+                    "Deja esta ventana abierta. En el otro PC: Emparejar → Ingresar código. "
+                    "El móvil puede escanear el QR sin gastar el código del PC."
+                ),
                 xalign=0,
                 wrap=True,
             ),
@@ -1108,7 +1132,7 @@ class AidylinkWindow(Gtk.Window):
             box.pack_start(url_label, False, False, 0)
 
         hint = Gtk.Label(
-            label="Esperando… el código caduca en unos 3 minutos.",
+            label="Esperando al otro PC… el código caduca en unos 3 minutos.",
             xalign=0,
             wrap=True,
         )
@@ -1123,21 +1147,24 @@ class AidylinkWindow(Gtk.Window):
             except Exception:
                 return True
             mobiles = int(status.get("mobiles") or 0)
+            if mobiles:
+                state["mobile_joined"] = True
             if status.get("active"):
                 left = int(status.get("expires_in") or 0)
-                extra = f" · {mobiles} móvil(es) conectado(s)" if mobiles else ""
-                hint.set_text(f"Esperando… quedan ~{left}s{extra}.")
+                bits = [f"Esperando al otro PC… quedan ~{left}s"]
                 if mobiles:
-                    paired["done"] = True
+                    bits.append(f"{mobiles} móvil(es) ya conectado(s)")
+                hint.set_text(" · ".join(bits))
                 return True
             if status.get("paired"):
-                paired["done"] = True
-                hint.set_text("¡Emparejado! Ya pueden chatear en la red local.")
-                GLib.timeout_add(600, dialog.response, Gtk.ResponseType.OK)
+                state["pc_paired"] = True
+                hint.set_text("¡PC emparejado! Ya pueden chatear en la red local.")
+                GLib.timeout_add(700, dialog.response, Gtk.ResponseType.OK)
                 return False
-            if mobiles:
-                paired["done"] = True
-                hint.set_text("Móvil conectado. Puedes cerrar este diálogo.")
+            if state["mobile_joined"]:
+                hint.set_text(
+                    "El código expiró para PCs. El móvil que ya entró sigue conectado."
+                )
                 return False
             hint.set_text("El código expiró. Cierra e inténtalo de nuevo.")
             return False
@@ -1145,12 +1172,16 @@ class AidylinkWindow(Gtk.Window):
         GLib.timeout_add_seconds(1, poll_pair)
         dialog.run()
         dialog.destroy()
-        try:
-            control_request({"cmd": "pair_stop"}, timeout=2.0)
-        except Exception:
-            pass
-        if paired["done"]:
-            self._append_line("✓ Emparejado (PC o móvil en la red local).")
+        # Only cancel an unused PIN. A successful PC pair already consumed it.
+        if not state["pc_paired"]:
+            try:
+                control_request({"cmd": "pair_stop"}, timeout=2.0)
+            except Exception:
+                pass
+        if state["pc_paired"]:
+            self._append_line("✓ Otro computador se emparejó con este PC.")
+        elif state["mobile_joined"]:
+            self._append_line("✓ Móvil conectado. Si falta un PC, vuelve a Emparejar.")
         self.refresh_status()
         self.refresh_peers()
 
