@@ -19,7 +19,15 @@ class ModuleTests(unittest.TestCase):
         # --no-install-recommends would otherwise skip Thunar's USB Recommends.
         modules = load_modules()
         plan = build_plan(["aidyc-desktop"], modules, Distribution("debian", "13"), "apt")
-        for pkg in ("udisks2", "gvfs", "thunar-volman", "usbutils"):
+        for pkg in (
+            "udisks2",
+            "gvfs",
+            "gvfs-fuse",
+            "thunar-volman",
+            "usbutils",
+            "librsvg2-common",
+            "python3-gi-cairo",
+        ):
             self.assertIn(pkg, plan.packages)
 
     def test_unknown_module_fails(self):

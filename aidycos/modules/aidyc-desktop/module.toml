@@ -22,6 +22,9 @@ apt = [
   "fonts-noto-color-emoji",
   "git",
   "hicolor-icon-theme",
+  # Adwaita symbolic icons are SVG; without this GDK cannot render them and
+  # Jugoo shows empty rectangles for Wi-Fi, battery, power, settings, etc.
+  "librsvg2-common",
   "hyprland-protocols",
   "iw",
   "locales",
@@ -36,6 +39,7 @@ apt = [
   "python3",
   "python3-cairo",
   "python3-gi",
+  "python3-gi-cairo",
   "qml6-module-qtquick",
   "qml6-module-qtquick-controls",
   "qml6-module-qtquick-layouts",
@@ -46,9 +50,11 @@ apt = [
   "thunar",
   # USB remount stack: apt installs with --no-install-recommends, so Thunar's
   # Recommends (udisks2/gvfs/thunar-volman) never land on a clean AidyCOS box.
+  # gvfs-fuse is also a Recommends and is required for mounts under /run/user.
   "udisks2",
   "gvfs",
   "gvfs-backends",
+  "gvfs-fuse",
   "thunar-volman",
   "ntfs-3g",
   "exfatprogs",

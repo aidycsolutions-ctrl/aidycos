@@ -1,4 +1,4 @@
-"""Compact network indicator with a Wi-Fi glyph when wireless is available."""
+"""Compact network indicator driven by NetworkService snapshots."""
 
 from __future__ import annotations
 
@@ -16,30 +16,44 @@ from ...servicios.red.network import (
     NETWORK_CHANGED,
     NETWORK_ETHERNET_CLICKED,
     NetworkService,
-    ethernet_icon_name,
-    ethernet_visual_state,
+    build_network_bar_tooltip,
+    network_bar_icon_name,
+    network_bar_visual_state,
 )
 from ...ui import ShellModule
 
 
 class EthernetWidget(ShellModule):
-    """Bar button that opens network settings and shows Wi-Fi when available."""
+    """Bar indicator for network; left click opens the network panel."""
 
-    def __init__(self, event_bus: EventBus, network_service: NetworkService) -> None:
+    def __init__(
+        self,
+        event_bus: EventBus,
+        network_service: NetworkService,
+    ) -> None:
         super().__init__("ethernet-widget", spacing=0)
+
         self._event_bus = event_bus
         self._service = network_service
         self._snapshot = network_service.snapshot
+        self._pulse_source_id = 0
+        self._pulse_opacity = 1.0
+        self._pulse_dir = -1
+        self._visual_state = ""
+
         self._button = Gtk.Button(relief=Gtk.ReliefStyle.NONE)
         self._button.get_style_context().add_class("ethernet-button")
         self._button.connect("button-press-event", self._on_button_press)
+
         self._icon = Gtk.Image.new_from_icon_name(
-            "network-wireless-symbolic", Gtk.IconSize.MENU
+            "network-wired-disconnected-symbolic",
+            Gtk.IconSize.MENU,
         )
         self._icon.get_style_context().add_class("ethernet-icon")
         self._icon.set_pixel_size(NETWORK_ICON_SIZE)
         self._button.add(self._icon)
         self.pack_start(self._button, False, False, 0)
+
         self._event_bus.subscribe(NETWORK_CHANGED, self._on_network_changed)
         self.connect("destroy", self._on_destroy)
         GLib.idle_add(self._apply_snapshot, self._snapshot)
@@ -48,6 +62,7 @@ class EthernetWidget(ShellModule):
         return self._button
 
     def _on_destroy(self, *_args) -> None:
+        self._stop_pulse()
         self._event_bus.unsubscribe(NETWORK_CHANGED, self._on_network_changed)
 
     def _on_network_changed(self, snapshot: NetworkSnapshot) -> None:
@@ -55,43 +70,59 @@ class EthernetWidget(ShellModule):
 
     def _apply_snapshot(self, snapshot: NetworkSnapshot) -> bool:
         self._snapshot = snapshot
-        wifi = snapshot.wifi
-        if wifi is not None:
-            icon_name = "network-wireless-symbolic"
-            state = wifi.state
-            if not snapshot.wireless_enabled or not snapshot.wireless_hardware_enabled:
-                label = "Wi-Fi desactivado"
-                visual_state = "unavailable"
-            elif state in {"connecting", "disconnecting"}:
-                label = "Conectando a Wi-Fi…"
-                visual_state = "connecting"
-            elif wifi.connected:
-                label = f"Wi-Fi: {wifi.connection_name or wifi.interface}"
-                visual_state = "connected" if snapshot.connectivity.has_internet else "no-internet"
-            else:
-                label = "Wi-Fi: sin conexión"
-                visual_state = "disconnected"
-        else:
-            icon_name = ethernet_icon_name(snapshot)
-            if icon_name is None:
-                self.hide()
-                return False
-            label = "Red cableada"
-            visual_state = ethernet_visual_state(snapshot) or ""
-
+        icon_name = network_bar_icon_name(snapshot)
         self._icon.set_from_icon_name(icon_name, Gtk.IconSize.MENU)
         self._icon.set_pixel_size(NETWORK_ICON_SIZE)
-        self._button.set_tooltip_text(label)
-        style = self._button.get_style_context()
-        for name in ("connected", "connecting", "unavailable", "no-internet", "disconnected"):
-            style.remove_class(f"ethernet-state-{name}")
-        if visual_state:
-            style.add_class(f"ethernet-state-{visual_state}")
+        self._button.set_tooltip_text(build_network_bar_tooltip(snapshot))
+        self._apply_visual_state(network_bar_visual_state(snapshot))
         self.show_all()
         return False
 
+    def _apply_visual_state(self, state: str | None) -> None:
+        next_state = state or ""
+        style = self._button.get_style_context()
+        if next_state != self._visual_state:
+            if self._visual_state:
+                style.remove_class(f"ethernet-state-{self._visual_state}")
+            if next_state:
+                style.add_class(f"ethernet-state-{next_state}")
+            self._visual_state = next_state
+        if next_state == "connecting":
+            self._start_pulse()
+        else:
+            self._stop_pulse()
+
+    def _start_pulse(self) -> None:
+        if self._pulse_source_id:
+            return
+        self._pulse_opacity = 1.0
+        self._pulse_dir = -1
+        self._pulse_source_id = GLib.timeout_add(70, self._pulse_tick)
+
+    def _stop_pulse(self) -> None:
+        if self._pulse_source_id:
+            GLib.source_remove(self._pulse_source_id)
+            self._pulse_source_id = 0
+        self._pulse_opacity = 1.0
+        self._icon.set_opacity(1.0)
+
+    def _pulse_tick(self) -> bool:
+        self._pulse_opacity += 0.08 * self._pulse_dir
+        if self._pulse_opacity <= 0.42:
+            self._pulse_opacity = 0.42
+            self._pulse_dir = 1
+        elif self._pulse_opacity >= 1.0:
+            self._pulse_opacity = 1.0
+            self._pulse_dir = -1
+        self._icon.set_opacity(self._pulse_opacity)
+        return True
+
     def _on_button_press(self, _widget: Gtk.Widget, event: Gdk.EventButton) -> bool:
-        if event.button in (1, 3):
-            self._event_bus.emit(NETWORK_ETHERNET_CLICKED, self._snapshot.primary)
+        if event.button == 1:
+            self._event_bus.emit(NETWORK_ETHERNET_CLICKED, self._snapshot.ethernet)
+            return True
+        if event.button == 3:
+            if self._snapshot.ethernet is not None:
+                self._service.toggle_ethernet()
             return True
         return False

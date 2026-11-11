@@ -34,11 +34,13 @@ Vista previa del perfil AidyCOS para Debian 13:
   * Quitar la versión anterior del paquete AidyC si está instalada (conservar sus datos).
   * Instalar AidyChat nativo, icono/acceso de escritorio y daemon de usuario para notificaciones.
   * Habilitar NetworkManager y UPower para los indicadores de Wi-Fi y batería de Jugoo.
+  * Migrar Wi-Fi de ifupdown (instalador Debian) a NetworkManager para que Jugoo no lo vea como LAN.
+  * Instalar librsvg2-common para que los iconos symbolic SVG de Adwaita no salgan como rectángulos.
   * Instalar los ajustes de Jugoo para volumen, fondo de escritorio, iconos y atajos.
   * Sembrar fondo AidyCOS e iconos del escritorio (AidyChat, Firefox, Archivos, Terminal, paquetes, OnlyOffice).
   * Instalar Firefox ESR como navegador por defecto del perfil.
   * Instalar Synaptic, Flatpak/Flathub y el agente Polkit para descargar OnlyOffice u otras apps.
-  * Instalar udisks2/gvfs/thunar-volman para montar memorias y dispositivos USB.
+  * Instalar udisks2/gvfs/gvfs-fuse/thunar-volman, activar automount y thunar --daemon para USB.
   * Instalar botones de cerrar, maximizar y minimizar, y atajos de Hyprland para ventanas y escritorios.
   * Configurar GRUB sin menú, modo gráfico con fallbacks y el splash de Plymouth con logo (apply-aidycos-boot.sh).
   * Preferir la resolución del monitor externo detectado para GRUB/Plymouth cuando exista.
@@ -398,6 +400,12 @@ fi
 if ! dpkg-query -W -f='${db:Status-Status}' adwaita-icon-theme 2>/dev/null | grep -qx installed; then
   sudo apt-get install -y --no-install-recommends adwaita-icon-theme hicolor-icon-theme
 fi
+# --no-install-recommends skips Adwaita's SVG loader; Jugoo then shows empty rectangles.
+for pkg in librsvg2-common gvfs-fuse python3-gi-cairo; do
+  if ! dpkg-query -W -f='${db:Status-Status}' "${pkg}" 2>/dev/null | grep -qx installed; then
+    sudo apt-get install -y --no-install-recommends "${pkg}"
+  fi
+done
 if command -v flatpak >/dev/null 2>&1; then
   sudo flatpak remote-add --if-not-exists flathub \
     https://dl.flathub.org/repo/flathub.flatpakrepo >/dev/null 2>&1 || true
@@ -421,12 +429,34 @@ for gtk_settings in "${GTK3_SETTINGS}" "${GTK4_SETTINGS}"; do
     fi
   fi
 done
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  sudo gtk-update-icon-cache -f /usr/share/icons/Adwaita >/dev/null 2>&1 || true
+  sudo gtk-update-icon-cache -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
+fi
 
 # Jugoo's network and battery indicators use NetworkManager and UPower.
 # wpasupplicant (+ iw/rfkill/wireless firmware) comes from the aidyc-desktop
 # module packages list; do not install a conflicting wpa_supplicant stack here.
-sudo systemctl enable --now NetworkManager.service
+# Migrate Debian-installer ifupdown Wi-Fi into NM so the bar does not show "LAN".
+bash "${ROOT}/packaging/network/apply-aidycos-network.sh"
 sudo systemctl enable --now upower.service
+
+# USB sticks need udisks2 + gvfs + Thunar daemon with automount enabled.
+# A wireless mouse works without this stack (HID); removable storage does not.
+sudo install -D -m 0644 \
+  "${ROOT}/packaging/thunar/thunar-volman.xml" \
+  /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/thunar-volman.xml
+mkdir -p "${XDG_CONFIG_HOME:-${HOME}/.config}/xfce4/xfconf/xfce-perchannel-xml"
+install -m 0644 \
+  "${ROOT}/packaging/thunar/thunar-volman.xml" \
+  "${XDG_CONFIG_HOME:-${HOME}/.config}/xfce4/xfconf/xfce-perchannel-xml/thunar-volman.xml"
+if getent group plugdev >/dev/null 2>&1; then
+  if ! id -nG "${USER}" | tr ' ' '\n' | grep -qx plugdev; then
+    sudo usermod -aG plugdev "${USER}" || true
+    echo "Se añadió ${USER} al grupo plugdev (hace falta cerrar sesión para USB)."
+  fi
+fi
+sudo systemctl enable --now udisks2.service >/dev/null 2>&1 || true
 
 # Remove the previously installed, broken AidyC package once, on the first
 # successful profile apply. Later AidyCOS updates must not remove AidyC again.
@@ -529,6 +559,8 @@ sudo install -m 0755 "${ROOT}/packaging/hyprland/aidycos-prefer-external-display
 if [[ ! -e "${HYPR_AIDYCOS_CONF}" ]]; then
   cat >"${HYPR_AIDYCOS_CONF}" <<'EOF'
 # AidyCOS keyboard and Jugoo defaults.
+env = XDG_CURRENT_DESKTOP,Hyprland
+env = XDG_SESSION_TYPE,wayland
 input {
     numlock_by_default = true
 }
@@ -541,7 +573,9 @@ bind = SUPER, LEFT, workspace, -1
 bind = SUPER, RIGHT, workspace, +1
 bind = SUPER, Y, workspace, +1
 bind = SUPER SHIFT, U, exec, aidycos-update --check
+exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE DISPLAY
 exec-once = /usr/local/bin/aidycos-prefer-external-display
+exec-once = /usr/bin/thunar --daemon
 EOF
   printf 'exec-once = %s\n' "${POLKIT_AGENT}" >>"${HYPR_AIDYCOS_CONF}"
 else
@@ -571,6 +605,15 @@ else
   grep -qF 'exec-once = /usr/local/bin/aidycos-prefer-external-display' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*(hyprpolkitagent|polkit-mate-authentication-agent-1)' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qF 'bind = SUPER SHIFT, U, exec, aidycos-update --check' "${HYPR_AIDYCOS_CONF}" || missing=1
+  grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*dbus-update-activation-environment' "${HYPR_AIDYCOS_CONF}" \
+    || grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*dbus-update-activation-environment' "${HYPR_CONF}" 2>/dev/null \
+    || missing=1
+  grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*thunar[[:space:]]+--daemon' "${HYPR_AIDYCOS_CONF}" \
+    || grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*thunar[[:space:]]+--daemon' "${HYPR_CONF}" 2>/dev/null \
+    || missing=1
+  grep -qE '^[[:space:]]*env[[:space:]]*=[[:space:]]*XDG_CURRENT_DESKTOP,' "${HYPR_AIDYCOS_CONF}" \
+    || grep -qE '^[[:space:]]*env[[:space:]]*=[[:space:]]*XDG_CURRENT_DESKTOP,' "${HYPR_CONF}" 2>/dev/null \
+    || missing=1
   if [[ "${missing}" == 1 ]]; then
     cp -a "${HYPR_AIDYCOS_CONF}" "${HYPR_AIDYCOS_CONF}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
     if ! grep -qE '^[[:space:]]*numlock_by_default[[:space:]]*=[[:space:]]*true' "${HYPR_AIDYCOS_CONF}"; then
@@ -623,6 +666,18 @@ EOF
     if ! grep -qF 'bind = SUPER SHIFT, U, exec, aidycos-update --check' "${HYPR_AIDYCOS_CONF}"; then
       printf 'bind = SUPER SHIFT, U, exec, aidycos-update --check\n' >>"${HYPR_AIDYCOS_CONF}"
     fi
+    if ! grep -qE '^[[:space:]]*env[[:space:]]*=[[:space:]]*XDG_CURRENT_DESKTOP,' "${HYPR_AIDYCOS_CONF}" \
+       && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*env[[:space:]]*=[[:space:]]*XDG_CURRENT_DESKTOP,' "${HYPR_CONF}"; }; then
+      printf 'env = XDG_CURRENT_DESKTOP,Hyprland\nenv = XDG_SESSION_TYPE,wayland\n' >>"${HYPR_AIDYCOS_CONF}"
+    fi
+    if ! grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*dbus-update-activation-environment' "${HYPR_AIDYCOS_CONF}" \
+       && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*dbus-update-activation-environment' "${HYPR_CONF}"; }; then
+      printf 'exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE DISPLAY\n' >>"${HYPR_AIDYCOS_CONF}"
+    fi
+    if ! grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*thunar[[:space:]]+--daemon' "${HYPR_AIDYCOS_CONF}" \
+       && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*thunar[[:space:]]+--daemon' "${HYPR_CONF}"; }; then
+      printf 'exec-once = /usr/bin/thunar --daemon\n' >>"${HYPR_AIDYCOS_CONF}"
+    fi
   fi
 fi
 
@@ -642,6 +697,8 @@ if [[ ! -e "${HYPR_CONF}" ]]; then
 # AidyCOS: configuración base compatible con el perfil inicial.
 source = ~/.config/hypr/aidycos.conf
 monitor = , preferred, auto, 1
+env = XDG_CURRENT_DESKTOP,Hyprland
+env = XDG_SESSION_TYPE,wayland
 input {
     kb_layout = latam
 }
@@ -653,6 +710,7 @@ general {
 decoration {
     rounding = 8
 }
+exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE DISPLAY
 exec-once = /usr/local/bin/jugoo
 bind = SUPER, Q, killactive
 bind = SUPER, RETURN, exec, foot
