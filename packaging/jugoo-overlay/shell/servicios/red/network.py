@@ -127,10 +127,11 @@ _ETHERNET_CONNECTING_ICON = "network-wired-acquiring-symbolic"
 _ETHERNET_NO_INTERNET_ICON = "network-wired-no-route-symbolic"
 _ETHERNET_UNAVAILABLE_ICON = "network-wired-no-route-symbolic"
 _WIFI_CONNECTED_ICON = "network-wireless-symbolic"
-_WIFI_DISCONNECTED_ICON = "network-wireless-disconnected-symbolic"
+# Adwaita has no network-wireless-disconnected-symbolic; offline is the real glyph.
+_WIFI_DISCONNECTED_ICON = "network-wireless-offline-symbolic"
 _WIFI_CONNECTING_ICON = "network-wireless-acquiring-symbolic"
 _WIFI_NO_INTERNET_ICON = "network-wireless-no-route-symbolic"
-_WIFI_DISABLED_ICON = "network-wireless-offline-symbolic"
+_WIFI_DISABLED_ICON = "network-wireless-disabled-symbolic"
 _NETWORK_OFFLINE_ICON = "network-offline-symbolic"
 
 _logger = logging.getLogger(__name__)
@@ -278,7 +279,7 @@ def network_bar_icon_name(snapshot: NetworkSnapshot) -> str:
         return _NETWORK_OFFLINE_ICON
 
     if iface.device_type == "wifi":
-        if not snapshot.wireless_enabled:
+        if not snapshot.wireless_enabled or not snapshot.wireless_hardware_enabled:
             return _WIFI_DISABLED_ICON
         if iface.state in {"connecting", "disconnecting"}:
             return _WIFI_CONNECTING_ICON
@@ -286,6 +287,8 @@ def network_bar_icon_name(snapshot: NetworkSnapshot) -> str:
             if snapshot.connectivity.has_internet:
                 return _WIFI_CONNECTED_ICON
             return _WIFI_NO_INTERNET_ICON
+        # unavailable/unmanaged/disconnected/failed: keep a real Adwaita glyph
+        # (never network-wireless-disconnected-symbolic — it does not exist).
         return _WIFI_DISCONNECTED_ICON
 
     wired = ethernet_icon_name(snapshot)

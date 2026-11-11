@@ -22,12 +22,32 @@ gui_available() {
   [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]
 }
 
-# systemd user units often lack Wayland vars even inside an active Hyprland session.
+import_environ_from_pid() {
+  local pid="$1"
+  local env_file="/proc/${pid}/environ"
+  local entry key value
+  [[ -r "${env_file}" ]] || return 1
+  while IFS= read -r -d '' entry; do
+    [[ "${entry}" == *=* ]] || continue
+    key="${entry%%=*}"
+    value="${entry#*=}"
+    case "${key}" in
+      WAYLAND_DISPLAY|DISPLAY|XDG_RUNTIME_DIR|DBUS_SESSION_BUS_ADDRESS|HYPRLAND_INSTANCE_SIGNATURE)
+        if [[ -z "${!key:-}" && -n "${value}" ]]; then
+          export "${key}=${value}"
+        fi
+        ;;
+    esac
+  done <"${env_file}"
+}
+
+# systemd user units and .desktop launches often lack Wayland vars.
 ensure_session_env() {
   if [[ -n "${WAYLAND_DISPLAY:-}" && -n "${DISPLAY:-}" ]]; then
     return 0
   fi
-  local line key value
+
+  local line key value pid
   while IFS= read -r line; do
     [[ "${line}" == *=* ]] || continue
     key="${line%%=*}"
@@ -40,6 +60,21 @@ ensure_session_env() {
         ;;
     esac
   done < <(systemctl --user show-environment 2>/dev/null || true)
+
+  if [[ -z "${WAYLAND_DISPLAY:-}" || -z "${DISPLAY:-}" ]]; then
+    for pid in $(pgrep -u "$(id -u)" -x Hyprland 2>/dev/null || true); do
+      import_environ_from_pid "${pid}" || true
+    done
+  fi
+
+  if [[ -z "${WAYLAND_DISPLAY:-}" && -n "${XDG_RUNTIME_DIR:-}" ]]; then
+    local sock
+    sock="$(find "${XDG_RUNTIME_DIR}/hypr" -maxdepth 2 -type s -name '.socket.sock' 2>/dev/null | head -n1 || true)"
+    if [[ -n "${sock}" ]]; then
+      export HYPRLAND_INSTANCE_SIGNATURE="$(basename "$(dirname "${sock}")")"
+      export WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-1}"
+    fi
+  fi
 }
 
 notify_error() {
@@ -48,6 +83,14 @@ notify_error() {
   if command -v zenity >/dev/null 2>&1 && gui_available; then
     zenity --error --title="AidyCOS" --text="${text}" --width=420 || true
   elif command -v notify-send >/dev/null 2>&1; then
+    notify-send -a AidyCOS "AidyCOS" "${text}" || true
+  fi
+}
+
+notify_info() {
+  local text="$1"
+  echo "${text}"
+  if command -v notify-send >/dev/null 2>&1; then
     notify-send -a AidyCOS "AidyCOS" "${text}" || true
   fi
 }
@@ -64,60 +107,57 @@ find_terminal() {
   return 1
 }
 
-build_terminal_command() {
-  local terminal="$1"
-  local script_path="$2"
-  local name title
-  name="$(basename "${terminal}")"
-  title="Actualización de AidyCOS"
-
-  case "${name}" in
-    gnome-terminal|kgx)
-      printf '%q --title=%q -- bash %q' "${terminal}" "${title}" "${script_path}"
-      ;;
-    xfce4-terminal)
-      printf '%q --title=%q -x bash %q' "${terminal}" "${title}" "${script_path}"
-      ;;
-    alacritty)
-      printf '%q --title %q -e bash %q' "${terminal}" "${title}" "${script_path}"
-      ;;
-    xterm|uxterm|x-terminal-emulator)
-      printf '%q -T %q -e bash %q' "${terminal}" "${title}" "${script_path}"
-      ;;
-    kitty)
-      printf '%q --title %q bash %q' "${terminal}" "${title}" "${script_path}"
-      ;;
-    *)
-      # foot and other simple Wayland terminals
-      printf '%q -T %q bash %q' "${terminal}" "${title}" "${script_path}"
-      ;;
-  esac
-}
-
 # Open the password terminal immediately. Never download before this returns.
+# Important: pass a single executable path to hyprctl. Shell-quoted command
+# strings from printf %q look like success but foot never starts.
 run_in_terminal() {
   local terminal="$1"
   local script_path="$2"
-  local cmd_str
-  cmd_str="$(build_terminal_command "${terminal}" "${script_path}")"
+  local launcher="$3"
+  local started=0
 
   ensure_session_env
 
-  # 1) Ask Hyprland to spawn the window in the live session (best for .desktop / timers).
+  cat >"${launcher}" <<EOF
+#!/usr/bin/env bash
+exec $(printf '%q' "${terminal}") bash $(printf '%q' "${script_path}")
+EOF
+  chmod 700 "${launcher}"
+
+  # 1) Ask Hyprland to spawn a real window in the live session.
   if command -v hyprctl >/dev/null 2>&1; then
-    if hyprctl dispatch exec -- "${cmd_str}" >/dev/null 2>&1; then
-      return 0
+    if hyprctl dispatch exec -- "${launcher}" >/dev/null 2>&1; then
+      started=1
     fi
   fi
 
   # 2) Direct spawn when this process already has a graphical session.
-  if gui_available; then
-    # shellcheck disable=SC2086
-    nohup bash -lc "${cmd_str}" >/dev/null 2>&1 &
+  if [[ "${started}" != 1 ]] && gui_available; then
+    nohup "${launcher}" >/dev/null 2>&1 &
     disown || true
-    return 0
+    started=1
   fi
 
+  if [[ "${started}" != 1 ]]; then
+    return 1
+  fi
+
+  # hyprctl returns success when the dispatch is queued, even if the binary
+  # fails later. Confirm a child is actually running the apply script.
+  local i
+  for i in 1 2 3 4 5 6 7 8; do
+    if pgrep -u "$(id -u)" -f "bash ${script_path}" >/dev/null 2>&1 \
+      || pgrep -u "$(id -u)" -f "${script_path}" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.25
+  done
+
+  # Last resort only when this process already owns a visible TTY.
+  if [[ -t 0 && -t 1 ]]; then
+    bash "${script_path}"
+    return 0
+  fi
   return 1
 }
 
@@ -125,6 +165,9 @@ mkdir -p "$(dirname "${LOCK}")"
 exec 9>"${LOCK}"
 if ! flock -n 9; then
   echo "Ya hay una comprobación o actualización de AidyCOS en curso."
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send -a AidyCOS "AidyCOS" "Ya hay una actualización en curso." || true
+  fi
   exit 0
 fi
 
@@ -133,6 +176,11 @@ ensure_session_env
 if ! command -v curl >/dev/null 2>&1; then
   notify_error "No se encontró curl; instala curl para comprobar actualizaciones."
   exit 127
+fi
+
+# Immediate feedback: GitHub can take several seconds and used to look "dead".
+if gui_available && command -v notify-send >/dev/null 2>&1; then
+  notify-send -a AidyCOS "AidyCOS" "Comprobando actualizaciones en GitHub…" || true
 fi
 
 release_json="$(curl --fail --silent --show-error --location \
@@ -173,7 +221,7 @@ elif [[ -t 0 ]]; then
   [[ "${answer,,}" == "s" || "${answer,,}" == "si" || "${answer,,}" == "sí" ]] && accept=1
 elif command -v notify-send >/dev/null 2>&1; then
   notify-send -a AidyCOS "Actualización disponible" \
-    "Ejecuta aidycos-update para revisar ${latest:0:8}."
+    "Abre «Actualizar AidyCOS» o pulsa Super+Shift+U para revisar ${latest:0:8}."
   exit 0
 else
   echo "${message}" >&2
@@ -190,6 +238,7 @@ fi
 # any tarball download. The slow curl lives inside that window.
 apply_dir="$(mktemp -d "${TMPDIR:-/tmp}/aidycos-update.XXXXXX")"
 apply_script="${apply_dir}/apply.sh"
+terminal_launcher="${apply_dir}/launch-terminal.sh"
 cat >"${apply_script}" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -232,8 +281,12 @@ read -r -p "Pulsa Enter para cerrar esta ventana…" _
 EOF
 chmod 700 "${apply_script}"
 
-# Menu entry uses Terminal=true, so reuse this TTY when present.
-if [[ -t 0 ]]; then
+# Manual interactive shell: reuse this TTY. GUI/menu/timer always open a window.
+if [[ -t 0 && -t 1 && -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
+  bash "${apply_script}"
+  exit 0
+fi
+if [[ -t 0 && -t 1 && "${AIDYCOS_UPDATE_INLINE:-}" == 1 ]]; then
   bash "${apply_script}"
   exit 0
 fi
@@ -248,14 +301,11 @@ fi
 # Release the flock before handing off so later checks are not blocked.
 exec 9>&-
 
-if ! run_in_terminal "${terminal}" "${apply_script}"; then
+if ! run_in_terminal "${terminal}" "${apply_script}" "${terminal_launcher}"; then
   notify_error "No se pudo abrir la terminal para pedir la contraseña. Abre foot y ejecuta: aidycos-update"
   rm -rf "${apply_dir}"
   exit 1
 fi
 
-if command -v notify-send >/dev/null 2>&1; then
-  notify-send -a AidyCOS "Actualización de AidyCOS" \
-    "Terminal abierta: la descarga y la contraseña van ahí." || true
-fi
+notify_info "Terminal abierta: la descarga y la contraseña van ahí."
 exit 0
