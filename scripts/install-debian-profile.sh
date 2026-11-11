@@ -422,6 +422,8 @@ for gtk_settings in "${GTK3_SETTINGS}" "${GTK4_SETTINGS}"; do
 done
 
 # Jugoo's network and battery indicators use NetworkManager and UPower.
+# wpasupplicant (+ iw/rfkill/wireless firmware) comes from the aidyc-desktop
+# module packages list; do not install a conflicting wpa_supplicant stack here.
 sudo systemctl enable --now NetworkManager.service
 sudo systemctl enable --now upower.service
 

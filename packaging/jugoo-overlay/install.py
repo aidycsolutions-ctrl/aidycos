@@ -3,10 +3,22 @@
 
 from __future__ import annotations
 
+import importlib.util
 import shutil
 import sys
 import re
 from pathlib import Path
+
+
+def _load_network_model_snippets():
+    """Load WIFI_* constants from shell/network_models.py without dumping models.py."""
+    path = Path(__file__).parent / "shell" / "network_models.py"
+    spec = importlib.util.spec_from_file_location("aidycos_network_models", path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"No se pudo cargar el parche Wi-Fi: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def replace_once(path: Path, old: str, new: str, description: str) -> None:
@@ -589,6 +601,120 @@ def install_battery(root: Path) -> None:
         schema.write_text(schema_text, encoding="utf-8")
 
 
+def install_network_wifi(root: Path) -> None:
+    """Backport Wi-Fi reconnect/scan/connect/share/forget onto older Jugoo checkouts."""
+    overlay = Path(__file__).parent / "shell"
+    for relative in (
+        Path("servicios/red/network.py"),
+        Path("servicios/red/network_hotspot.py"),
+        Path("widgets/centro_control/network_section.py"),
+    ):
+        install_overlay_file(overlay / relative, root / "shell" / relative)
+
+    models = root / "shell/models.py"
+    models_text = models.read_text(encoding="utf-8")
+    snippets = _load_network_model_snippets()
+    saved_field = snippets.WIFI_ACCESS_POINT_SAVED_FIELD
+    credentials_snippet = snippets.WIFI_CREDENTIALS_SNIPPET.strip("\n") + "\n"
+    credentials_marker = "class WifiCredentials:"
+    needs_saved = (
+        "class WifiAccessPointSnapshot:" in models_text
+        and "saved: bool = False" not in models_text
+    )
+    needs_credentials = credentials_marker not in models_text
+
+    if needs_saved and needs_credentials:
+        replace_once(
+            models,
+            "    active: bool = False\n\n\n@dataclass(frozen=True)\nclass HotspotClientSnapshot:\n",
+            f"    active: bool = False\n{saved_field}\n\n"
+            f"{credentials_snippet}\n\n@dataclass(frozen=True)\nclass HotspotClientSnapshot:\n",
+            "añadir WifiAccessPointSnapshot.saved y WifiCredentials",
+        )
+    elif needs_credentials:
+        if "class HotspotClientSnapshot:" in models_text:
+            replace_once(
+                models,
+                "@dataclass(frozen=True)\nclass HotspotClientSnapshot:\n",
+                f"{credentials_snippet}\n\n@dataclass(frozen=True)\nclass HotspotClientSnapshot:\n",
+                "añadir WifiCredentials",
+            )
+        else:
+            print(f"Aviso: se omite el parche de WifiCredentials: {models}", flush=True)
+    elif needs_saved:
+        try_replace_once(
+            models,
+            "    active: bool = False\n",
+            f"    active: bool = False\n{saved_field}",
+            "añadir WifiAccessPointSnapshot.saved",
+        )
+
+    popup = root / "shell/widgets/centro_control/popup.py"
+    if popup.is_file() and "on_forget_wifi=" not in popup.read_text(encoding="utf-8"):
+        patched = try_replace_once(
+            popup,
+            "                on_apply_hotspot=network_service.apply_hotspot_config,\n"
+            "            )\n",
+            "                on_apply_hotspot=network_service.apply_hotspot_config,\n"
+            "                on_forget_wifi=network_service.forget_wifi,\n"
+            "                on_request_wifi_credentials="
+            "network_service.request_active_wifi_credentials,\n"
+            "            )\n",
+            "conectar forget/share Wi-Fi en el centro de control",
+        )
+        if not patched:
+            # Newer checkouts may already pass connect_wifi without the lambda wrapper.
+            try_replace_once(
+                popup,
+                "                on_apply_hotspot=network_service.apply_hotspot_config,\n",
+                "                on_apply_hotspot=network_service.apply_hotspot_config,\n"
+                "                on_forget_wifi=network_service.forget_wifi,\n"
+                "                on_request_wifi_credentials="
+                "network_service.request_active_wifi_credentials,\n",
+                "conectar forget/share Wi-Fi en el centro de control",
+            )
+        elif "on_request_wifi_credentials=" not in popup.read_text(encoding="utf-8"):
+            try_replace_once(
+                popup,
+                "                on_forget_wifi=network_service.forget_wifi,\n",
+                "                on_forget_wifi=network_service.forget_wifi,\n"
+                "                on_request_wifi_credentials="
+                "network_service.request_active_wifi_credentials,\n",
+                "conectar request_wifi_credentials en el centro de control",
+            )
+
+    style = root / "shell/style.css"
+    style_text = style.read_text(encoding="utf-8")
+    css_parts: list[str] = []
+    if "control-center-wifi-share" not in style_text:
+        css_parts.append(
+            "\nbox.control-center-wifi-share {\n"
+            "    padding: 6px 0;\n"
+            "}\n"
+        )
+    if "control-center-wifi-list" not in style_text:
+        css_parts.append(
+            "\nlistbox.control-center-wifi-list {\n"
+            "    background: transparent;\n"
+            "}\n"
+            "\nrow.control-center-wifi-row {\n"
+            "    border-radius: 8px;\n"
+            "    margin: 2px 0;\n"
+            "}\n"
+            "\nrow.control-center-wifi-row-active {\n"
+            "    background-color: @shell_hover_bg_faint;\n"
+            "}\n"
+            "\nlabel.control-center-wifi-ssid {\n"
+            "    color: @shell_text_primary;\n"
+            "}\n"
+        )
+    if css_parts:
+        backup = style.with_suffix(style.suffix + ".aidycos-backup")
+        if not backup.exists():
+            shutil.copy2(style, backup)
+        style.write_text(style_text.rstrip() + "".join(css_parts), encoding="utf-8")
+
+
 def install_printers(root: Path) -> None:
     """Add Configuraciones → Impresoras (CUPS list + system-config-printer)."""
     overlay = Path(__file__).parent / "shell"
@@ -859,6 +985,7 @@ def main() -> None:
             encoding="utf-8",
         )
     install_battery(root)
+    install_network_wifi(root)
     install_printers(root)
     install_native_workspace_dispatch(root)
     assistant_card = root / "shell/widgets/notificaciones/assistant_card.py"
