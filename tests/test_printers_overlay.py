@@ -149,8 +149,9 @@ class PrintersOverlayTests(unittest.TestCase):
                 "la impresora HP_Smart_Tank_WiFi está inactiva.  desactivada desde mié 04 nov 2026 23:05:19\n"
             ),
             ("lpstat", "-v"): (
-                "device for HP_Smart_Tank_585: hp:/usb/Smart_Tank\n"
-                "device for HP_Smart_Tank_WiFi: ipp://192.168.1.10/ipp/print\n"
+                "dispositivo para HP_Smart_Tank_585: ipp://localhost:60000/ipp/print\n"
+                "dispositivo para HP_Smart_Tank_WiFi: ipp://HP644ED794640E.local:631/ipp/print\n"
+                "dispositivo para Xprinter_XP58: usb://YICHIP3121/POS-58?serial=1\n"
             ),
         }
 
@@ -180,7 +181,18 @@ class PrintersOverlayTests(unittest.TestCase):
         self.assertTrue(by_name["HP_Smart_Tank_585"].enabled)
         self.assertFalse(by_name["HP_Smart_Tank_WiFi"].enabled)
         self.assertTrue(by_name["HP_Smart_Tank_WiFi"].is_default)
-        self.assertIn("ipp://", by_name["HP_Smart_Tank_WiFi"].device_uri)
+        self.assertEqual(
+            by_name["HP_Smart_Tank_WiFi"].device_uri,
+            "ipp://HP644ED794640E.local:631/ipp/print",
+        )
+        self.assertEqual(
+            by_name["HP_Smart_Tank_585"].device_uri,
+            "ipp://localhost:60000/ipp/print",
+        )
+        self.assertTrue(service.is_loopback_uri(by_name["HP_Smart_Tank_585"].device_uri))
+        self.assertTrue(
+            service.is_directly_shareable_uri(by_name["HP_Smart_Tank_WiFi"].device_uri)
+        )
 
     def test_export_import_share_catalog(self) -> None:
         service = _load_service()
@@ -192,7 +204,7 @@ class PrintersOverlayTests(unittest.TestCase):
                     accepting=True,
                     is_default=False,
                     state_text="idle",
-                    device_uri="hp:/usb/Smart_Tank",
+                    device_uri="ipp://localhost:60000/ipp/print",
                 ),
                 service.PrinterInfo(
                     name="HP_Smart_Tank_WiFi",
@@ -200,7 +212,15 @@ class PrintersOverlayTests(unittest.TestCase):
                     accepting=True,
                     is_default=True,
                     state_text="idle",
-                    device_uri="ipp://192.168.1.10/ipp/print",
+                    device_uri="ipp://HP644ED794640E.local:631/ipp/print",
+                ),
+                service.PrinterInfo(
+                    name="Xprinter_XP58",
+                    enabled=True,
+                    accepting=True,
+                    is_default=False,
+                    state_text="idle",
+                    device_uri="usb://YICHIP3121/POS-58?serial=1",
                 ),
             ),
             default_name="HP_Smart_Tank_WiFi",
@@ -210,10 +230,11 @@ class PrintersOverlayTests(unittest.TestCase):
         self.assertEqual(entries[0].name, "HP_Smart_Tank_WiFi")
 
         with_local = service.shareable_entries(snapshot, include_local_via_cups=True)
-        self.assertEqual(len(with_local), 2)
-        local = next(item for item in with_local if item.share_kind == "cups-shared")
-        self.assertTrue(local.device_uri.startswith("ipp://"))
-        self.assertIn("/printers/HP_Smart_Tank_585", local.device_uri)
+        self.assertEqual(len(with_local), 3)
+        local_names = {
+            item.name for item in with_local if item.share_kind == "cups-shared"
+        }
+        self.assertEqual(local_names, {"HP_Smart_Tank_585", "Xprinter_XP58"})
 
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "shared-printers.json"
@@ -223,7 +244,10 @@ class PrintersOverlayTests(unittest.TestCase):
                 encoding="utf-8",
             )
             loaded = service.load_share_catalog(path)
-            self.assertEqual(loaded.printers[0].device_uri, "ipp://192.168.1.10/ipp/print")
+            self.assertEqual(
+                loaded.printers[0].device_uri,
+                "ipp://HP644ED794640E.local:631/ipp/print",
+            )
 
             recorded: list[tuple[str, ...]] = []
 

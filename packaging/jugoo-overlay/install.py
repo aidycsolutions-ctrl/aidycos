@@ -607,6 +607,7 @@ def install_network_wifi(root: Path) -> None:
     for relative in (
         Path("servicios/red/network.py"),
         Path("servicios/red/network_hotspot.py"),
+        Path("servicios/red/wifi_connect_plan.py"),
         Path("widgets/centro_control/network_section.py"),
     ):
         install_overlay_file(overlay / relative, root / "shell" / relative)

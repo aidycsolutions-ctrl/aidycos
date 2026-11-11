@@ -29,7 +29,10 @@ _PRINTER_RE = re.compile(
     r"^(?:printer|la impresora)\s+(\S+)\s+(.+)$",
     re.IGNORECASE,
 )
-_URI_RE = re.compile(r"^device for (\S+):\s*(.+)$", re.IGNORECASE)
+_URI_RE = re.compile(
+    r"^(?:device for|dispositivo para)\s+(\S+):\s*(.+)$",
+    re.IGNORECASE,
+)
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _NETWORK_URI_RE = re.compile(
     r"^(?:ipp|ipps|http|https|socket|lpd|smb|dnssd)://",
@@ -39,6 +42,11 @@ _LOCAL_URI_RE = re.compile(
     r"^(?:usb|hp|hpfax|parallel|serial|bluetooth|beh):",
     re.IGNORECASE,
 )
+_LOOPBACK_URI_RE = re.compile(
+    r"^(?:ipp|ipps|http|https)://(?:localhost|127\.0\.0\.1|::1)(?::|/|$)",
+    re.IGNORECASE,
+)
+_HP_NET_URI_RE = re.compile(r"^hp:/net/", re.IGNORECASE)
 
 CATALOG_VERSION = 1
 CATALOG_FILENAME = "shared-printers.json"
@@ -193,12 +201,33 @@ def default_catalog_path() -> Path:
 
 def is_network_uri(uri: str) -> bool:
     text = str(uri or "").strip()
-    return bool(text) and _NETWORK_URI_RE.match(text) is not None
+    if not text:
+        return False
+    if _HP_NET_URI_RE.match(text):
+        return True
+    return _NETWORK_URI_RE.match(text) is not None
+
+
+def is_loopback_uri(uri: str) -> bool:
+    text = str(uri or "").strip()
+    return bool(text) and _LOOPBACK_URI_RE.match(text) is not None
 
 
 def is_local_uri(uri: str) -> bool:
     text = str(uri or "").strip()
-    return bool(text) and _LOCAL_URI_RE.match(text) is not None
+    if not text:
+        return False
+    if is_loopback_uri(text):
+        return True
+    if _HP_NET_URI_RE.match(text):
+        return False
+    return _LOCAL_URI_RE.match(text) is not None
+
+
+def is_directly_shareable_uri(uri: str) -> bool:
+    """True when other LAN PCs can use this URI without this host as a bridge."""
+    text = str(uri or "").strip()
+    return is_network_uri(text) and not is_loopback_uri(text)
 
 
 def shareable_entries(
@@ -208,8 +237,8 @@ def shareable_entries(
 ) -> tuple[SharedPrinterEntry, ...]:
     """Build entries other AidyCOS PCs can import.
 
-    Network URIs are included as-is. Local/USB printers are only included when
-    ``include_local_via_cups`` is true (after enabling CUPS sharing).
+    LAN/network URIs are included as-is. USB/localhost queues are only included
+    when ``include_local_via_cups`` is true (after enabling CUPS sharing).
     """
     snap = snapshot or list_printers()
     if snap.error:
@@ -218,7 +247,7 @@ def shareable_entries(
     entries: list[SharedPrinterEntry] = []
     for printer in snap.printers:
         uri = (printer.device_uri or "").strip()
-        if is_network_uri(uri):
+        if is_directly_shareable_uri(uri):
             entries.append(
                 SharedPrinterEntry(
                     name=printer.name,
@@ -428,7 +457,7 @@ def enable_lan_sharing(*, share_printers: Sequence[str] | None = None) -> None:
         names = [
             item.name
             for item in snapshot.printers
-            if is_local_uri(item.device_uri) or not is_network_uri(item.device_uri)
+            if not is_directly_shareable_uri(item.device_uri)
         ]
     for name in names:
         if not name:

@@ -31,6 +31,7 @@ from ...models import (
     WifiCredentials,
     WifiHotspotCapabilities,
 )
+from .wifi_connect_plan import access_point_counts_as_saved, plan_wifi_connect_commands
 from .network_hotspot import (
     HOTSPOT_PSK_MIN_LENGTH,
     NM_802_11_MODE_AP,
@@ -614,8 +615,10 @@ def merge_access_points_by_ssid(
     points: list[WifiAccessPointSnapshot] | tuple[WifiAccessPointSnapshot, ...],
     *,
     saved_ssids: frozenset[str] | set[str] = frozenset(),
+    secrets_ssids: frozenset[str] | set[str] | None = None,
 ) -> tuple[WifiAccessPointSnapshot, ...]:
     """Collapse BSSIDs of the same SSID into one row (active first, then strongest)."""
+    secrets = saved_ssids if secrets_ssids is None else secrets_ssids
     best: dict[str, WifiAccessPointSnapshot] = {}
     for point in points:
         current = best.get(point.ssid)
@@ -626,7 +629,15 @@ def merge_access_points_by_ssid(
         ):
             best[point.ssid] = point
     merged = [
-        replace(point, saved=point.ssid in saved_ssids)
+        replace(
+            point,
+            saved=access_point_counts_as_saved(
+                ssid=point.ssid,
+                secured=point.secured,
+                profile_ssids=saved_ssids,
+                secrets_ssids=secrets,
+            ),
+        )
         for point in best.values()
     ]
     merged.sort(key=lambda item: (not item.active, not item.saved, -item.strength, item.ssid.lower()))
@@ -764,6 +775,7 @@ def _split_nmcli_terse_line(line: str) -> list[str]:
 def _read_wifi_access_points_nmcli(
     *,
     saved_ssids: frozenset[str] | set[str] = frozenset(),
+    secrets_ssids: frozenset[str] | set[str] | None = None,
 ) -> tuple[WifiAccessPointSnapshot, ...]:
     """Fallback when D-Bus AP objects are empty/racy but nmcli already sees SSIDs."""
     import shutil
@@ -822,7 +834,11 @@ def _read_wifi_access_points_nmcli(
                 active=in_use.strip() == "*",
             ),
         )
-    return merge_access_points_by_ssid(points, saved_ssids=saved_ssids)
+    return merge_access_points_by_ssid(
+        points,
+        saved_ssids=saved_ssids,
+        secrets_ssids=secrets_ssids,
+    )
 
 
 def read_wifi_access_points(
@@ -830,6 +846,7 @@ def read_wifi_access_points(
     device_path: str,
     *,
     saved_ssids: frozenset[str] | set[str] = frozenset(),
+    secrets_ssids: frozenset[str] | set[str] | None = None,
 ) -> tuple[WifiAccessPointSnapshot, ...]:
     try:
         wireless_proxy = Gio.DBusProxy.new_sync(
@@ -854,7 +871,10 @@ def read_wifi_access_points(
         )
     except GLib.Error as exc:
         _logger.debug("GetAllAccessPoints failed for %s: %s", device_path, exc.message)
-        return _read_wifi_access_points_nmcli(saved_ssids=saved_ssids)
+        return _read_wifi_access_points_nmcli(
+            saved_ssids=saved_ssids,
+            secrets_ssids=secrets_ssids,
+        )
 
     points: list[WifiAccessPointSnapshot] = []
     for path in access_point_paths:
@@ -865,11 +885,18 @@ def read_wifi_access_points(
         )
         if snapshot is not None:
             points.append(snapshot)
-    merged = merge_access_points_by_ssid(points, saved_ssids=saved_ssids)
+    merged = merge_access_points_by_ssid(
+        points,
+        saved_ssids=saved_ssids,
+        secrets_ssids=secrets_ssids,
+    )
     if merged:
         return merged
     # D-Bus listed paths but SSID cache was empty, or NM has no AP objects yet.
-    return _read_wifi_access_points_nmcli(saved_ssids=saved_ssids)
+    return _read_wifi_access_points_nmcli(
+        saved_ssids=saved_ssids,
+        secrets_ssids=secrets_ssids,
+    )
 
 
 def _wifi_connection_settings_variant(ssid: str, password: str) -> GLib.Variant:
@@ -1269,18 +1296,14 @@ class NetworkService:
         self._schedule_refresh()
 
         saved = self._saved_wifi_profiles().get(ssid, ())
-        connect_new = [
-            "--wait", "30", "device", "wifi", "connect", ssid, "ifname", wifi.interface,
-        ]
-        if password:
-            commands = []
-            if saved:
-                commands.append(["connection", "delete", *(arg for uuid in saved for arg in ("uuid", uuid))])
-            commands.append([*connect_new, "password", password])
-        elif saved:
-            commands = [["--wait", "30", "connection", "up", "uuid", saved[0], "ifname", wifi.interface]]
-        else:
-            commands = [connect_new]
+        commands, ignore_failures = plan_wifi_connect_commands(
+            ssid=ssid,
+            interface=wifi.interface,
+            password=password,
+            saved_uuids=saved,
+            current_ssid=wifi.connection_name or "",
+            currently_connected=bool(wifi.connected),
+        )
 
         def done(ok: bool, _stdout: str, stderr: str) -> None:
             if self._wifi_connection_target != ssid:
@@ -1293,7 +1316,7 @@ class NetworkService:
                 self._wifi_connection_error = nmcli_wifi_error_message(ssid, stderr)
             self._schedule_refresh()
 
-        run_nmcli_chain(commands, done, ignore_failures=len(commands) - 1)
+        run_nmcli_chain(commands, done, ignore_failures=ignore_failures)
 
     def disconnect_wifi(self) -> None:
         wifi = self._snapshot.wifi
@@ -1491,7 +1514,18 @@ class NetworkService:
 
     def _saved_wifi_profiles(self) -> dict[str, tuple[str, ...]]:
         """Map SSID -> UUIDs of saved client (non-hotspot) Wi-Fi profiles."""
+        profiles, _secrets = self._wifi_profile_index()
+        return profiles
+
+    def _wifi_ssids_with_key_mgmt(self) -> frozenset[str]:
+        """SSIDs whose saved profile includes wifi-security key-mgmt (not a blank stub)."""
+        _profiles, secrets = self._wifi_profile_index()
+        return secrets
+
+    def _wifi_profile_index(self) -> tuple[dict[str, tuple[str, ...]], frozenset[str]]:
+        """Return (ssid->uuids, ssids that have 802-11-wireless-security.key-mgmt)."""
         profiles: dict[str, list[str]] = {}
+        secrets: set[str] = set()
         for path in self._list_connection_paths():
             settings = self._get_connection_settings(path)
             if settings is None or connection_is_hotspot(settings):
@@ -1501,9 +1535,13 @@ class NetworkService:
                 continue
             ssid = ssid_from_wireless_settings(unpack_settings_map(settings.get("802-11-wireless")))
             uuid = str(connection.get("uuid") or "").strip()
-            if ssid and uuid:
-                profiles.setdefault(ssid, []).append(uuid)
-        return {ssid: tuple(uuids) for ssid, uuids in profiles.items()}
+            if not ssid or not uuid:
+                continue
+            profiles.setdefault(ssid, []).append(uuid)
+            security = unpack_settings_map(settings.get("802-11-wireless-security"))
+            if str(security.get("key-mgmt") or "").strip():
+                secrets.add(ssid)
+        return {ssid: tuple(uuids) for ssid, uuids in profiles.items()}, frozenset(secrets)
 
     def _set_hotspot_enabled_idle(
         self,
@@ -2469,10 +2507,12 @@ class NetworkService:
             and wifi_iface.state not in ("unavailable", "unmanaged", "unknown")
             and wifi_mode != NM_802_11_MODE_AP
         ):
+            profile_ssids, secrets_ssids = self._wifi_profile_index()
             wifi_access_points = read_wifi_access_points(
                 self._bus,
                 wifi_iface.device_path,
-                saved_ssids=frozenset(self._saved_wifi_profiles()),
+                saved_ssids=frozenset(profile_ssids),
+                secrets_ssids=secrets_ssids,
             )
 
         hotspot = self._read_hotspot_snapshot(

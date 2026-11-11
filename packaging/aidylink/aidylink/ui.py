@@ -1024,21 +1024,32 @@ class AidylinkWindow(Gtk.Window):
         if cfg is None:
             self._append_line("⚠ No se encontró la configuración de AidyChat.")
             return
-        chooser = Gtk.Dialog(title="Emparejar computadores", transient_for=self, flags=0)
-        chooser.add_buttons(
-            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
-            "Ingresar código", Gtk.ResponseType.REJECT,
-            "Mostrar código", Gtk.ResponseType.OK,
+        try:
+            info = control_request({"cmd": "pair_info"}, timeout=3.0)
+        except Exception:
+            info = {}
+        if not info.get("ok"):
+            try:
+                info = control_request({"cmd": "pair_host"}, timeout=3.0)
+            except Exception as exc:
+                self._append_line(f"⚠ No se pudo abrir Emparejar: {exc}")
+                return
+        code = str(info.get("group_code") or "")
+        mobile_url = str(info.get("mobile_url") or "")
+        dialog = Gtk.Dialog(title="Emparejar", transient_for=self, flags=0)
+        dialog.add_buttons(
+            "Cerrar", Gtk.ResponseType.CANCEL,
+            "Ingresar código de otro PC", Gtk.ResponseType.REJECT,
         )
-        chooser.set_default_size(460, 180)
-        box = chooser.get_content_area()
-        box.set_spacing(8)
-        box.set_border_width(12)
+        dialog.set_default_size(460, 520)
+        box = dialog.get_content_area()
+        box.set_spacing(10)
+        box.set_border_width(16)
         box.pack_start(
             Gtk.Label(
                 label=(
-                    "Para unir otro PC: un equipo «Mostrar código» y el otro «Ingresar código». "
-                    "El QR del código también sirve para el móvil en la misma Wi‑Fi."
+                    "Este es tu código de grupo (no caduca). Compártelo una vez. "
+                    "Si cambian de Wi‑Fi, al estar otra vez en la misma red se ven solos."
                 ),
                 xalign=0,
                 wrap=True,
@@ -1047,13 +1058,36 @@ class AidylinkWindow(Gtk.Window):
             False,
             0,
         )
-        chooser.show_all()
-        response = chooser.run()
-        chooser.destroy()
-        if response == Gtk.ResponseType.OK:
-            self._pair_show_code()
-        elif response == Gtk.ResponseType.REJECT:
+        pin_label = Gtk.Label()
+        pin_label.set_markup(
+            f"<span size='xx-large' weight='bold'>{GLib.markup_escape_text(code or '------')}</span>"
+        )
+        pin_label.set_selectable(True)
+        box.pack_start(pin_label, False, False, 4)
+        if mobile_url:
+            qr = self._qr_image(mobile_url)
+            if qr is not None:
+                box.pack_start(qr, False, False, 4)
+            url_label = Gtk.Label(label=mobile_url, xalign=0.5, selectable=True)
+            url_label.set_line_wrap(True)
+            box.pack_start(url_label, False, False, 0)
+        box.pack_start(
+            Gtk.Label(
+                label="Móvil: escanea el QR. Otro PC: «Ingresar código» con estos 6 dígitos.",
+                xalign=0,
+                wrap=True,
+            ),
+            False,
+            False,
+            0,
+        )
+        dialog.show_all()
+        response = dialog.run()
+        dialog.destroy()
+        if response == Gtk.ResponseType.REJECT:
             self._pair_enter_code()
+        self.refresh_status()
+        self.refresh_peers()
 
     def _qr_image(self, url: str, size: int = 220) -> Gtk.Widget | None:
         try:

@@ -131,9 +131,14 @@ class NetworkWifiOverlayTests(unittest.TestCase):
 
             overlay.install_network_wifi(root)
 
+            plan = root / "shell/servicios/red/wifi_connect_plan.py"
+            self.assertTrue(plan.is_file())
+            self.assertIn("plan_wifi_connect_commands", plan.read_text(encoding="utf-8"))
+
             network_text = network.read_text(encoding="utf-8")
             self.assertIn("def forget_wifi", network_text)
             self.assertIn("WifiCredentials", network_text)
+            self.assertIn("plan_wifi_connect_commands", network_text)
 
             section_text = section.read_text(encoding="utf-8")
             self.assertIn("Compartir", section_text)

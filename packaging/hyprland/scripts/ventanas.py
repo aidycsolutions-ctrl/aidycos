@@ -363,15 +363,81 @@ def is_minimized(window: dict[str, Any]) -> bool:
     return (window.get("workspace") or {}).get("name") == MINIMIZED_WS
 
 
+def _focus_history_id(window: dict[str, Any]) -> int:
+    raw = window.get("focusHistoryID")
+    if raw is None:
+        return 10**9
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 10**9
+
+
+def most_recent_managed(*, allow_minimized: bool = False) -> dict[str, Any] | None:
+    """Window the user was last using (survives focus lost to the Jugoo layer bar)."""
+    windows = [
+        window
+        for window in query("clients")
+        if is_managed(window) and (allow_minimized or not is_minimized(window))
+    ]
+    if not windows:
+        return None
+    return min(windows, key=_focus_history_id)
+
+
 def find_window(address: str | None) -> dict[str, Any] | None:
     if not address:
         active = query("activewindow")
-        return active if isinstance(active, dict) and active.get("address") else None
+        if isinstance(active, dict) and active.get("address"):
+            return active
+        # hyprbars / taskbar clicks often clear activewindow (layer-shell steal)
+        # before the minimize command runs; fall back to focus history.
+        return most_recent_managed()
     wanted = normalize_address(address)
     for window in query("clients"):
         if str(window.get("address", "")).lower() == wanted:
             return window
     return None
+
+
+def is_effectively_focused(window: dict[str, Any], active: dict[str, Any] | None = None) -> bool:
+    """True when ``window`` is focused, or was until the shell bar stole focus.
+
+    Clicking Jugoo (layer-shell) clears ``activewindow`` without giving focus to
+    another client. Taskbar toggle must still treat that window as focused so
+    the second click minimizes instead of only refocusing.
+    """
+    if active is None:
+        active = query("activewindow")
+    if not isinstance(active, dict):
+        active = {}
+    address = window.get("address")
+    if not address:
+        return False
+    if active.get("address") == address:
+        return True
+    active_address = str(active.get("address") or "")
+    if active_address:
+        active_window = find_window(active_address)
+        if (
+            active_window is not None
+            and is_managed(active_window)
+            and not is_minimized(active_window)
+            and active_window.get("class") != SHELL_CLASS
+        ):
+            return False
+    workspace_id = (window.get("workspace") or {}).get("id")
+    peers = [
+        peer
+        for peer in query("clients")
+        if is_managed(peer)
+        and not is_minimized(peer)
+        and (peer.get("workspace") or {}).get("id") == workspace_id
+    ]
+    if not peers:
+        return False
+    top = min(peers, key=_focus_history_id)
+    return top.get("address") == address
 
 
 def workspace_target(name: str | None) -> str | None:
@@ -507,6 +573,40 @@ def cmd_close(address: str | None = None) -> None:
         dispatch(f"closewindow address:{window['address']}")
 
 
+def _focus_after_minimize(origin: str | None, excluded: str) -> list[str]:
+    """Focus the next window on the origin desktop so minimize does not look like a no-op."""
+    target = workspace_target(origin)
+    excluded = normalize_address(excluded)
+    origin_id = None
+    if target and target.lstrip("-").isdigit():
+        try:
+            origin_id = int(target)
+        except ValueError:
+            origin_id = None
+    candidates = [
+        window
+        for window in query("clients")
+        if is_managed(window)
+        and not is_minimized(window)
+        and normalize_address(str(window.get("address") or "")) != excluded
+        and (
+            (origin_id is not None and (window.get("workspace") or {}).get("id") == origin_id)
+            or (
+                origin_id is None
+                and workspace_target((window.get("workspace") or {}).get("name")) == target
+            )
+        )
+    ]
+    if not candidates:
+        return list(goto_workspace(target))
+    next_window = min(candidates, key=_focus_history_id)
+    return [
+        *goto_workspace(target),
+        f"focuswindow address:{next_window['address']}",
+        f"alterzorder top,address:{next_window['address']}",
+    ]
+
+
 def cmd_minimize(address: str | None = None) -> None:
     window = find_window(address)
     if window is None:
@@ -526,7 +626,11 @@ def cmd_minimize(address: str | None = None) -> None:
     ]
     state["minimized"].append({"address": window["address"], "workspace": origin})
     save_state(state)
-    dispatch(f"movetoworkspacesilent {MINIMIZED_WS},address:{window['address']}")
+    dispatch(
+        f"movetoworkspacesilent {MINIMIZED_WS},address:{window['address']}",
+        *_close_minimized_overlay(),
+        *_focus_after_minimize(origin, window["address"]),
+    )
 
 
 def _close_minimized_overlay() -> list[str]:
@@ -595,7 +699,7 @@ def cmd_focus(address: str | None = None) -> None:
     active = query("activewindow")
     active_ws = query("activeworkspace").get("id")
     on_screen = (window.get("workspace") or {}).get("id") == active_ws
-    if on_screen and active.get("address") == window["address"]:
+    if on_screen and is_effectively_focused(window, active):
         cmd_minimize(window["address"])
         return
     target = workspace_target((window.get("workspace") or {}).get("name"))

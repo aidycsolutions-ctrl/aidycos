@@ -324,6 +324,7 @@ class AidylinkDaemon:
                 "node_id": self.cfg.node_id,
                 "display_name": self.cfg.display_name,
                 "team_id": self.cfg.team_id,
+                "group_code": self.pairing.group_code(),
                 "lan_ip": self.discovery.lan_ip,
                 "cloud_enabled": self.cloud.enabled,
                 "peers": len(self.discovery.list_online()),
@@ -353,28 +354,44 @@ class AidylinkDaemon:
             return {"ok": True, "peers": peers, "mismatches": mismatches}
         if cmd == "pair_host":
             info = self.pairing.start_host()
-            pin = str(info.get("pin") or "")
-            urls = self.mobile.pair_urls(pin)
+            group_code = str(info.get("group_code") or self.pairing.group_code())
+            # Prefer durable group code in the QR so Wi‑Fi changes don't break joins.
+            urls = self.mobile.pair_urls(group_code)
+            info["group_code"] = group_code
             info["mobile_urls"] = urls
             info["mobile_url"] = urls[0] if urls else ""
             info["mobile_port"] = self.mobile.port
             info["lan_ip"] = self.mobile.lan_ip
             return info
+        if cmd == "pair_info":
+            code = self.pairing.group_code()
+            urls = self.mobile.pair_urls(code)
+            return {
+                "ok": True,
+                "group_code": code,
+                "display_name": self.cfg.display_name,
+                "team_id": self.cfg.team_id,
+                "lan_ip": self.mobile.lan_ip,
+                "mobile_url": urls[0] if urls else "",
+                "mobile_urls": urls,
+            }
         if cmd == "pair_stop":
             self.pairing.stop()
             return {"ok": True}
         if cmd == "pair_status":
             status = self.pairing.status()
-            if status.get("active") and status.get("pin"):
-                urls = self.mobile.pair_urls(str(status["pin"]))
-                status["mobile_urls"] = urls
-                status["mobile_url"] = urls[0] if urls else ""
+            code = str(status.get("group_code") or self.pairing.group_code())
+            status["group_code"] = code
+            urls = self.mobile.pair_urls(code)
+            status["mobile_urls"] = urls
+            status["mobile_url"] = urls[0] if urls else ""
             status["mobiles"] = len(self.mobile.list_sessions())
             return status
         if cmd == "pair_join":
             pin = str(req.get("pin") or "").strip()
             hosts = [h.host for h in self.discovery.list_mismatches()]
             hosts.extend(p.host for p in self.discovery.list_online())
+            hosts.extend(self.discovery._known_hosts.keys())
             result = await self.pairing.join(pin, hosts=hosts)
             if result.get("ok"):
                 self.cfg.team_id = str(result["team_id"])
@@ -382,10 +399,15 @@ class AidylinkDaemon:
                 save_config(self.cfg)
                 self.discovery.peers.clear()
                 self.discovery.mismatches.clear()
-                notify(
-                    "AidyChat",
-                    f"Emparejado con {result.get('host_name') or 'otro PC'}",
-                )
+                host = str(result.get("host") or "").strip()
+                if host and host not in ("local",):
+                    self.discovery.remember_host(host)
+                self.discovery.request_rescan()
+                if not result.get("already_member"):
+                    notify(
+                        "AidyChat",
+                        f"Emparejado con {result.get('host_name') or 'otro PC'}",
+                    )
             return result
         if cmd == "send":
             target = str(req.get("to") or "")

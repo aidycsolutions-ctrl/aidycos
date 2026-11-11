@@ -66,6 +66,8 @@ class DiscoveryService:
         self._transport: asyncio.DatagramTransport | None = None
         self._beacon_task: asyncio.Task | None = None
         self._tcp_task: asyncio.Task | None = None
+        self._net_task: asyncio.Task | None = None
+        self._scan_now = asyncio.Event()
         self.lan_ip = detect_lan_ip()
         self._load_known_hosts()
 
@@ -229,6 +231,7 @@ class DiscoveryService:
         self._transport = transport
         self._beacon_task = asyncio.create_task(self._beacon_loop(), name="aidylink-beacon")
         self._tcp_task = asyncio.create_task(self._tcp_scan_loop(), name="aidylink-tcp-scan")
+        self._net_task = asyncio.create_task(self._network_watch_loop(), name="aidylink-netwatch")
         LOGGER.info(
             "discovery listening on udp/%s (tcp fallback on %s)",
             self.cfg.discovery_port,
@@ -236,7 +239,7 @@ class DiscoveryService:
         )
 
     async def stop(self) -> None:
-        for task in (self._beacon_task, self._tcp_task):
+        for task in (self._beacon_task, self._tcp_task, self._net_task):
             if not task:
                 continue
             task.cancel()
@@ -246,9 +249,30 @@ class DiscoveryService:
                 pass
         self._beacon_task = None
         self._tcp_task = None
+        self._net_task = None
         if self._transport:
             self._transport.close()
             self._transport = None
+
+    def request_rescan(self) -> None:
+        self._scan_now.set()
+
+    async def _network_watch_loop(self) -> None:
+        """When Wi‑Fi/IP changes, re-announce and scan immediately."""
+        last = self.lan_ip
+        while True:
+            await asyncio.sleep(2.0)
+            current = detect_lan_ip()
+            if current == last:
+                continue
+            LOGGER.info("network changed %s → %s; rescanning peers", last, current)
+            last = current
+            self.lan_ip = current
+            try:
+                self._send_beacon()
+            except OSError as exc:
+                LOGGER.debug("beacon after net change failed: %s", exc)
+            self.request_rescan()
 
     async def _beacon_loop(self) -> None:
         while True:
@@ -302,7 +326,11 @@ class DiscoveryService:
                 raise
             except Exception as exc:
                 LOGGER.debug("tcp discovery scan failed: %s", exc)
-            await asyncio.sleep(TCP_SCAN_INTERVAL_S)
+            self._scan_now.clear()
+            try:
+                await asyncio.wait_for(self._scan_now.wait(), timeout=TCP_SCAN_INTERVAL_S)
+            except asyncio.TimeoutError:
+                pass
 
     async def _port_open(self, host: str) -> bool:
         try:
