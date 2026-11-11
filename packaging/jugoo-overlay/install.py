@@ -264,7 +264,8 @@ def install_desktop_icons(root: Path) -> None:
             "definir almacenamiento de iconos del escritorio",
         )
     identity = root / "shell/identity.py"
-    if "TITLE_DESKTOP" not in identity.read_text(encoding="utf-8"):
+    identity_text = identity.read_text(encoding="utf-8")
+    if "TITLE_DESKTOP" not in identity_text:
         replace_once(
             identity,
             "TITLE_PINNED_OVERFLOW = f\"{APPLICATION_NAME} Pinned Overflow\"\n",
@@ -272,6 +273,25 @@ def install_desktop_icons(root: Path) -> None:
             "TITLE_DESKTOP = f\"{APPLICATION_NAME} Desktop Icons\"\n",
             "identificar la capa de iconos del escritorio",
         )
+    if "TITLE_PHONE_PANEL" not in identity_text:
+        try_replace_once(
+            identity,
+            'TITLE_NETWORK_PANEL = f"{APPLICATION_NAME} Network Panel"\n',
+            'TITLE_NETWORK_PANEL = f"{APPLICATION_NAME} Network Panel"\n'
+            'TITLE_PHONE_PANEL = f"{APPLICATION_NAME} Phone Panel"\n',
+            "identificar el panel Teléfono del centro de control",
+        )
+    window_identity = root / "shell/window_identity.py"
+    if window_identity.is_file():
+        wi_text = window_identity.read_text(encoding="utf-8")
+        if "TITLE_PHONE_PANEL" not in wi_text:
+            try_replace_once(
+                window_identity,
+                "    TITLE_NETWORK_PANEL,\n",
+                "    TITLE_NETWORK_PANEL,\n"
+                "    TITLE_PHONE_PANEL,\n",
+                "exportar TITLE_PHONE_PANEL",
+            )
 
     config = root / "shell/config.py"
     config_text = config.read_text(encoding="utf-8")
@@ -609,11 +629,27 @@ def install_network_wifi(root: Path) -> None:
         Path("servicios/red/network_hotspot.py"),
         Path("servicios/red/wifi_connect_plan.py"),
         Path("widgets/centro_control/network_section.py"),
-        Path("widgets/centro_control/popup.py"),
     ):
         source = overlay / relative
         if source.is_file():
             install_overlay_file(source, root / "shell" / relative)
+    # Only replace the control-center popup when the phone/movil stack is present.
+    # The overlay popup imports shell.servicios.movil; shipping it alone breaks Jugoo.
+    popup_source = overlay / "widgets/centro_control/popup.py"
+    movil_ready = (root / "shell/servicios/movil/kdeconnect.py").is_file() and (
+        root / "shell/widgets/centro_control/phone_section.py"
+    ).is_file()
+    if popup_source.is_file() and movil_ready:
+        install_overlay_file(
+            popup_source,
+            root / "shell/widgets/centro_control/popup.py",
+        )
+    elif popup_source.is_file():
+        print(
+            "Aviso: se omite popup.py del centro de control "
+            "(falta shell/servicios/movil o phone_section).",
+            flush=True,
+        )
 
     models = root / "shell/models.py"
     models_text = models.read_text(encoding="utf-8")
