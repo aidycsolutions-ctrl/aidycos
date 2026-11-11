@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 from .cloud import AidyChatBridge
@@ -45,19 +46,21 @@ class MessageRouter:
         port: int,
         text: str,
         to_id: str = "*",
+        message: LinkMessage | None = None,
     ) -> SendResult:
         """Send to an explicit LAN host (useful for QEMU NAT / no discovery)."""
-        text = (text or "").strip()
-        if not text:
-            return SendResult(route="failed", detail="mensaje vacío")
-        message = LinkMessage.create(
-            from_id=self.cfg.node_id,
-            from_name=self.cfg.display_name,
-            to_id=to_id or "*",
-            text=text,
-            team_id=self.cfg.team_id,
-            via="lan",
-        )
+        if message is None:
+            text = (text or "").strip()
+            if not text:
+                return SendResult(route="failed", detail="mensaje vacío")
+            message = LinkMessage.create(
+                from_id=self.cfg.node_id,
+                from_name=self.cfg.display_name,
+                to_id=to_id or "*",
+                text=text,
+                team_id=self.cfg.team_id,
+                via="lan",
+            )
         local_ip = self.discovery.lan_ip or detect_lan_ip()
         dest_host, dest_port = resolve_lan_endpoint(host, port, local_ip=local_ip)
         try:
@@ -80,19 +83,47 @@ class MessageRouter:
         text = (text or "").strip()
         if not text:
             return SendResult(route="failed", detail="mensaje vacío")
+        message = LinkMessage.create(
+            from_id=self.cfg.node_id,
+            from_name=self.cfg.display_name,
+            to_id="",  # filled once peer is resolved
+            text=text,
+            team_id=self.cfg.team_id,
+            via="lan",
+        )
+        return await self.send_message(target, message)
 
+    async def send_file(self, target: str, path: Path, *, caption: str = "") -> SendResult:
+        peer = self.discovery.find(target)
+        to_id = peer.node_id if peer else target
+        try:
+            message = LinkMessage.from_file(
+                Path(path),
+                from_id=self.cfg.node_id,
+                from_name=self.cfg.display_name,
+                to_id=to_id or "*",
+                team_id=self.cfg.team_id,
+                caption=caption,
+                via="lan",
+            )
+        except (OSError, ValueError) as exc:
+            return SendResult(route="failed", detail=str(exc))
+        return await self.send_message(target, message)
+
+    async def send_message(self, target: str, message: LinkMessage) -> SendResult:
         peer = self.discovery.find(target)
         if peer and peer.online:
-            return await self._send_lan(peer, text)
+            message.to_id = peer.node_id
+            return await self._send_lan_message(peer, message)
 
-        # Cloud fallback: target may be mapped peer name → aidychat user id
+        text = message.display_text()
         mapped = self.cfg.cloud.peer_user_ids.get(target) or self.cfg.cloud.peer_user_ids.get(
             target.lower()
         )
         if mapped is None and peer and peer.aidychat_user_id:
             mapped = peer.aidychat_user_id
 
-        if mapped is not None and self.cloud.enabled:
+        if mapped is not None and self.cloud.enabled and message.kind == "text":
             return await self._send_cloud(int(mapped), target, text)
 
         if peer is None and self.cloud.enabled:
@@ -108,20 +139,12 @@ class MessageRouter:
         if peer is not None and not peer.online:
             return SendResult(
                 route="failed",
-                detail=f"{peer.display_name} está offline en LAN y cloud no está listo",
+                detail=f"{peer.display_name} está offline en LAN",
             )
 
         return SendResult(route="failed", detail=f"destinatario desconocido: {target}")
 
-    async def _send_lan(self, peer: Peer, text: str) -> SendResult:
-        message = LinkMessage.create(
-            from_id=self.cfg.node_id,
-            from_name=self.cfg.display_name,
-            to_id=peer.node_id,
-            text=text,
-            team_id=self.cfg.team_id,
-            via="lan",
-        )
+    async def _send_lan_message(self, peer: Peer, message: LinkMessage) -> SendResult:
         local_ip = self.discovery.lan_ip or detect_lan_ip()
         dest_host, dest_port = resolve_lan_endpoint(
             peer.host, peer.message_port, local_ip=local_ip
@@ -130,11 +153,14 @@ class MessageRouter:
             await self.lan.send(dest_host, dest_port, message)
         except Exception as exc:
             LOGGER.info("lan send failed (%s); trying cloud", exc)
-            if peer.aidychat_user_id and self.cloud.enabled:
-                return await self._send_cloud(peer.aidychat_user_id, peer.display_name, text)
-            mapped = self.cfg.cloud.peer_user_ids.get(peer.display_name)
-            if mapped and self.cloud.enabled:
-                return await self._send_cloud(int(mapped), peer.display_name, text)
+            if message.kind == "text":
+                if peer.aidychat_user_id and self.cloud.enabled:
+                    return await self._send_cloud(
+                        peer.aidychat_user_id, peer.display_name, message.text
+                    )
+                mapped = self.cfg.cloud.peer_user_ids.get(peer.display_name)
+                if mapped and self.cloud.enabled:
+                    return await self._send_cloud(int(mapped), peer.display_name, message.text)
             err = str(exc).strip() or exc.__class__.__name__
             return SendResult(
                 route="failed",

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
+import re
 import signal
 from pathlib import Path
 from typing import Any
@@ -39,18 +41,50 @@ class AidylinkDaemon:
         self.router = MessageRouter(cfg, self.discovery, self.lan, self.cloud)
         self._control_server: asyncio.AbstractServer | None = None
         self._inbox_path = data_dir() / "inbox.jsonl"
+        self._media_dir = data_dir() / "media"
+        self._media_dir.mkdir(parents=True, exist_ok=True)
 
     def _on_lan_message(self, message: LinkMessage) -> None:
+        self._materialize_media(message)
         self._persist(message)
-        notify(message.from_name or "AidyLink", message.text)
-        LOGGER.info("lan msg from %s: %s", message.from_name, message.text[:80])
+        preview = message.display_text() or message.filename or "Mensaje"
+        notify(message.from_name or "AidyChat", preview)
+        LOGGER.info("lan msg from %s: %s", message.from_name, preview[:80])
 
     def _on_cloud_batch(self, batch: list[LinkMessage]) -> None:
         for message in batch:
             self._persist(message)
-            notify(f"{message.from_name} (cloud)", message.text)
+            notify(f"{message.from_name} (cloud)", message.display_text() or "Mensaje")
+
+    def _safe_name(self, name: str) -> str:
+        cleaned = re.sub(r"[^\w.\-()+ ]+", "_", (name or "archivo").strip()) or "archivo"
+        return cleaned[:120]
+
+    def _materialize_media(self, message: LinkMessage) -> None:
+        """Decode transit media_b64 into a local file and drop the payload."""
+        if not message.media_b64:
+            if message.media_path and Path(message.media_path).is_file():
+                return
+            return
+        try:
+            raw = base64.b64decode(message.media_b64, validate=False)
+        except Exception as exc:
+            LOGGER.warning("bad media payload: %s", exc)
+            message.media_b64 = ""
+            return
+        filename = self._safe_name(message.filename or f"{message.msg_id}.bin")
+        target = self._media_dir / f"{message.msg_id[:8]}_{filename}"
+        try:
+            target.write_bytes(raw)
+            message.media_path = str(target)
+            message.media_b64 = ""
+            if not message.kind or message.kind == "text":
+                message.kind = "image" if (message.mime or "").startswith("image/") else "file"
+        except OSError as exc:
+            LOGGER.warning("media save failed: %s", exc)
 
     def _persist(self, message: LinkMessage) -> None:
+        self._materialize_media(message)
         try:
             with self._inbox_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(message.as_dict(), ensure_ascii=False) + "\n")
@@ -199,7 +233,10 @@ class AidylinkDaemon:
             text = str(req.get("text") or "")
             host = str(req.get("host") or "").strip()
             port = req.get("port")
-            if host:
+            file_path = str(req.get("file") or "").strip()
+            if file_path:
+                result = await self.router.send_file(target, Path(file_path), caption=text)
+            elif host:
                 result = await self.router.send_direct(
                     host=host,
                     port=int(port or self.cfg.message_port),
@@ -209,6 +246,12 @@ class AidylinkDaemon:
             else:
                 result = await self.router.send_text(target, text)
             if result.route != "failed" and result.message is not None:
+                # Keep a local copy of outgoing attachments for the chat UI.
+                if result.message.media_b64 and not result.message.media_path:
+                    self._materialize_media(result.message)
+                elif result.message.media_path and result.message.media_b64:
+                    # Persist without re-encoding the original path payload.
+                    result.message.media_b64 = ""
                 self._persist(result.message)
             return {
                 "ok": result.route != "failed",

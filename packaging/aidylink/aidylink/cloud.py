@@ -9,6 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from http.cookies import SimpleCookie
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 from typing import Any, Callable
@@ -46,6 +47,25 @@ class AidyChatBridge:
             path = "/aidychat" + path
         return base + path
 
+    def _auth_headers(self) -> dict[str, str]:
+        """Send Bearer and a properly quoted aidychat_auth cookie.
+
+        Some reverse proxies strip ``Authorization``. The signed token often
+        contains ``=``; putting it unquoted in Cookie makes parsers truncate
+        it and check-session returns authenticated=false.
+        """
+        token = (self.cfg.cloud.bearer_token or "").strip()
+        if not token:
+            return {}
+        cookie = SimpleCookie()
+        cookie["aidychat_auth"] = token
+        # name="value" only — drop Path/etc. from OutputString.
+        cookie_pair = cookie["aidychat_auth"].OutputString().split(";", 1)[0]
+        return {
+            "Authorization": f"Bearer {token}",
+            "Cookie": cookie_pair,
+        }
+
     def _request(
         self,
         method: str,
@@ -59,12 +79,9 @@ class AidyChatBridge:
             url += "?" + urllib.parse.urlencode(query)
         body = None
         headers = {
-            "Authorization": f"Bearer {self.cfg.cloud.bearer_token}",
-            # Several AidyChat endpoints use Flask's session directly. The
-            # signed cookie also rehydrates that session for desktop clients.
-            "Cookie": f"aidychat_auth={self.cfg.cloud.bearer_token}",
+            **self._auth_headers(),
             "Accept": "application/json",
-            "User-Agent": "AidyLink/0.1",
+            "User-Agent": "AidyLink/0.2",
         }
         if data is not None:
             body = json.dumps(data).encode("utf-8")
@@ -146,8 +163,7 @@ class AidyChatBridge:
             self._url("/api/upload"),
             data=payload,
             headers={
-                "Authorization": f"Bearer {self.cfg.cloud.bearer_token}",
-                "Cookie": f"aidychat_auth={self.cfg.cloud.bearer_token}",
+                **self._auth_headers(),
                 "Accept": "application/json",
                 "Content-Type": f"multipart/form-data; boundary={boundary}",
                 "User-Agent": "AidyLink/0.2",
@@ -178,8 +194,7 @@ class AidyChatBridge:
         req = urllib.request.Request(
             url,
             headers={
-                "Authorization": f"Bearer {self.cfg.cloud.bearer_token}",
-                "Cookie": f"aidychat_auth={self.cfg.cloud.bearer_token}",
+                **self._auth_headers(),
                 "User-Agent": "AidyLink/0.2",
             },
         )

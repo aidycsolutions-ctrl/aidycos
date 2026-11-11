@@ -51,16 +51,18 @@ class LanTransport:
         body["protocol"] = PROTOCOL
         envelope = {"body": body, "sig": sign_payload(self.cfg.team_secret, body)}
         line = (json.dumps(envelope, ensure_ascii=False) + "\n").encode("utf-8")
+        # Attachments can be multi‑MB; give the peer time to accept.
+        connect_timeout = 30.0 if message.media_b64 else 4.0
+        ack_timeout = 60.0 if message.media_b64 else 2.0
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(host, port),
-            timeout=4.0,
+            timeout=connect_timeout,
         )
         try:
             writer.write(line)
             await writer.drain()
-            # optional ack
             try:
-                ack = await asyncio.wait_for(reader.readline(), timeout=2.0)
+                ack = await asyncio.wait_for(reader.readline(), timeout=ack_timeout)
                 if ack and b'"ok"' not in ack:
                     LOGGER.debug("unexpected lan ack: %s", ack[:80])
             except asyncio.TimeoutError:
@@ -104,7 +106,8 @@ class LanTransport:
             addr = writer.get_extra_info("peername")
             if isinstance(addr, tuple) and addr:
                 peername = str(addr[0])
-            raw = await asyncio.wait_for(reader.readline(), timeout=5.0)
+            # Chat attachments may be large single-line JSON payloads.
+            raw = await asyncio.wait_for(reader.readline(), timeout=120.0)
             if not raw:
                 return
             try:

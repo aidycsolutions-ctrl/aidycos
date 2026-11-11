@@ -635,10 +635,34 @@ class AidyChatWindow(Gtk.Window):
         dialog.destroy()
         if response != Gtk.ResponseType.OK:
             return
-        self.sidebar_status.set_text("Abriendo el navegador para cambiar de cuenta…")
+        self.sidebar_status.set_text("Preparando inicio de sesión con Google…")
 
         def done(username: str | None, error: Exception | None) -> None:
             GLib.idle_add(finish, username, error)
+
+        def ready(url: str, opened: bool) -> None:
+            GLib.idle_add(show_ready, url, opened)
+
+        def show_ready(url: str, opened: bool) -> bool:
+            if opened:
+                self.sidebar_status.set_text(
+                    "Navegador abierto. Completa Google allí y vuelve a AidyChat."
+                )
+            else:
+                self.sidebar_status.set_text(
+                    "No se abrió el navegador. Copia el enlace del diálogo."
+                )
+                link = Gtk.MessageDialog(
+                    transient_for=self,
+                    flags=0,
+                    message_type=Gtk.MessageType.INFO,
+                    buttons=Gtk.ButtonsType.OK,
+                    text="Abre este enlace en el navegador",
+                )
+                link.format_secondary_text(url)
+                link.run()
+                link.destroy()
+            return GLib.SOURCE_REMOVE
 
         def finish(username: str | None, error: Exception | None) -> bool:
             if error:
@@ -661,7 +685,7 @@ class AidyChatWindow(Gtk.Window):
                 pass
             return GLib.SOURCE_REMOVE
 
-        start_google_login(self.cfg, done)
+        start_google_login(self.cfg, done, on_ready=ready)
 
     def open_new_chat(self) -> None:
         dialog = Gtk.Dialog(title="Nueva conversación", transient_for=self, flags=0)
