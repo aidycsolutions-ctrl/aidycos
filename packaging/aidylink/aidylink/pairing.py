@@ -71,6 +71,16 @@ class PairingService:
         paired = self._paired_at > 0 and (time.time() - self._paired_at) < 15
         return {"ok": True, "active": False, "paired": paired}
 
+    def verify_pin(self, pin: str) -> bool:
+        """True while a host session is active and the PIN matches (does not consume)."""
+        session = self._session
+        if not session or not session.active:
+            return False
+        candidate = str(pin or "").strip()
+        if not candidate:
+            return False
+        return secrets.compare_digest(candidate, session.pin)
+
     def handle_request(self, body: dict[str, Any]) -> dict[str, Any] | None:
         """Return a pair_grant reply if this node is hosting and the PIN matches."""
         session = self._session

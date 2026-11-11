@@ -17,6 +17,7 @@ from .config import LinkConfig, load_config, save_config
 from .discovery import DiscoveryService
 from .lan import LanTransport
 from .messages import LinkMessage
+from .mobile_gateway import MobileGateway
 from .notify import notify
 from .pairing import PairingService
 from .paths import control_socket_path, data_dir
@@ -39,10 +40,17 @@ class AidylinkDaemon:
         )
         self.cloud = AidyChatBridge(cfg)
         self.router = MessageRouter(cfg, self.discovery, self.lan, self.cloud)
+        self.mobile = MobileGateway(
+            cfg,
+            check_pin=self.pairing.verify_pin,
+            list_lan_peers=self._mobile_peer_list,
+            send_from_mobile=self._send_from_mobile,
+        )
         self._control_server: asyncio.AbstractServer | None = None
         self._inbox_path = data_dir() / "inbox.jsonl"
         self._media_dir = data_dir() / "media"
         self._media_dir.mkdir(parents=True, exist_ok=True)
+        self._mobile_fanout_task: asyncio.Task | None = None
 
     def _on_lan_message(self, message: LinkMessage) -> None:
         self._materialize_media(message)
@@ -50,11 +58,77 @@ class AidylinkDaemon:
         preview = message.display_text() or message.filename or "Mensaje"
         notify(message.from_name or "AidyChat", preview)
         LOGGER.info("lan msg from %s: %s", message.from_name, preview[:80])
+        self._schedule_mobile_fanout(message)
 
     def _on_cloud_batch(self, batch: list[LinkMessage]) -> None:
         for message in batch:
             self._persist(message)
             notify(f"{message.from_name} (cloud)", message.display_text() or "Mensaje")
+            self._schedule_mobile_fanout(message)
+
+    def _mobile_peer_list(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "node_id": p.node_id,
+                "display_name": p.display_name,
+                "host": p.host,
+            }
+            for p in self.discovery.list_online()
+        ]
+
+    def _schedule_mobile_fanout(self, message: LinkMessage) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self.mobile.broadcast_message(message))
+
+    async def _send_from_mobile(
+        self,
+        from_id: str,
+        from_name: str,
+        to_id: str,
+        text: str,
+    ) -> dict[str, Any]:
+        text = (text or "").strip()
+        if not text:
+            return {"ok": False, "error": "mensaje vacío"}
+        target = (to_id or "*").strip() or "*"
+        message = LinkMessage.create(
+            from_id=from_id,
+            from_name=f"{from_name} (móvil)",
+            to_id=self.cfg.node_id if target == "*" else target,
+            text=text,
+            team_id=self.cfg.team_id,
+            via="lan",
+        )
+        # Always keep a local copy so the PC chat shows the phone.
+        self._persist(message)
+        await self.mobile.broadcast_message(message)
+        notify(message.from_name, text)
+
+        if target == "*" or target == self.cfg.node_id:
+            return {"ok": True, "route": "host", "message": message.as_dict()}
+
+        # Another phone connected to this PC.
+        for mobile in self.mobile.list_sessions():
+            if mobile["node_id"] == target:
+                ok = await self.mobile.deliver_to(target, message)
+                return {
+                    "ok": ok,
+                    "route": "mobile" if ok else "failed",
+                    "message": message.as_dict(),
+                    "error": None if ok else "móvil desconectado",
+                }
+
+        result = await self.router.send_message(target, message)
+        return {
+            "ok": result.route != "failed",
+            "route": result.route,
+            "detail": result.detail,
+            "message": (result.message or message).as_dict(),
+            "error": None if result.route != "failed" else result.detail,
+        }
 
     def _safe_name(self, name: str) -> str:
         cleaned = re.sub(r"[^\w.\-()+ ]+", "_", (name or "archivo").strip()) or "archivo"
@@ -101,6 +175,10 @@ class AidylinkDaemon:
 
         await self.discovery.start()
         await self.lan.start()
+        try:
+            await self.mobile.start()
+        except OSError as exc:
+            LOGGER.warning("mobile gateway no arrancó (%s); el chat de PC sigue OK", exc)
         self._control_server = await asyncio.start_unix_server(
             self._handle_control,
             path=str(sock),
@@ -134,6 +212,7 @@ class AidylinkDaemon:
             self._control_server.close()
             await self._control_server.wait_closed()
             self._control_server = None
+        await self.mobile.stop()
         await self.lan.stop()
         await self.discovery.stop()
         sock = control_socket_path()
@@ -193,9 +272,11 @@ class AidylinkDaemon:
                     "host": p.host,
                     "message_port": p.message_port,
                     "aidychat_user_id": p.aidychat_user_id,
+                    "kind": "lan",
                 }
                 for p in self.discovery.list_online()
             ]
+            peers.extend(self.mobile.list_sessions())
             mismatches = [
                 {
                     "host": h.host,
@@ -206,12 +287,25 @@ class AidylinkDaemon:
             ]
             return {"ok": True, "peers": peers, "mismatches": mismatches}
         if cmd == "pair_host":
-            return self.pairing.start_host()
+            info = self.pairing.start_host()
+            pin = str(info.get("pin") or "")
+            urls = self.mobile.pair_urls(pin)
+            info["mobile_urls"] = urls
+            info["mobile_url"] = urls[0] if urls else ""
+            info["mobile_port"] = self.mobile.port
+            info["lan_ip"] = self.mobile.lan_ip
+            return info
         if cmd == "pair_stop":
             self.pairing.stop()
             return {"ok": True}
         if cmd == "pair_status":
-            return self.pairing.status()
+            status = self.pairing.status()
+            if status.get("active") and status.get("pin"):
+                urls = self.mobile.pair_urls(str(status["pin"]))
+                status["mobile_urls"] = urls
+                status["mobile_url"] = urls[0] if urls else ""
+            status["mobiles"] = len(self.mobile.list_sessions())
+            return status
         if cmd == "pair_join":
             pin = str(req.get("pin") or "").strip()
             hosts = [h.host for h in self.discovery.list_mismatches()]
@@ -234,6 +328,27 @@ class AidylinkDaemon:
             host = str(req.get("host") or "").strip()
             port = req.get("port")
             file_path = str(req.get("file") or "").strip()
+
+            # PC → phone connected to this host.
+            if target.startswith("mobile:") and not file_path and not host:
+                message = LinkMessage.create(
+                    from_id=self.cfg.node_id,
+                    from_name=self.cfg.display_name,
+                    to_id=target,
+                    text=text,
+                    team_id=self.cfg.team_id,
+                    via="lan",
+                )
+                ok = await self.mobile.deliver_to(target, message)
+                if ok:
+                    self._persist(message)
+                return {
+                    "ok": ok,
+                    "route": "mobile" if ok else "failed",
+                    "detail": target if ok else "móvil desconectado",
+                    "message": message.as_dict() if ok else None,
+                }
+
             if file_path:
                 result = await self.router.send_file(target, Path(file_path), caption=text)
             elif host:
@@ -253,6 +368,7 @@ class AidylinkDaemon:
                     # Persist without re-encoding the original path payload.
                     result.message.media_b64 = ""
                 self._persist(result.message)
+                self._schedule_mobile_fanout(result.message)
             return {
                 "ok": result.route != "failed",
                 "route": result.route,

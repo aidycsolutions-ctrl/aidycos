@@ -25,22 +25,141 @@ from .paths import control_socket_path
 
 
 CHAT_CSS = b"""
-window.aidychat-lan { background: #efeae2; }
-.lan-status { color: #667781; }
-.lan-message-area { background: #efeae2; }
+window.aidychat-lan {
+  background: #e5ddd5;
+}
+.wa-header {
+  background: #075e54;
+  padding: 10px 14px;
+}
+.wa-header label, .wa-header-title, .wa-header-sub {
+  color: #ffffff;
+}
+.wa-header-title {
+  font-weight: bold;
+  font-size: 15px;
+}
+.wa-header-sub {
+  font-size: 11px;
+  opacity: 0.9;
+}
+.wa-header button {
+  background: transparent;
+  border: none;
+  color: #ffffff;
+  box-shadow: none;
+  outline: none;
+  padding: 4px;
+}
+.wa-header button:hover {
+  background: rgba(255,255,255,0.12);
+  border-radius: 18px;
+}
+.wa-peers {
+  background: #f0f2f5;
+  padding: 8px 10px;
+  border-bottom: 1px solid #d1d7db;
+}
+.wa-peer {
+  background: #ffffff;
+  border-radius: 18px;
+  padding: 6px 12px;
+  border: 1px solid #e9edef;
+  box-shadow: none;
+}
+.wa-peer:hover {
+  background: #f5f6f6;
+}
+.wa-peer-selected {
+  background: #d9fdd3;
+  border-color: #25d366;
+}
+.wa-chat-head {
+  background: #f0f2f5;
+  padding: 8px 14px;
+  border-bottom: 1px solid #d1d7db;
+}
+.wa-chat-head-title {
+  font-weight: bold;
+  color: #111b21;
+}
+.wa-chat-head-sub {
+  color: #667781;
+  font-size: 11px;
+}
+.lan-message-area, viewport.lan-message-area, scrolledwindow.lan-message-area {
+  background: #e5ddd5;
+  border: none;
+  box-shadow: none;
+}
+.lan-bubble-in, .lan-bubble-out {
+  border-radius: 8px;
+  padding: 6px 8px 4px 8px;
+  box-shadow: 0 1px 0.5px rgba(0,0,0,0.13);
+}
 .lan-bubble-in {
   background: #ffffff;
-  border-radius: 10px;
-  padding: 8px 11px;
+  border-top-left-radius: 0;
 }
 .lan-bubble-out {
   background: #d9fdd3;
-  border-radius: 10px;
-  padding: 8px 11px;
+  border-top-right-radius: 0;
 }
-.lan-meta { color: #667781; font-size: 10px; }
-.lan-composer { background: #f0f2f5; padding: 8px; }
-.lan-notice { color: #667781; font-style: italic; padding: 4px 12px; }
+.lan-sender {
+  color: #53bdeb;
+  font-size: 12px;
+  font-weight: bold;
+}
+.lan-body {
+  color: #111b21;
+  font-size: 14px;
+}
+.lan-meta {
+  color: #667781;
+  font-size: 10px;
+  padding-left: 8px;
+}
+.lan-composer {
+  background: #f0f2f5;
+  padding: 8px 10px;
+}
+.lan-composer entry {
+  background: #ffffff;
+  border-radius: 24px;
+  border: none;
+  padding: 8px 14px;
+  color: #111b21;
+  box-shadow: none;
+}
+.lan-composer button {
+  border-radius: 20px;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  padding: 6px;
+}
+.lan-send {
+  background: #25d366;
+  color: #ffffff;
+  border-radius: 22px;
+  min-width: 42px;
+  min-height: 42px;
+  padding: 0;
+}
+.lan-send:hover {
+  background: #1da851;
+}
+.lan-notice {
+  color: #54656f;
+  background: #fff5c4;
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.lan-empty {
+  color: #667781;
+  font-size: 13px;
+}
 """
 
 
@@ -172,9 +291,9 @@ def _first_run_setup() -> bool:
 
 class AidylinkWindow(Gtk.Window):
     def __init__(self, *, standalone: bool = True) -> None:
-        super().__init__(title="AidyChat · Red local")
-        self.set_default_size(820, 720)
-        self.set_border_width(10)
+        super().__init__(title="AidyChat")
+        self.set_default_size(920, 700)
+        self.set_border_width(0)
         self.get_style_context().add_class("aidychat-lan")
         _install_chat_style()
 
@@ -186,62 +305,96 @@ class AidylinkWindow(Gtk.Window):
         self._mismatches: list[dict[str, Any]] = []
         self._messages: list[dict[str, Any]] = []
 
-        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self.add(root)
 
-        self.status = Gtk.Label(label="Listo para conectar", xalign=0)
+        # WhatsApp-style green header
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        header.get_style_context().add_class("wa-header")
+        root.pack_start(header, False, False, 0)
+        titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        titles.set_hexpand(True)
+        brand = Gtk.Label(label="AidyChat", xalign=0)
+        brand.get_style_context().add_class("wa-header-title")
+        titles.pack_start(brand, False, False, 0)
+        self.status = Gtk.Label(label="Conectando…", xalign=0)
         self.status.set_line_wrap(True)
-        self.status.get_style_context().add_class("lan-status")
-        root.pack_start(self.status, False, False, 0)
+        self.status.get_style_context().add_class("wa-header-sub")
+        titles.pack_start(self.status, False, False, 0)
+        header.pack_start(titles, True, True, 0)
 
-        title_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        root.pack_start(title_row, False, False, 0)
-        title_row.pack_start(Gtk.Label(label="Computadores disponibles", xalign=0), True, True, 0)
-        self.refresh_btn = Gtk.Button(label="Actualizar")
+        self.refresh_btn = Gtk.Button.new_from_icon_name("view-refresh-symbolic", Gtk.IconSize.BUTTON)
+        self.refresh_btn.set_tooltip_text("Actualizar equipos")
         self.refresh_btn.connect("clicked", lambda *_: self.refresh_peers())
-        title_row.pack_start(self.refresh_btn, False, False, 0)
-        self.pair_btn = Gtk.Button(label="Emparejar")
+        header.pack_start(self.refresh_btn, False, False, 0)
+        self.pair_btn = Gtk.Button.new_from_icon_name("network-workgroup-symbolic", Gtk.IconSize.BUTTON)
+        self.pair_btn.set_tooltip_text("Emparejar")
         self.pair_btn.connect("clicked", lambda *_: self.open_pair_dialog())
-        title_row.pack_start(self.pair_btn, False, False, 0)
-        self.group_btn = Gtk.Button(label="Grupo local")
+        header.pack_start(self.pair_btn, False, False, 0)
+        self.group_btn = Gtk.Button.new_from_icon_name("preferences-system-symbolic", Gtk.IconSize.BUTTON)
+        self.group_btn.set_tooltip_text("Grupo local")
         self.group_btn.connect("clicked", lambda *_: self.open_group_dialog())
-        title_row.pack_start(self.group_btn, False, False, 0)
+        header.pack_start(self.group_btn, False, False, 0)
         cfg = load_config()
-        self.google_btn = Gtk.Button(label="Cuenta conectada" if cfg and cfg.cloud.enabled else "Iniciar sesión con Google")
+        self.google_btn = Gtk.Button.new_from_icon_name(
+            "avatar-default-symbolic" if cfg and cfg.cloud.enabled else "web-browser-symbolic",
+            Gtk.IconSize.BUTTON,
+        )
+        self.google_btn.set_tooltip_text(
+            "Cuenta conectada" if cfg and cfg.cloud.enabled else "Iniciar sesión con Google"
+        )
         self.google_btn.connect("clicked", lambda *_: self.open_cloud_dialog())
         self.google_btn.set_sensitive(not bool(cfg and cfg.cloud.enabled))
-        title_row.pack_start(self.google_btn, False, False, 0)
+        header.pack_start(self.google_btn, False, False, 0)
 
+        # Compact peer chips (like chats strip)
+        peers_wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        peers_wrap.get_style_context().add_class("wa-peers")
+        root.pack_start(peers_wrap, False, False, 0)
         self.peer_cards = Gtk.FlowBox()
         self.peer_cards.set_selection_mode(Gtk.SelectionMode.NONE)
-        self.peer_cards.set_max_children_per_line(3)
-        self.peer_cards.set_row_spacing(8)
-        self.peer_cards.set_column_spacing(8)
-        self.peer_cards.set_homogeneous(True)
-        self.peer_cards_scroll = Gtk.ScrolledWindow()
-        self.peer_cards_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        self.peer_cards_scroll.set_min_content_height(100)
-        self.peer_cards_scroll.add(self.peer_cards)
-        root.pack_start(self.peer_cards_scroll, False, True, 0)
-        self.peer_empty = Gtk.Label(label="Buscando computadores de AidyChat en esta red…", xalign=0)
-        self.peer_empty.get_style_context().add_class("dim-label")
-        root.pack_start(self.peer_empty, False, False, 0)
+        self.peer_cards.set_max_children_per_line(8)
+        self.peer_cards.set_row_spacing(6)
+        self.peer_cards.set_column_spacing(6)
+        self.peer_cards.set_homogeneous(False)
+        self.peer_cards.set_valign(Gtk.Align.START)
+        peers_wrap.pack_start(self.peer_cards, False, False, 0)
+        self.peer_empty = Gtk.Label(
+            label="Buscando equipos en la red… Usa Emparejar si no aparecen.",
+            xalign=0,
+        )
+        self.peer_empty.get_style_context().add_class("lan-empty")
+        peers_wrap.pack_start(self.peer_empty, False, False, 0)
+        # Keep a scroll handle unused (compat with older refresh helpers).
+        self.peer_cards_scroll = peers_wrap
 
-        self.chat_peer_label = Gtk.Label(label="Selecciona un computador para chatear", xalign=0)
-        self.chat_peer_label.get_style_context().add_class("lan-status")
-        root.pack_start(self.chat_peer_label, False, False, 0)
+        chat_head = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        chat_head.get_style_context().add_class("wa-chat-head")
+        root.pack_start(chat_head, False, False, 0)
+        self.chat_peer_label = Gtk.Label(label="Selecciona un computador", xalign=0)
+        self.chat_peer_label.get_style_context().add_class("wa-chat-head-title")
+        chat_head.pack_start(self.chat_peer_label, False, False, 0)
+        self.chat_peer_sub = Gtk.Label(label="Los mensajes de esa conversación aparecen abajo", xalign=0)
+        self.chat_peer_sub.get_style_context().add_class("wa-chat-head-sub")
+        chat_head.pack_start(self.chat_peer_sub, False, False, 0)
 
         self.message_scroll = Gtk.ScrolledWindow()
         self.message_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         self.message_scroll.set_vexpand(True)
+        self.message_scroll.set_shadow_type(Gtk.ShadowType.NONE)
         self.message_scroll.get_style_context().add_class("lan-message-area")
-        self.message_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        self.message_box.set_border_width(12)
+        self.message_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.message_box.set_border_width(10)
+        self.message_box.set_valign(Gtk.Align.END)
         self.message_box.get_style_context().add_class("lan-message-area")
-        self.message_scroll.add_with_viewport(self.message_box)
+        viewport = Gtk.Viewport()
+        viewport.set_shadow_type(Gtk.ShadowType.NONE)
+        viewport.get_style_context().add_class("lan-message-area")
+        viewport.add(self.message_box)
+        self.message_scroll.add(viewport)
         root.pack_start(self.message_scroll, True, True, 0)
 
-        send_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        send_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         send_row.get_style_context().add_class("lan-composer")
         root.pack_start(send_row, False, False, 0)
         attach_btn = Gtk.Button.new_from_icon_name("mail-attachment-symbolic", Gtk.IconSize.BUTTON)
@@ -249,11 +402,13 @@ class AidylinkWindow(Gtk.Window):
         attach_btn.connect("clicked", lambda *_: self.choose_attachment())
         send_row.pack_start(attach_btn, False, False, 0)
         self.msg_entry = Gtk.Entry()
-        self.msg_entry.set_placeholder_text("Escribe un mensaje… (Ctrl+V pega imagen)")
+        self.msg_entry.set_placeholder_text("Escribe un mensaje")
         self.msg_entry.connect("activate", lambda *_: self.send_message())
         self.msg_entry.connect("key-press-event", self._on_entry_key)
         send_row.pack_start(self.msg_entry, True, True, 0)
-        send_btn = Gtk.Button(label="Enviar")
+        send_btn = Gtk.Button.new_from_icon_name("document-send-symbolic", Gtk.IconSize.BUTTON)
+        send_btn.set_tooltip_text("Enviar")
+        send_btn.get_style_context().add_class("lan-send")
         send_btn.connect("clicked", lambda *_: self.send_message())
         send_row.pack_start(send_btn, False, False, 0)
 
@@ -278,14 +433,13 @@ class AidylinkWindow(Gtk.Window):
 
     def _set_status(self, text: str, ok: bool = True) -> None:
         self._status_ok = ok
-        prefix = "● " if ok else "○ "
-        self.status.set_markup(f"{prefix}{GLib.markup_escape_text(text)}")
+        self.status.set_text(text)
 
     def refresh_status(self) -> None:
         try:
             resp = control_request({"cmd": "status"}, timeout=1.5)
         except Exception:
-            self._set_status("No se pudo conectar con AidyLink", ok=False)
+            self._set_status("Sin conexión con el servicio local", ok=False)
             return
         if not resp.get("ok"):
             self._set_status(resp.get("error") or "daemon error", ok=False)
@@ -294,13 +448,11 @@ class AidylinkWindow(Gtk.Window):
         peers = int(resp.get("peers") or 0)
         mismatches = int(resp.get("mismatches") or 0)
         if peers:
-            self._set_status(f"Conectado · {peers} equipo(s) · grupo {team}")
+            self._set_status(f"en línea · {peers} equipo(s) · {team}")
         elif mismatches:
-            self._set_status(
-                f"Conectado · hay AidyLink cerca pero el grupo/código no coincide · grupo {team}"
-            )
+            self._set_status(f"en línea · hay equipos sin emparejar · {team}")
         else:
-            self._set_status(f"Conectado · buscando equipos cercanos · grupo {team}")
+            self._set_status(f"en línea · buscando equipos · {team}")
 
     def refresh_peers(self, silent: bool = False) -> None:
         selected_id = str((self._selected_peer_data or {}).get("node_id") or "")
@@ -309,7 +461,7 @@ class AidylinkWindow(Gtk.Window):
         except Exception:
             if not silent:
                 self._set_peer_cards([])
-                self.peer_empty.set_text("No se pudo encontrar AidyLink en esta red.")
+                self.peer_empty.set_text("No se pudo buscar equipos en la red.")
             return
         peers = resp.get("peers") or []
         mismatches = resp.get("mismatches") or []
@@ -318,6 +470,7 @@ class AidylinkWindow(Gtk.Window):
         self._set_peer_cards(self._peers, selected_id=selected_id)
 
     def _set_peer_cards(self, peers: list[dict[str, Any]], *, selected_id: str = "") -> None:
+        previous = self._selected_peer_data
         for child in self.peer_cards.get_children():
             self.peer_cards.remove(child)
         self._selected_peer_data = None
@@ -325,51 +478,43 @@ class AidylinkWindow(Gtk.Window):
         if peers:
             empty_text = ""
         elif self._mismatches:
-            labels = []
-            for item in self._mismatches[:3]:
-                name = str(item.get("display_name") or "").strip()
-                host = str(item.get("host") or "?")
-                labels.append(f"{name} ({host})" if name else host)
-            empty_text = (
-                f"Hay AidyChat cerca ({', '.join(labels)}) pero aún no están emparejados. "
-                "Pulsa Emparejar: un PC muestra el código y el otro lo escribe."
-            )
+            empty_text = "Hay equipos cerca sin emparejar. Pulsa Emparejar."
         else:
-            empty_text = (
-                "Aún no hay computadores disponibles. Ambos deben estar en la misma Wi‑Fi/LAN "
-                "con AidyChat abierto. IPs distintas son normales; usa Emparejar con el código."
-            )
+            empty_text = "Buscando equipos… Empareja con el código si no aparecen."
         self.peer_empty.set_text(empty_text)
         for peer in peers:
-            card = Gtk.Button()
+            card = Gtk.Button(label=str(peer.get("display_name") or "PC"))
             card.set_relief(Gtk.ReliefStyle.NONE)
+            card.get_style_context().add_class("wa-peer")
             card.peer_data = peer
-            content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-            content.set_border_width(12)
-            avatar = Gtk.Label(label="💻")
-            avatar.set_halign(Gtk.Align.START)
-            name = Gtk.Label(label=str(peer.get("display_name") or "Computador"), xalign=0)
-            name.set_ellipsize(Pango.EllipsizeMode.END)
-            hint = Gtk.Label(label="En esta red · Seleccionar", xalign=0)
-            hint.get_style_context().add_class("dim-label")
-            content.pack_start(avatar, False, False, 0)
-            content.pack_start(name, False, False, 0)
-            content.pack_start(hint, False, False, 0)
-            card.add(content)
             card.connect("clicked", self._select_peer_card)
             self.peer_cards.add(card)
             if selected_id and str(peer.get("node_id") or "") == selected_id:
                 self._selected_peer_data = peer
-                hint.set_text("Seleccionado · listo para escribir")
+                card.get_style_context().add_class("wa-peer-selected")
+        if self._selected_peer_data is None and previous is not None:
+            # Keep selection object if peer briefly disappeared from discovery.
+            self._selected_peer_data = previous
         self.peer_cards.show_all()
 
     def _select_peer_card(self, card: Gtk.Button) -> None:
         self._selected_peer_data = getattr(card, "peer_data", None)
+        for child in self.peer_cards.get_children():
+            btn = child.get_child() if hasattr(child, "get_child") else None
+            # FlowBoxChild wraps the button.
+            target = btn if isinstance(btn, Gtk.Button) else child
+            if isinstance(target, Gtk.FlowBoxChild):
+                target = target.get_child()
+            if isinstance(target, Gtk.Button):
+                ctx = target.get_style_context()
+                ctx.remove_class("wa-peer-selected")
+                if target is card:
+                    ctx.add_class("wa-peer-selected")
         if self._selected_peer_data:
             name = str(self._selected_peer_data.get("display_name") or "Computador")
-            self.peer_empty.set_text(f"Chat con {name}.")
-            self.peer_empty.show()
-            self.chat_peer_label.set_text(f"Conversación con {name}")
+            self.peer_empty.set_visible(False)
+            self.chat_peer_label.set_text(name)
+            self.chat_peer_sub.set_text("en línea en la red local")
             self.refresh_inbox(initial=True)
 
     def refresh_inbox(self, initial: bool = False) -> None:
@@ -439,12 +584,20 @@ class AidylinkWindow(Gtk.Window):
         mine = from_id == my_id
         self._messages.append(msg)
 
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        # Outer row: left/right alignment like WhatsApp
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         row.set_halign(Gtk.Align.END if mine else Gtk.Align.START)
+        row.set_margin_top(1)
+        row.set_margin_bottom(1)
+        row.set_margin_start(8 if mine else 4)
+        row.set_margin_end(4 if mine else 8)
+
         bubble = Gtk.EventBox()
-        bubble_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        bubble_box.set_margin_start(8)
-        bubble_box.set_margin_end(8)
+        bubble.set_halign(Gtk.Align.END if mine else Gtk.Align.START)
+        bubble.set_hexpand(False)
+        bubble_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        bubble_box.set_halign(Gtk.Align.FILL)
+        bubble_box.set_hexpand(False)
         bubble_box.get_style_context().add_class("lan-bubble-out" if mine else "lan-bubble-in")
         bubble.add(bubble_box)
         bubble.msg_data = msg
@@ -454,7 +607,7 @@ class AidylinkWindow(Gtk.Window):
                 label=str(msg.get("from_name") or "Contacto"),
                 xalign=0,
             )
-            name.get_style_context().add_class("lan-meta")
+            name.get_style_context().add_class("lan-sender")
             bubble_box.pack_start(name, False, False, 0)
 
         kind = str(msg.get("kind") or "text")
@@ -474,8 +627,9 @@ class AidylinkWindow(Gtk.Window):
             try:
                 from gi.repository import GdkPixbuf
 
-                pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(media_path, 280, 280, True)
+                pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(media_path, 240, 240, True)
                 image = Gtk.Image.new_from_pixbuf(pb)
+                image.set_halign(Gtk.Align.START)
                 bubble_box.pack_start(image, False, False, 0)
             except Exception:
                 btn = Gtk.Button(label=f"🖼 {filename or 'Imagen'}")
@@ -489,21 +643,27 @@ class AidylinkWindow(Gtk.Window):
                 btn.connect("clicked", lambda *_a, p=media_path: self._open_path(p))
             bubble_box.pack_start(btn, False, False, 0)
 
-        if text:
-            body = Gtk.Label(label=text, xalign=0)
-            body.set_line_wrap(True)
-            body.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
-            body.set_max_width_chars(42)
-            body.set_selectable(True)
-            bubble_box.pack_start(body, False, False, 0)
-
         try:
             stamp = datetime.fromtimestamp(float(msg.get("ts") or 0)).strftime("%H:%M")
         except (TypeError, ValueError, OSError):
             stamp = "--:--"
-        meta = Gtk.Label(label=stamp, xalign=1.0 if mine else 0.0)
+
+        # WhatsApp-like: text + timestamp on the same visual block
+        content_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        content_row.set_halign(Gtk.Align.START)
+        if text:
+            body = Gtk.Label(label=text, xalign=0)
+            body.set_line_wrap(True)
+            body.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
+            body.set_max_width_chars(36)
+            body.set_selectable(True)
+            body.get_style_context().add_class("lan-body")
+            content_row.pack_start(body, False, False, 0)
+        meta = Gtk.Label(label=stamp, xalign=1.0)
+        meta.set_valign(Gtk.Align.END)
         meta.get_style_context().add_class("lan-meta")
-        bubble_box.pack_start(meta, False, False, 0)
+        content_row.pack_end(meta, False, False, 0)
+        bubble_box.pack_start(content_row, False, False, 0)
 
         bubble.connect("button-press-event", self._on_bubble_press)
         row.pack_start(bubble, False, False, 0)
@@ -776,8 +936,8 @@ class AidylinkWindow(Gtk.Window):
         box.pack_start(
             Gtk.Label(
                 label=(
-                    "No necesitas copiar IPs. En un PC pulsa «Mostrar código» y en el otro "
-                    "«Ingresar código» con esos 6 dígitos. Así ambos quedan en el mismo grupo."
+                    "«Mostrar código» enseña un PIN (otro PC) y un QR (móvil en la misma Wi‑Fi). "
+                    "«Ingresar código» es solo para unir otro computador al grupo."
                 ),
                 xalign=0,
                 wrap=True,
@@ -794,6 +954,32 @@ class AidylinkWindow(Gtk.Window):
         elif response == Gtk.ResponseType.REJECT:
             self._pair_enter_code()
 
+    def _qr_image(self, url: str, size: int = 220) -> Gtk.Widget | None:
+        try:
+            import io
+
+            import qrcode
+            from gi.repository import GdkPixbuf
+        except Exception:
+            return None
+        try:
+            qr = qrcode.QRCode(border=2, box_size=6)
+            qr.add_data(url)
+            qr.make(fit=True)
+            img = qr.make_image(fill_color="black", back_color="white")
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            loader = GdkPixbuf.PixbufLoader.new_with_type("png")
+            loader.write(buf.getvalue())
+            loader.close()
+            pixbuf = loader.get_pixbuf()
+            if pixbuf is None:
+                return None
+            scaled = pixbuf.scale_simple(size, size, GdkPixbuf.InterpType.NEAREST)
+            return Gtk.Image.new_from_pixbuf(scaled)
+        except Exception:
+            return None
+
     def _pair_show_code(self) -> None:
         try:
             resp = control_request({"cmd": "pair_host"}, timeout=3.0)
@@ -804,16 +990,18 @@ class AidylinkWindow(Gtk.Window):
             self._append_line(f"⚠ {resp.get('error') or 'No se pudo crear el código'}")
             return
         pin = str(resp.get("pin") or "")
+        mobile_url = str(resp.get("mobile_url") or "")
         paired = {"done": False}
         dialog = Gtk.Dialog(title="Código de emparejado", transient_for=self, flags=0)
-        dialog.add_buttons("Cancelar", Gtk.ResponseType.CANCEL)
-        dialog.set_default_size(420, 220)
+        dialog.add_buttons("Listo", Gtk.ResponseType.OK)
+        dialog.set_default_size(440, 520)
         box = dialog.get_content_area()
         box.set_spacing(10)
         box.set_border_width(16)
+
         box.pack_start(
             Gtk.Label(
-                label="En el otro computador abre Emparejar → Ingresar código y escribe:",
+                label="Móvil: escanea el QR (misma Wi‑Fi). PC: Emparejar → Ingresar código.",
                 xalign=0,
                 wrap=True,
             ),
@@ -822,11 +1010,23 @@ class AidylinkWindow(Gtk.Window):
             0,
         )
         pin_label = Gtk.Label()
-        pin_label.set_markup(f"<span size='xx-large' weight='bold'>{GLib.markup_escape_text(pin)}</span>")
+        pin_label.set_markup(
+            f"<span size='xx-large' weight='bold'>{GLib.markup_escape_text(pin)}</span>"
+        )
         pin_label.set_selectable(True)
-        box.pack_start(pin_label, False, False, 8)
+        box.pack_start(pin_label, False, False, 4)
+
+        if mobile_url:
+            qr = self._qr_image(mobile_url)
+            if qr is not None:
+                box.pack_start(qr, False, False, 4)
+            url_label = Gtk.Label(label=mobile_url, xalign=0.5, selectable=True)
+            url_label.set_line_wrap(True)
+            url_label.get_style_context().add_class("wa-chat-head-sub")
+            box.pack_start(url_label, False, False, 0)
+
         hint = Gtk.Label(
-            label="Esperando al otro PC… el código caduca en unos 3 minutos.",
+            label="Esperando… el código caduca en unos 3 minutos.",
             xalign=0,
             wrap=True,
         )
@@ -840,14 +1040,22 @@ class AidylinkWindow(Gtk.Window):
                 status = control_request({"cmd": "pair_status"}, timeout=1.5)
             except Exception:
                 return True
+            mobiles = int(status.get("mobiles") or 0)
             if status.get("active"):
                 left = int(status.get("expires_in") or 0)
-                hint.set_text(f"Esperando al otro PC… quedan ~{left}s.")
+                extra = f" · {mobiles} móvil(es) conectado(s)" if mobiles else ""
+                hint.set_text(f"Esperando… quedan ~{left}s{extra}.")
+                if mobiles:
+                    paired["done"] = True
                 return True
             if status.get("paired"):
                 paired["done"] = True
                 hint.set_text("¡Emparejado! Ya pueden chatear en la red local.")
                 GLib.timeout_add(600, dialog.response, Gtk.ResponseType.OK)
+                return False
+            if mobiles:
+                paired["done"] = True
+                hint.set_text("Móvil conectado. Puedes cerrar este diálogo.")
                 return False
             hint.set_text("El código expiró. Cierra e inténtalo de nuevo.")
             return False
@@ -855,13 +1063,12 @@ class AidylinkWindow(Gtk.Window):
         GLib.timeout_add_seconds(1, poll_pair)
         dialog.run()
         dialog.destroy()
-        if not paired["done"]:
-            try:
-                control_request({"cmd": "pair_stop"}, timeout=2.0)
-            except Exception:
-                pass
-        else:
-            self._append_line("✓ Otro computador se emparejó con este PC.")
+        try:
+            control_request({"cmd": "pair_stop"}, timeout=2.0)
+        except Exception:
+            pass
+        if paired["done"]:
+            self._append_line("✓ Emparejado (PC o móvil en la red local).")
         self.refresh_status()
         self.refresh_peers()
 
