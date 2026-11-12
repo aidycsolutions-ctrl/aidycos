@@ -117,6 +117,47 @@ class MinimizeFocusTests(unittest.TestCase):
             )
         )
 
+    def test_alt_tab_candidates_stay_on_active_desktop(self) -> None:
+        here = _window("0xaaa", workspace="1", workspace_id=1)
+        other = _window("0xbbb", workspace="2", workspace_id=2)
+        with mock.patch.object(
+            ventanas,
+            "query",
+            side_effect=lambda name: (
+                {"id": 1, "name": "1"}
+                if name == "activeworkspace"
+                else [here, other]
+            ),
+        ):
+            candidates = ventanas._alt_tab_candidates()
+        self.assertEqual([window["address"] for window in candidates], ["0xaaa"])
+
+    def test_cmd_alt_tab_does_not_switch_workspace(self) -> None:
+        first = _window("0xaaa", workspace="1", workspace_id=1)
+        second = _window("0xbbb", workspace="1", workspace_id=1)
+        calls: list[tuple] = []
+
+        def fake_query(name: str):
+            if name == "activewindow":
+                return {"address": "0xaaa"}
+            if name == "activeworkspace":
+                return {"id": 1, "name": "1"}
+            if name == "clients":
+                return [first, second]
+            return {}
+
+        with (
+            mock.patch.object(ventanas, "query", side_effect=fake_query),
+            mock.patch.object(ventanas, "dispatch", side_effect=lambda *args: calls.append(args)),
+        ):
+            ventanas.cmd_alt_tab()
+
+        self.assertEqual(len(calls), 1)
+        joined = " ".join(str(part) for part in calls[0])
+        self.assertIn("focuswindow address:0xbbb", joined)
+        self.assertIn("alterzorder top,address:0xbbb", joined)
+        self.assertNotIn("workspace", joined)
+
 
 if __name__ == "__main__":
     unittest.main()

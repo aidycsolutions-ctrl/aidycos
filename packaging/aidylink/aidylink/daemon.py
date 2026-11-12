@@ -355,6 +355,13 @@ class AidylinkDaemon:
                 "peers": len(self.discovery.list_online()),
                 "mismatches": len(mismatches),
             }
+        if cmd == "rescan":
+            try:
+                self.discovery._send_beacon()
+            except OSError:
+                pass
+            self.discovery.request_rescan()
+            return {"ok": True, "rescanning": True}
         if cmd == "peers":
             peers = [
                 {
@@ -460,7 +467,31 @@ class AidylinkDaemon:
                     "message": message.as_dict() if ok else None,
                 }
 
-            if file_path:
+            if file_path and host:
+                # Prefer explicit LAN host from the UI selection (more reliable).
+                message = None
+                try:
+                    from .messages import LinkMessage as _LM
+
+                    message = _LM.from_file(
+                        Path(file_path),
+                        from_id=self.cfg.node_id,
+                        from_name=self.cfg.display_name,
+                        to_id=target or "*",
+                        team_id=self.cfg.team_id,
+                        caption=text,
+                        via="lan",
+                    )
+                except (OSError, ValueError) as exc:
+                    return {"ok": False, "route": "failed", "detail": str(exc), "message": None}
+                result = await self.router.send_direct(
+                    host=host,
+                    port=int(port or self.cfg.message_port),
+                    text=text or message.display_text(),
+                    to_id=target or "*",
+                    message=message,
+                )
+            elif file_path:
                 result = await self.router.send_file(target, Path(file_path), caption=text)
             elif host:
                 result = await self.router.send_direct(

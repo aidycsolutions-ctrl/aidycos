@@ -133,8 +133,9 @@ class PrintersOverlayTests(unittest.TestCase):
             page_text = (
                 root / "shell/widgets/configuraciones/printers_page.py"
             ).read_text(encoding="utf-8")
-            self.assertIn("Publicar catálogo", page_text)
+            self.assertIn("Compartir con otros PCs", page_text)
             self.assertIn("Aplicar catálogo", page_text)
+            self.assertIn("ensure_shared_printers", page_text)
 
     def test_service_parses_spanish_lpstat(self) -> None:
         service = _load_service()

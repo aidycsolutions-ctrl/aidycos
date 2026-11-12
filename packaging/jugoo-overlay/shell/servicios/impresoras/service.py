@@ -460,21 +460,58 @@ def export_share_catalog(
 
 
 def publish_share_catalog(*, include_local_via_cups: bool = False) -> tuple[Path, ...]:
-    """One-click publish: write the default catalog and a Documents copy."""
+    """One-click publish: write portable URIs for other AidyCOS PCs.
+
+    Also best-effort enables CUPS sharing so USB/localhost queues can be bridged.
+    """
+    try:
+        enable_lan_sharing()
+    except PrintersError:
+        # Network-only catalogs still publish without CUPS share.
+        pass
     primary = export_share_catalog(
         default_catalog_path(),
         include_local_via_cups=include_local_via_cups,
     )
     written = [primary]
-    documents = documents_catalog_path()
-    if documents.resolve() != primary.resolve():
+    payload = primary.read_text(encoding="utf-8")
+    for extra in (
+        documents_catalog_path(),
+        _packaging_catalog_path(),
+    ):
+        if extra is None:
+            continue
+        if extra.resolve() == primary.resolve():
+            continue
         try:
-            documents.parent.mkdir(parents=True, exist_ok=True)
-            documents.write_text(primary.read_text(encoding="utf-8"), encoding="utf-8")
-            written.append(documents)
+            extra.parent.mkdir(parents=True, exist_ok=True)
+            extra.write_text(payload, encoding="utf-8")
+            written.append(extra)
         except OSError:
-            pass
+            continue
     return tuple(written)
+
+
+def _packaging_catalog_path() -> Path | None:
+    """If this machine has an AidyCOS checkout, keep packaging/printers in sync."""
+    candidates: list[Path] = []
+    for env_root in (
+        os.environ.get("AIDYCOS_ROOT"),
+        str(Path.home() / ".local/share/aidycos/src"),
+        "/opt/aidyc/aidycos",
+    ):
+        if env_root:
+            candidates.append(Path(env_root) / "packaging/printers" / CATALOG_FILENAME)
+    # Walk up from this service file when running from the overlay checkout.
+    for parent in Path(__file__).resolve().parents:
+        packaging = parent / "packaging" / "printers"
+        if packaging.is_dir():
+            candidates.append(packaging / CATALOG_FILENAME)
+            break
+    for path in candidates:
+        if path.parent.is_dir():
+            return path
+    return None
 
 
 def load_share_catalog(path: Path | str | None = None) -> ShareCatalog:
@@ -502,6 +539,37 @@ def resolve_catalog_path(path: Path | str | None = None) -> Path:
         "No hay catálogo AidyCOS. En el PC de origen pulsa «Publicar catálogo» "
         "y copia shared-printers.json a este equipo."
     )
+
+
+def catalog_needs_apply(path: Path | str | None = None) -> bool:
+    """True when the shared catalog has printers this PC still lacks/needs fixing."""
+    try:
+        target = resolve_catalog_path(path)
+        data = load_share_catalog(target)
+    except PrintersError:
+        return False
+    existing = {item.name: item for item in list_printers().printers}
+    for entry in data.printers:
+        current = existing.get(entry.name)
+        if current is None:
+            return True
+        current_uri = (current.device_uri or "").strip()
+        if is_link_local_uri(current_uri) or is_loopback_uri(current_uri):
+            return True
+        if current_uri != entry.device_uri and is_directly_shareable_uri(entry.device_uri):
+            return True
+    return False
+
+
+def ensure_shared_printers(path: Path | str | None = None) -> ImportResult | None:
+    """Apply the AidyCOS catalog when this PC is missing those printers.
+
+    Returns ``None`` when there is nothing to do (or no catalog).
+    """
+    if not catalog_needs_apply(path):
+        return None
+    target = resolve_catalog_path(path)
+    return import_share_catalog(target, force=True)
 
 
 def import_share_catalog(

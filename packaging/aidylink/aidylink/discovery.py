@@ -18,13 +18,14 @@ from .paths import data_dir
 
 LOGGER = logging.getLogger(__name__)
 
-PEER_TTL_S = 15.0
-BEACON_INTERVAL_S = 2.5
-TCP_SCAN_INTERVAL_S = 6.0
-TCP_CONNECT_TIMEOUT_S = 1.2
-TCP_SCAN_CONCURRENCY = 64
-MISMATCH_TTL_S = 180.0
+PEER_TTL_S = 90.0
+BEACON_INTERVAL_S = 1.2
+TCP_SCAN_INTERVAL_S = 8.0
+TCP_CONNECT_TIMEOUT_S = 0.55
+TCP_SCAN_CONCURRENCY = 96
+MISMATCH_TTL_S = 300.0
 KNOWN_HOSTS_MAX = 64
+FULL_SUBNET_EVERY_N = 3
 
 
 @dataclass
@@ -68,6 +69,7 @@ class DiscoveryService:
         self._tcp_task: asyncio.Task | None = None
         self._net_task: asyncio.Task | None = None
         self._scan_now = asyncio.Event()
+        self._scan_generation = 0
         self.lan_ip = detect_lan_ip()
         self._load_known_hosts()
 
@@ -293,6 +295,14 @@ class DiscoveryService:
                 self._transport.sendto(payload, (broadcast, self.cfg.discovery_port))
             except OSError as exc:
                 LOGGER.debug("beacon send to %s failed: %s", broadcast, exc)
+        # Unicast to known hosts — survives Wi‑Fi APs that filter broadcasts.
+        for host in list(self._known_hosts.keys())[:24]:
+            if not host or host == self.lan_ip or host.startswith("127."):
+                continue
+            try:
+                self._transport.sendto(payload, (host, self.cfg.discovery_port))
+            except OSError:
+                continue
 
     def _on_datagram(self, data: bytes, host: str) -> None:
         try:
@@ -349,29 +359,47 @@ class DiscoveryService:
 
     async def _scan_subnet_tcp(self) -> None:
         self.lan_ip = detect_lan_ip()
-        targets = list(lan_subnet_hosts(exclude=self.lan_ip))
+        self._scan_generation += 1
+        # Always probe known/online/mismatch first (fast reconnect).
+        priority: list[str] = []
+        seen: set[str] = set()
+
+        def _add(host: str) -> None:
+            host = (host or "").strip()
+            if not host or host == self.lan_ip or host.startswith("127.") or host in seen:
+                return
+            seen.add(host)
+            priority.append(host)
+
         for peer in self.list_online():
-            if peer.host and peer.host not in targets and peer.host != self.lan_ip:
-                targets.insert(0, peer.host)
+            _add(peer.host)
         for hint in self.list_mismatches():
-            if hint.host not in targets:
-                targets.insert(0, hint.host)
-        # Keep probing previously seen machines even after Wi‑Fi/subnet changes.
-        for host in sorted(self._known_hosts.keys(), key=lambda h: self._known_hosts[h], reverse=True):
-            if host not in targets and host != self.lan_ip:
-                targets.insert(0, host)
+            _add(hint.host)
+        for host in sorted(
+            self._known_hosts.keys(),
+            key=lambda h: self._known_hosts[h],
+            reverse=True,
+        ):
+            _add(host)
+
+        do_full = (self._scan_generation % FULL_SUBNET_EVERY_N) == 1
+        targets = list(priority)
+        if do_full:
+            for host in lan_subnet_hosts(exclude=self.lan_ip):
+                _add(host)
+                if host not in targets:
+                    targets.append(host)
         if not targets:
             return
 
         sem = asyncio.Semaphore(TCP_SCAN_CONCURRENCY)
 
-        async def _probe_if_open(host: str) -> None:
+        async def _probe(host: str) -> None:
             async with sem:
-                if not await self._port_open(host):
-                    return
+                # Single connection: skip separate port-open check.
                 await self.probe_host_tcp(host)
 
-        await asyncio.gather(*(_probe_if_open(host) for host in targets))
+        await asyncio.gather(*(_probe(host) for host in targets))
 
     async def probe_host_tcp(self, host: str) -> Peer | None:
         host = (host or "").strip()

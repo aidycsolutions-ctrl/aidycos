@@ -18,6 +18,7 @@ from ...servicios.impresoras import (
     default_catalog_path,
     documents_catalog_path,
     enable_lan_sharing,
+    ensure_shared_printers,
     import_share_catalog,
     is_directly_shareable_uri,
     is_local_uri,
@@ -44,8 +45,9 @@ def build_printers_page() -> Gtk.Widget:
 
     sub = Gtk.Label(
         label=(
-            "Publica el catálogo en un clic y aplícalo en otros PCs AidyCOS "
-            "sin pelear con el selector de archivos."
+            "En este PC: «Compartir con otros PCs». En los demás AidyCOS: al "
+            "actualizar/instalar el perfil se aplican solas; también puedes "
+            "pulsar «Aplicar catálogo»."
         ),
         xalign=0,
     )
@@ -76,17 +78,17 @@ def build_printers_page() -> Gtk.Widget:
     share_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
     share_bar.get_style_context().add_class("settings-printers-toolbar")
 
-    publish_btn = Gtk.Button(label="Publicar catálogo")
+    publish_btn = Gtk.Button(label="Compartir con otros PCs")
     publish_btn.get_style_context().add_class("settings-browse-button")
     publish_btn.set_tooltip_text(
-        "Guarda shared-printers.json en AidyCOS y en Documentos (sin diálogo)"
+        "Publica URIs portables en el catálogo AidyCOS (y Documentos) y activa CUPS share"
     )
     share_bar.pack_start(publish_btn, False, False, 0)
 
     apply_btn = Gtk.Button(label="Aplicar catálogo")
     apply_btn.get_style_context().add_class("settings-browse-button")
     apply_btn.set_tooltip_text(
-        "Importa el catálogo AidyCOS detectado (Documentos o ~/.local/share/aidycos)"
+        "Crea ahora las impresoras del catálogo AidyCOS en este PC"
     )
     share_bar.pack_start(apply_btn, False, False, 0)
 
@@ -195,8 +197,9 @@ def build_printers_page() -> Gtk.Widget:
             return
         if not entries:
             notify(
-                "No hay impresoras compartibles. La Wi‑Fi de red se publica sola; "
-                "USB/localhost necesitan «Compartir locales en LAN».",
+                "No hay impresoras compartibles. Si solo ves URIs fe80::/USB, "
+                "activa «Compartir locales en LAN» o publica cuando la Wi‑Fi "
+                "tenga una URI .local/IPv4.",
                 error=True,
             )
             return
@@ -207,9 +210,9 @@ def build_printers_page() -> Gtk.Widget:
             names = ", ".join(item.name for item in entries)
             paths = "\n".join(str(path) for path in written)
             notify(
-                f"Catálogo publicado ({len(entries)}): {names}\n"
-                f"Copia uno de estos archivos al otro PC y pulsa «Aplicar catálogo»:\n"
-                f"{paths}"
+                f"Compartido ({len(entries)}): {names}\n"
+                f"Los otros PCs AidyCOS las reciben al actualizar el perfil, "
+                f"o con «Aplicar catálogo». Archivos:\n{paths}"
             )
         except PrintersError as error:
             notify(str(error), error=True)
@@ -250,6 +253,19 @@ def build_printers_page() -> Gtk.Widget:
     apply_btn.connect("clicked", on_apply)
     pick_btn.connect("clicked", on_pick)
     share_local_btn.connect("clicked", on_share_local)
+
+    # Auto-apply the AidyCOS catalog when this PC is missing those printers.
+    try:
+        auto = ensure_shared_printers()
+        if auto is not None:
+            added = ", ".join(auto.added) if auto.added else ""
+            set_status(
+                "Catálogo AidyCOS aplicado automáticamente"
+                + (f": {added}" if added else ".")
+            )
+    except PrintersError as error:
+        set_status(str(error))
+
     reload()
     return page
 

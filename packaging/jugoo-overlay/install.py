@@ -507,6 +507,162 @@ def install_overlay_file(source: Path, destination: Path) -> None:
     shutil.copy2(source, destination)
 
 
+def install_system_volume_read_fallback(audio: Path) -> None:
+    """Ensure bar volume state can be read when pactl is down but wpctl works.
+
+    Test PCs sometimes lack a working pipewire-pulse socket. Volume set/toggle
+    already falls back to wpctl, but refresh used only pactl JSON — leaving
+    system_volume as None and the bar icon stuck on the mute "x".
+    """
+    text = audio.read_text(encoding="utf-8")
+    original = text
+
+    if "def coerce_mute_flag(" not in text:
+        helpers = '''
+def coerce_mute_flag(value: Any) -> bool:
+    """Parse pactl/wpctl mute fields that may be bool, int, or yes/no strings."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value or "").strip().casefold()
+    if text in {"1", "true", "yes", "on", "muted"}:
+        return True
+    if text in {"", "0", "false", "no", "off", "unmuted"}:
+        return False
+    return False
+
+
+def build_system_volume_state_from_wpctl(output: str) -> SystemVolumeState | None:
+    """Parse `wpctl get-volume` text such as ``Volume: 0.81`` or ``Volume: 0.81 [MUTED]``."""
+    text = str(output or "").strip()
+    if not text:
+        return None
+    lowered = text.casefold()
+    muted = "[muted]" in lowered or lowered.endswith("muted")
+    volume = None
+    for token in text.replace("[", " ").replace("]", " ").split():
+        try:
+            volume = float(token)
+            break
+        except ValueError:
+            continue
+    if volume is None:
+        return None
+    clamped = max(0.0, min(1.5, volume))
+    return SystemVolumeState(
+        sink_name="@DEFAULT_AUDIO_SINK@",
+        sink_description="Salida de audio",
+        volume=min(1.0, clamped),
+        is_muted=muted,
+    )
+
+
+'''
+        anchor = "def build_system_volume_state(\n"
+        if anchor not in text:
+            print(f"Aviso: no se pudo añadir coerce_mute_flag: {audio}", flush=True)
+        else:
+            text = text.replace(anchor, helpers + anchor, 1)
+            print("Aviso: se añadió coerce_mute_flag / wpctl volume parser", flush=True)
+
+    # Prefer coerce_mute_flag over bool("no") == True.
+    text = text.replace(
+        "is_muted=bool(selected.get(\"mute\", False)),",
+        "is_muted=coerce_mute_flag(selected.get(\"mute\", False)),",
+    )
+    text = text.replace(
+        "is_muted = bool(item.get(\"mute\", False))",
+        "is_muted = coerce_mute_flag(item.get(\"mute\", False))",
+    )
+
+    # Allow resolving volume from the first sink when get-default-sink is empty.
+    old_guard = (
+        "    \"\"\"Resolve default-sink volume/mute from pactl sink list JSON.\"\"\"\n"
+        "    if not default_sink_name:\n"
+        "        return None\n"
+        "    target = default_sink_name.strip()\n"
+        "    selected: dict[str, Any] | None = None\n"
+        "    for item in sinks:\n"
+        "        name = str(item.get(\"name\", \"\")).strip()\n"
+        "        if name == target:\n"
+        "            selected = item\n"
+        "            break\n"
+    )
+    new_guard = (
+        "    \"\"\"Resolve default-sink volume/mute from pactl sink list JSON.\"\"\"\n"
+        "    target = str(default_sink_name or \"\").strip()\n"
+        "    selected: dict[str, Any] | None = None\n"
+        "    if target:\n"
+        "        for item in sinks:\n"
+        "            name = str(item.get(\"name\", \"\")).strip()\n"
+        "            if name == target:\n"
+        "                selected = item\n"
+        "                break\n"
+    )
+    if old_guard in text:
+        text = text.replace(old_guard, new_guard, 1)
+        print("Aviso: build_system_volume_state acepta sink por defecto vacío", flush=True)
+
+    if "def _query_system_volume_wpctl(" not in text:
+        wpctl_method = '''
+    def _query_system_volume_wpctl(self) -> SystemVolumeState | None:
+        """Read default sink volume/mute via wpctl when pactl JSON is unavailable."""
+        try:
+            result = subprocess.run(
+                ["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"],
+                capture_output=True,
+                text=True,
+                timeout=1.0,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode != 0:
+            return None
+        return build_system_volume_state_from_wpctl(result.stdout)
+
+'''
+        marker = "    def _query_pactl_json(self, target: str) -> list[dict[str, Any]]:\n"
+        if marker not in text:
+            print(f"Aviso: no se pudo añadir _query_system_volume_wpctl: {audio}", flush=True)
+        else:
+            text = text.replace(marker, wpctl_method + marker, 1)
+            print("Aviso: se añadió lectura de volumen vía wpctl", flush=True)
+
+    if "self._query_system_volume_wpctl()" not in text:
+        old_refresh = (
+            "        system_volume = build_system_volume_state(\n"
+            "            sinks_raw,\n"
+            "            self._query_default_sink_name(),\n"
+            "        )\n"
+            "        new_snapshot = AudioSnapshot(\n"
+        )
+        new_refresh = (
+            "        system_volume = build_system_volume_state(\n"
+            "            sinks_raw,\n"
+            "            self._query_default_sink_name(),\n"
+            "        )\n"
+            "        if system_volume is None:\n"
+            "            # pipewire-pulse/pactl may be down while native PipeWire (wpctl) works.\n"
+            "            system_volume = self._query_system_volume_wpctl()\n"
+            "        new_snapshot = AudioSnapshot(\n"
+        )
+        if old_refresh not in text:
+            print(f"Aviso: no se pudo enganchar fallback wpctl en refresh: {audio}", flush=True)
+        else:
+            text = text.replace(old_refresh, new_refresh, 1)
+            print("Aviso: refresh de audio usa wpctl si pactl no da system_volume", flush=True)
+
+    if text == original:
+        return
+    backup = audio.with_suffix(audio.suffix + ".aidycos-backup")
+    if not backup.exists():
+        shutil.copy2(audio, backup)
+    audio.write_text(text, encoding="utf-8")
+
+
+
 def install_battery(root: Path) -> None:
     """Backport the UPower/sysfs battery indicator on older Jugoo checkouts."""
     overlay = Path(__file__).parent / "shell"
@@ -961,6 +1117,63 @@ def install_printers(root: Path) -> None:
         if not backup.exists():
             shutil.copy2(style, backup)
         style.write_text(style_text.rstrip() + "\n" + css, encoding="utf-8")
+
+
+def install_native_window_focus(root: Path) -> None:
+    """Dock/launcher clicks must raise floating windows, not only steal focus.
+
+    Upstream Jugoo sometimes dispatches a Lua ``hl.dsp.focus`` expression that
+    Hyprland ignores; even a plain ``focuswindow`` can leave another float on
+    top. Always use ``focuswindow`` + ``alterzorder top``.
+    """
+    service = root / "shell/servicios/escritorio/hyprland.py"
+    if not service.is_file():
+        return
+    text = service.read_text(encoding="utf-8")
+    marker = "# AidyCOS: native focuswindow + alterzorder for dock clicks."
+    if marker in text:
+        return
+    pattern = re.compile(
+        r"    def _focus_window\(self, address: str\) -> None:\n"
+        r"(?:.*\n)*?"
+        r"(?=    def )",
+    )
+    match = pattern.search(text)
+    if match is None:
+        print(
+            f"Aviso: no se ajustó el foco de ventanas (API distinta): {service}",
+            flush=True,
+        )
+        return
+    replacement = f'''    def _focus_window(self, address: str) -> None:
+        {marker}
+        def dispatch(dispatcher: str, argument: str | None = None) -> None:
+            command = ["hyprctl", "dispatch", dispatcher]
+            if argument:
+                command.append(argument)
+            try:
+                subprocess.run(
+                    command,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=2.0,
+                )
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+                stderr = ""
+                if isinstance(error, subprocess.CalledProcessError):
+                    stderr = (error.stderr or error.stdout or "").strip()
+                detail = f": {{stderr}}" if stderr else ""
+                raise HyprlandError(f"could not execute Hyprland dispatch{{detail}}") from error
+
+        dispatch("focuswindow", f"address:{{address}}")
+        dispatch("alterzorder", f"top,address:{{address}}")
+
+'''
+    backup = service.with_suffix(service.suffix + ".aidycos-backup")
+    if not backup.exists():
+        shutil.copy2(service, backup)
+    service.write_text(text[: match.start()] + replacement + text[match.end() :], encoding="utf-8")
 
 
 def install_native_workspace_dispatch(root: Path) -> None:
@@ -1467,6 +1680,7 @@ def main() -> None:
     install_network_wifi(root)
     install_printers(root)
     install_native_workspace_dispatch(root)
+    install_native_window_focus(root)
     assistant_card = root / "shell/widgets/notificaciones/assistant_card.py"
     if assistant_card.is_file():
         try_replace_once(
@@ -1609,6 +1823,8 @@ def main() -> None:
     if not installed_helper.exists():
         installed_helper.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(aidyc_helper, installed_helper)
+
+    install_system_volume_read_fallback(audio)
 
     if "def set_system_volume(" not in audio.read_text(encoding="utf-8"):
         audio_methods = '''\n    def set_system_volume(self, volume: float) -> None:\n        """Set default sink volume from the top-bar control."""\n        clamped = max(0.0, min(1.0, float(volume)))\n        percent = f"{int(round(clamped * 100))}%"\n\n        def apply() -> None:\n            ok = self._run_command(["pactl", "set-sink-volume", "@DEFAULT_SINK@", percent])\n            if not ok:\n                ok = self._run_command(["wpctl", "set-volume", "-l", "1.5", "@DEFAULT_AUDIO_SINK@", str(clamped)])\n            if ok and not self._stop_event.is_set():\n                self._refresh_audio()\n\n        self._start_operation("audio-set-system-volume", apply)\n\n    def toggle_system_mute(self) -> None:\n        """Toggle mute on the default sink."""\n        def apply() -> None:\n            ok = self._run_command(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "toggle"])\n            if not ok:\n                ok = self._run_command(["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"])\n            if ok and not self._stop_event.is_set():\n                self._refresh_audio()\n\n        self._start_operation("audio-toggle-system-mute", apply)\n'''

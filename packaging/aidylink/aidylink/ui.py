@@ -26,18 +26,22 @@ from .paths import control_socket_path
 
 CHAT_CSS = b"""
 window.aidychat-lan {
-  background: #e5ddd5;
+  background: #efeae2;
+}
+.wa-sidebar {
+  background: #ffffff;
+  border-right: 1px solid #d1d7db;
 }
 .wa-header {
   background: #075e54;
-  padding: 10px 14px;
+  padding: 12px 14px;
 }
 .wa-header label, .wa-header-title, .wa-header-sub {
   color: #ffffff;
 }
 .wa-header-title {
   font-weight: bold;
-  font-size: 15px;
+  font-size: 17px;
 }
 .wa-header-sub {
   font-size: 11px;
@@ -55,45 +59,66 @@ window.aidychat-lan {
   background: rgba(255,255,255,0.12);
   border-radius: 18px;
 }
-.wa-peers {
+.wa-search {
   background: #f0f2f5;
-  padding: 8px 10px;
-  border-bottom: 1px solid #d1d7db;
+  padding: 8px 12px;
 }
-.wa-peer {
+.wa-search entry {
   background: #ffffff;
-  border-radius: 18px;
-  padding: 6px 12px;
-  border: 1px solid #e9edef;
+  border-radius: 8px;
+  border: none;
+  padding: 8px 10px;
+  color: #111b21;
   box-shadow: none;
 }
-.wa-peer:hover {
+.wa-contact {
+  padding: 10px 14px;
+  border-bottom: 1px solid #f0f2f5;
+  background: #ffffff;
+}
+.wa-contact:hover {
   background: #f5f6f6;
 }
-.wa-peer-selected {
-  background: #d9fdd3;
-  border-color: #25d366;
+row:selected .wa-contact {
+  background: #f0f2f5;
 }
-.wa-peer-mismatch {
-  background: #fff7ed;
-  border-color: #fdba74;
-  color: #9a3412;
+.wa-contact-name {
+  font-weight: 600;
+  color: #111b21;
+  font-size: 14px;
+}
+.wa-contact-preview {
+  color: #667781;
+  font-size: 12px;
+}
+.wa-contact-meta {
+  color: #667781;
+  font-size: 11px;
+}
+.wa-badge {
+  background: #25d366;
+  color: #ffffff;
+  border-radius: 10px;
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: bold;
 }
 .wa-chat-head {
   background: #f0f2f5;
-  padding: 8px 14px;
+  padding: 10px 14px;
   border-bottom: 1px solid #d1d7db;
 }
 .wa-chat-head-title {
   font-weight: bold;
   color: #111b21;
+  font-size: 15px;
 }
 .wa-chat-head-sub {
   color: #667781;
-  font-size: 11px;
+  font-size: 12px;
 }
 .lan-message-area, viewport.lan-message-area, scrolledwindow.lan-message-area {
-  background: #e5ddd5;
+  background: #efeae2;
   border: none;
   box-shadow: none;
 }
@@ -132,7 +157,7 @@ window.aidychat-lan {
   background: #ffffff;
   border-radius: 24px;
   border: none;
-  padding: 8px 14px;
+  padding: 10px 14px;
   color: #111b21;
   box-shadow: none;
 }
@@ -147,8 +172,8 @@ window.aidychat-lan {
   background: #25d366;
   color: #ffffff;
   border-radius: 22px;
-  min-width: 42px;
-  min-height: 42px;
+  min-width: 44px;
+  min-height: 44px;
   padding: 0;
 }
 .lan-send:hover {
@@ -163,7 +188,30 @@ window.aidychat-lan {
 }
 .lan-empty {
   color: #667781;
-  font-size: 13px;
+  font-size: 14px;
+}
+.wa-empty-pane {
+  background: #f0f2f5;
+}
+.wa-connect {
+  background: #25d366;
+  color: #ffffff;
+  border-radius: 18px;
+  padding: 6px 14px;
+  border: none;
+}
+.emoji-grid button {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  font-size: 18px;
+  min-width: 36px;
+  min-height: 36px;
+  padding: 2px;
+}
+.emoji-grid button:hover {
+  background: #f0f2f5;
+  border-radius: 8px;
 }
 """
 
@@ -371,16 +419,24 @@ def _first_run_setup() -> bool:
     return True
 
 
+EMOJI_SET = (
+    "😀 😂 🥹 😍 🥰 😎 🤔 🙌 👍 👎 👏 🔥 ✨ ✅ ❌ ❤️ 💙 💚 💛 💜 "
+    "😅 😭 😴 🤯 🤝 🙏 💪 🎉 🎂 ☕ 🍕 🏠 💻 📱 📷 📎 📷 ⭐ 🌟 🚀"
+).split()
+
+
 class AidylinkWindow(Gtk.Window):
     def __init__(self, *, standalone: bool = True) -> None:
         super().__init__(title="AidyChat")
-        self.set_default_size(920, 700)
+        self.set_default_size(1120, 740)
         self.set_border_width(0)
+        self.set_position(Gtk.WindowPosition.CENTER)
         self.get_style_context().add_class("aidychat-lan")
         _install_chat_style()
 
         self._peers: list[dict[str, Any]] = []
         self._selected_peer_data: dict[str, Any] | None = None
+        self._selected_mismatch: dict[str, Any] | None = None
         self._seen_ids: set[str] = set()
         self._status_ok = False
         self._standalone = standalone
@@ -389,14 +445,22 @@ class AidylinkWindow(Gtk.Window):
         self._connecting = False
         self._pending_ask_dialog: Gtk.Dialog | None = None
         self._seen_ask_ids: set[str] = set()
+        self._previews: dict[str, str] = {}
+        self._emoji_popover: Gtk.Popover | None = None
+        self._rebuild_contacts = True
 
-        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-        self.add(root)
+        split = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
+        split.set_position(340)
+        self.add(split)
 
-        # WhatsApp-style green header
-        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        # ---- Sidebar (lista estilo WhatsApp / aidyc-web) ----
+        self.sidebar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.sidebar.set_size_request(300, -1)
+        self.sidebar.get_style_context().add_class("wa-sidebar")
+        split.pack1(self.sidebar, False, False)
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         header.get_style_context().add_class("wa-header")
-        root.pack_start(header, False, False, 0)
         titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         titles.set_hexpand(True)
         brand = Gtk.Label(label="AidyChat", xalign=0)
@@ -410,58 +474,79 @@ class AidylinkWindow(Gtk.Window):
 
         self.refresh_btn = Gtk.Button.new_from_icon_name("view-refresh-symbolic", Gtk.IconSize.BUTTON)
         self.refresh_btn.set_tooltip_text("Actualizar equipos")
-        self.refresh_btn.connect("clicked", lambda *_: self.refresh_peers())
+        self.refresh_btn.connect("clicked", lambda *_: self._manual_refresh())
         header.pack_start(self.refresh_btn, False, False, 0)
-        self.pair_btn = Gtk.Button.new_from_icon_name("network-workgroup-symbolic", Gtk.IconSize.BUTTON)
-        self.pair_btn.set_tooltip_text("Emparejar")
+        self.pair_btn = Gtk.Button.new_from_icon_name("list-add-symbolic", Gtk.IconSize.BUTTON)
+        self.pair_btn.set_tooltip_text("Emparejar / nuevo contacto")
         self.pair_btn.connect("clicked", lambda *_: self.open_pair_dialog())
         header.pack_start(self.pair_btn, False, False, 0)
-        self.group_btn = Gtk.Button.new_from_icon_name("preferences-system-symbolic", Gtk.IconSize.BUTTON)
-        self.group_btn.set_tooltip_text("Grupo local")
-        self.group_btn.connect("clicked", lambda *_: self.open_group_dialog())
-        header.pack_start(self.group_btn, False, False, 0)
-        cfg = load_config()
-        self.google_btn = Gtk.Button.new_from_icon_name(
-            "avatar-default-symbolic" if cfg and cfg.cloud.enabled else "web-browser-symbolic",
-            Gtk.IconSize.BUTTON,
-        )
-        self.google_btn.set_tooltip_text(
-            "Cuenta conectada" if cfg and cfg.cloud.enabled else "Iniciar sesión con Google"
-        )
-        self.google_btn.connect("clicked", lambda *_: self.open_cloud_dialog())
-        self.google_btn.set_sensitive(not bool(cfg and cfg.cloud.enabled))
-        header.pack_start(self.google_btn, False, False, 0)
+        self.settings_btn = Gtk.Button.new_from_icon_name("open-menu-symbolic", Gtk.IconSize.BUTTON)
+        self.settings_btn.set_tooltip_text("Ajustes")
+        self.settings_btn.connect("clicked", lambda *_: self.open_settings_menu())
+        header.pack_start(self.settings_btn, False, False, 0)
+        self.sidebar.pack_start(header, False, False, 0)
 
-        # Compact peer chips (like chats strip)
-        peers_wrap = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        peers_wrap.get_style_context().add_class("wa-peers")
-        root.pack_start(peers_wrap, False, False, 0)
-        self.peer_cards = Gtk.FlowBox()
-        self.peer_cards.set_selection_mode(Gtk.SelectionMode.NONE)
-        self.peer_cards.set_max_children_per_line(8)
-        self.peer_cards.set_row_spacing(6)
-        self.peer_cards.set_column_spacing(6)
-        self.peer_cards.set_homogeneous(False)
-        self.peer_cards.set_valign(Gtk.Align.START)
-        peers_wrap.pack_start(self.peer_cards, False, False, 0)
+        search_wrap = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        search_wrap.get_style_context().add_class("wa-search")
+        self.search = Gtk.SearchEntry()
+        self.search.set_placeholder_text("Buscar chat o equipo")
+        self.search.connect("search-changed", self._filter_contacts)
+        search_wrap.pack_start(self.search, True, True, 0)
+        self.sidebar.pack_start(search_wrap, False, False, 0)
+
+        self.chat_list = Gtk.ListBox()
+        self.chat_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self.chat_list.connect("row-selected", self._on_contact_selected)
+        chat_scroll = Gtk.ScrolledWindow()
+        chat_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        chat_scroll.set_vexpand(True)
+        chat_scroll.add(self.chat_list)
+        self.sidebar.pack_start(chat_scroll, True, True, 0)
+
         self.peer_empty = Gtk.Label(
-            label="Buscando equipos… Si ves uno sin emparejar, pulsa Conectar.",
+            label="Buscando equipos en la red…",
             xalign=0,
         )
+        self.peer_empty.set_margin_start(14)
+        self.peer_empty.set_margin_end(14)
+        self.peer_empty.set_margin_top(8)
+        self.peer_empty.set_margin_bottom(10)
+        self.peer_empty.set_line_wrap(True)
         self.peer_empty.get_style_context().add_class("lan-empty")
-        peers_wrap.pack_start(self.peer_empty, False, False, 0)
-        # Keep a scroll handle unused (compat with older refresh helpers).
-        self.peer_cards_scroll = peers_wrap
+        self.sidebar.pack_start(self.peer_empty, False, False, 0)
 
-        chat_head = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        # Compat aliases used by older helpers
+        self.peer_cards = self.chat_list
+        self.peer_cards_scroll = chat_scroll
+        self.google_btn = self.settings_btn
+        self.group_btn = self.settings_btn
+
+        # ---- Conversation pane ----
+        self.conversation = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        split.pack2(self.conversation, True, False)
+
+        chat_head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
         chat_head.get_style_context().add_class("wa-chat-head")
-        root.pack_start(chat_head, False, False, 0)
-        self.chat_peer_label = Gtk.Label(label="Selecciona un computador", xalign=0)
+        head_titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        head_titles.set_hexpand(True)
+        self.chat_peer_label = Gtk.Label(label="AidyChat", xalign=0)
         self.chat_peer_label.get_style_context().add_class("wa-chat-head-title")
-        chat_head.pack_start(self.chat_peer_label, False, False, 0)
-        self.chat_peer_sub = Gtk.Label(label="Los mensajes de esa conversación aparecen abajo", xalign=0)
+        head_titles.pack_start(self.chat_peer_label, False, False, 0)
+        self.chat_peer_sub = Gtk.Label(
+            label="Selecciona un chat a la izquierda para empezar",
+            xalign=0,
+        )
         self.chat_peer_sub.get_style_context().add_class("wa-chat-head-sub")
-        chat_head.pack_start(self.chat_peer_sub, False, False, 0)
+        head_titles.pack_start(self.chat_peer_sub, False, False, 0)
+        chat_head.pack_start(head_titles, True, True, 0)
+        self.connect_peer_btn = Gtk.Button(label="Conectar")
+        self.connect_peer_btn.get_style_context().add_class("wa-connect")
+        self.connect_peer_btn.set_tooltip_text("Pedir conexión a este PC")
+        self.connect_peer_btn.connect("clicked", lambda *_: self._connect_selected_mismatch())
+        self.connect_peer_btn.set_no_show_all(True)
+        self.connect_peer_btn.hide()
+        chat_head.pack_start(self.connect_peer_btn, False, False, 0)
+        self.conversation.pack_start(chat_head, False, False, 0)
 
         self.message_scroll = Gtk.ScrolledWindow()
         self.message_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -469,7 +554,7 @@ class AidylinkWindow(Gtk.Window):
         self.message_scroll.set_shadow_type(Gtk.ShadowType.NONE)
         self.message_scroll.get_style_context().add_class("lan-message-area")
         self.message_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        self.message_box.set_border_width(10)
+        self.message_box.set_border_width(12)
         self.message_box.set_valign(Gtk.Align.END)
         self.message_box.get_style_context().add_class("lan-message-area")
         viewport = Gtk.Viewport()
@@ -477,15 +562,27 @@ class AidylinkWindow(Gtk.Window):
         viewport.get_style_context().add_class("lan-message-area")
         viewport.add(self.message_box)
         self.message_scroll.add(viewport)
-        root.pack_start(self.message_scroll, True, True, 0)
+        self.conversation.pack_start(self.message_scroll, True, True, 0)
 
-        send_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        send_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         send_row.get_style_context().add_class("lan-composer")
-        root.pack_start(send_row, False, False, 0)
+        self.conversation.pack_start(send_row, False, False, 0)
         attach_btn = Gtk.Button.new_from_icon_name("mail-attachment-symbolic", Gtk.IconSize.BUTTON)
         attach_btn.set_tooltip_text("Adjuntar archivo o imagen (máx. 15 MB)")
         attach_btn.connect("clicked", lambda *_: self.choose_attachment())
         send_row.pack_start(attach_btn, False, False, 0)
+        theme = Gtk.IconTheme.get_default()
+        emoji_icon = "face-smile-symbolic"
+        if theme is None or not theme.has_icon(emoji_icon):
+            emoji_icon = "face-smile"
+        if theme is not None and theme.has_icon(emoji_icon):
+            emoji_btn = Gtk.Button.new_from_icon_name(emoji_icon, Gtk.IconSize.BUTTON)
+        else:
+            emoji_btn = Gtk.Button(label="😊")
+        emoji_btn.set_tooltip_text("Emojis")
+        emoji_btn.connect("clicked", self._toggle_emoji_picker)
+        send_row.pack_start(emoji_btn, False, False, 0)
+        self._emoji_btn = emoji_btn
         self.msg_entry = Gtk.Entry()
         self.msg_entry.set_placeholder_text("Escribe un mensaje")
         self.msg_entry.connect("activate", lambda *_: self.send_message())
@@ -540,8 +637,18 @@ class AidylinkWindow(Gtk.Window):
         else:
             self._set_status(f"en línea · buscando equipos · {team}")
 
+    def _manual_refresh(self) -> None:
+        try:
+            control_request({"cmd": "rescan"}, timeout=1.5)
+        except Exception:
+            pass
+        self._rebuild_contacts = True
+        self.refresh_peers()
+        self.refresh_status()
+
     def refresh_peers(self, silent: bool = False) -> None:
         selected_id = str((self._selected_peer_data or {}).get("node_id") or "")
+        selected_host = str((self._selected_mismatch or {}).get("host") or "")
         try:
             resp = control_request({"cmd": "peers"}, timeout=1.5)
         except Exception:
@@ -553,72 +660,249 @@ class AidylinkWindow(Gtk.Window):
         mismatches = resp.get("mismatches") or []
         self._peers = peers if isinstance(peers, list) else []
         self._mismatches = mismatches if isinstance(mismatches, list) else []
-        self._set_peer_cards(self._peers, selected_id=selected_id)
+        self._set_peer_cards(
+            self._peers,
+            selected_id=selected_id,
+            selected_host=selected_host,
+        )
 
-    def _set_peer_cards(self, peers: list[dict[str, Any]], *, selected_id: str = "") -> None:
+    def _contact_fingerprint(self) -> str:
+        bits = [
+            f"p:{p.get('node_id')}:{p.get('display_name')}:{p.get('host')}"
+            for p in self._peers
+            if isinstance(p, dict)
+        ]
+        bits.extend(
+            f"m:{h.get('host')}:{h.get('display_name')}"
+            for h in self._mismatches
+            if isinstance(h, dict)
+        )
+        bits.append(f"q:{(self.search.get_text() or '').strip().casefold()}")
+        return "|".join(bits)
+
+    def _set_peer_cards(
+        self,
+        peers: list[dict[str, Any]],
+        *,
+        selected_id: str = "",
+        selected_host: str = "",
+    ) -> None:
+        fingerprint = self._contact_fingerprint()
+        if (
+            not self._rebuild_contacts
+            and getattr(self, "_contacts_fp", None) == fingerprint
+            and self.chat_list.get_children()
+        ):
+            # Soft-update selected peer payload if it is still online.
+            if selected_id:
+                for peer in peers:
+                    if str(peer.get("node_id") or "") == selected_id:
+                        self._selected_peer_data = peer
+                        break
+            return
+        self._rebuild_contacts = False
+        self._contacts_fp = fingerprint
         previous = self._selected_peer_data
-        for child in self.peer_cards.get_children():
-            self.peer_cards.remove(child)
-        self._selected_peer_data = None
+        previous_mismatch = self._selected_mismatch
+        for child in list(self.chat_list.get_children()):
+            self.chat_list.remove(child)
+
         has_rows = bool(peers or self._mismatches)
         self.peer_empty.set_visible(not has_rows)
         if peers:
             empty_text = ""
         elif self._mismatches:
-            empty_text = "Equipos cerca sin emparejar. Pulsa Conectar; el otro PC aprueba."
+            empty_text = "Equipos cerca sin emparejar. Ábrelos y pulsa Conectar."
         else:
-            empty_text = "Buscando equipos… Si no aparecen, usa Emparejar con el código."
+            empty_text = "Sin chats aún. Empareja (+) o espera a que aparezcan."
         self.peer_empty.set_text(empty_text)
+
+        query = (self.search.get_text() or "").strip().casefold()
+        selected_row: Gtk.ListBoxRow | None = None
+
         for peer in peers:
-            card = Gtk.Button(label=str(peer.get("display_name") or "PC"))
-            card.set_relief(Gtk.ReliefStyle.NONE)
-            card.get_style_context().add_class("wa-peer")
-            card.peer_data = peer
-            card.connect("clicked", self._select_peer_card)
-            self.peer_cards.add(card)
-            if selected_id and str(peer.get("node_id") or "") == selected_id:
+            name = str(peer.get("display_name") or "PC")
+            if query and query not in name.casefold() and query not in str(peer.get("host") or "").casefold():
+                continue
+            node_id = str(peer.get("node_id") or "")
+            preview = self._previews.get(node_id) or str(peer.get("host") or "en línea")
+            row = self._make_contact_row(
+                name=name,
+                preview=preview,
+                meta="en línea",
+                peer=peer,
+                mismatch=None,
+            )
+            self.chat_list.add(row)
+            if selected_id and node_id == selected_id:
+                selected_row = row
                 self._selected_peer_data = peer
-                card.get_style_context().add_class("wa-peer-selected")
+                self._selected_mismatch = None
+
         for hint in self._mismatches:
             name = str(hint.get("display_name") or hint.get("host") or "PC")
-            card = Gtk.Button(label=f"{name} · Conectar")
-            card.set_relief(Gtk.ReliefStyle.NONE)
-            card.get_style_context().add_class("wa-peer")
-            card.get_style_context().add_class("wa-peer-mismatch")
-            card.peer_data = None
-            card.mismatch_data = hint
-            card.set_tooltip_text(
-                "Pide conexión a este PC. En el otro saldrá Aprobar / Rechazar."
+            host = str(hint.get("host") or "")
+            if query and query not in name.casefold() and query not in host.casefold():
+                continue
+            row = self._make_contact_row(
+                name=name,
+                preview="Sin emparejar · toca Conectar",
+                meta="disponible",
+                peer=None,
+                mismatch=hint,
+                badge="!",
             )
-            card.connect(
-                "clicked",
-                lambda _btn, data=hint: self._ask_connect(data),
-            )
-            self.peer_cards.add(card)
-        if self._selected_peer_data is None and previous is not None:
-            # Keep selection object if peer briefly disappeared from discovery.
-            self._selected_peer_data = previous
-        self.peer_cards.show_all()
+            self.chat_list.add(row)
+            if selected_host and host == selected_host:
+                selected_row = row
+                self._selected_mismatch = hint
+                self._selected_peer_data = None
 
-    def _select_peer_card(self, card: Gtk.Button) -> None:
-        self._selected_peer_data = getattr(card, "peer_data", None)
-        for child in self.peer_cards.get_children():
-            btn = child.get_child() if hasattr(child, "get_child") else None
-            # FlowBoxChild wraps the button.
-            target = btn if isinstance(btn, Gtk.Button) else child
-            if isinstance(target, Gtk.FlowBoxChild):
-                target = target.get_child()
-            if isinstance(target, Gtk.Button):
-                ctx = target.get_style_context()
-                ctx.remove_class("wa-peer-selected")
-                if target is card:
-                    ctx.add_class("wa-peer-selected")
-        if self._selected_peer_data:
-            name = str(self._selected_peer_data.get("display_name") or "Computador")
-            self.peer_empty.set_visible(False)
+        if selected_row is None and previous is not None:
+            self._selected_peer_data = previous
+        if selected_row is None and previous_mismatch is not None and self._selected_peer_data is None:
+            self._selected_mismatch = previous_mismatch
+
+        self.chat_list.show_all()
+        if selected_row is not None:
+            self.chat_list.select_row(selected_row)
+
+    def _make_contact_row(
+        self,
+        *,
+        name: str,
+        preview: str,
+        meta: str,
+        peer: dict[str, Any] | None,
+        mismatch: dict[str, Any] | None,
+        badge: str = "",
+    ) -> Gtk.ListBoxRow:
+        row = Gtk.ListBoxRow()
+        row.peer_data = peer
+        row.mismatch_data = mismatch
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        box.get_style_context().add_class("wa-contact")
+        top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        name_l = Gtk.Label(label=name, xalign=0)
+        name_l.set_ellipsize(Pango.EllipsizeMode.END)
+        name_l.set_hexpand(True)
+        name_l.get_style_context().add_class("wa-contact-name")
+        top.pack_start(name_l, True, True, 0)
+        meta_l = Gtk.Label(label=meta, xalign=1)
+        meta_l.get_style_context().add_class("wa-contact-meta")
+        top.pack_start(meta_l, False, False, 0)
+        if badge:
+            badge_l = Gtk.Label(label=badge)
+            badge_l.get_style_context().add_class("wa-badge")
+            top.pack_start(badge_l, False, False, 0)
+        box.pack_start(top, False, False, 0)
+        prev = preview if len(preview) <= 56 else preview[:53] + "…"
+        preview_l = Gtk.Label(label=prev, xalign=0)
+        preview_l.set_ellipsize(Pango.EllipsizeMode.END)
+        preview_l.get_style_context().add_class("wa-contact-preview")
+        box.pack_start(preview_l, False, False, 0)
+        row.add(box)
+        return row
+
+    def _filter_contacts(self, *_args: object) -> None:
+        self._rebuild_contacts = True
+        self._set_peer_cards(
+            self._peers,
+            selected_id=str((self._selected_peer_data or {}).get("node_id") or ""),
+            selected_host=str((self._selected_mismatch or {}).get("host") or ""),
+        )
+
+    def _on_contact_selected(self, _list: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
+        if row is None:
+            return
+        peer = getattr(row, "peer_data", None)
+        mismatch = getattr(row, "mismatch_data", None)
+        if isinstance(peer, dict):
+            self._selected_peer_data = peer
+            self._selected_mismatch = None
+            self.connect_peer_btn.hide()
+            name = str(peer.get("display_name") or "Computador")
+            host = str(peer.get("host") or "")
             self.chat_peer_label.set_text(name)
-            self.chat_peer_sub.set_text("en línea en la red local")
+            self.chat_peer_sub.set_text(f"en línea · {host}" if host else "en línea en la red local")
             self.refresh_inbox(initial=True)
+            return
+        if isinstance(mismatch, dict):
+            self._selected_mismatch = mismatch
+            self._selected_peer_data = None
+            name = str(mismatch.get("display_name") or mismatch.get("host") or "PC")
+            host = str(mismatch.get("host") or "")
+            self.chat_peer_label.set_text(name)
+            self.chat_peer_sub.set_text(
+                f"Sin emparejar · {host}" if host else "Sin emparejar en esta Wi‑Fi"
+            )
+            self.connect_peer_btn.show()
+            for child in list(self.message_box.get_children()):
+                self.message_box.remove(child)
+            self._seen_ids.clear()
+            self._messages = []
+            self._append_notice(
+                f"{name} está en la red pero aún no comparte tu grupo. "
+                "Pulsa Conectar; en el otro PC saldrá Aprobar."
+            )
+
+    def _connect_selected_mismatch(self) -> None:
+        if self._selected_mismatch:
+            self._ask_connect(self._selected_mismatch)
+
+    def open_settings_menu(self) -> None:
+        menu = Gtk.Menu()
+        items = (
+            ("Emparejar / código de grupo", self.open_pair_dialog),
+            ("Ajustes de grupo local", self.open_group_dialog),
+            ("Cuenta Google / AidyChat nube", self.open_cloud_dialog),
+            ("Actualizar equipos", self._manual_refresh),
+        )
+        for label, handler in items:
+            item = Gtk.MenuItem(label=label)
+            item.connect("activate", lambda _i, h=handler: h())
+            menu.append(item)
+        menu.show_all()
+        menu.popup_at_widget(self.settings_btn, Gdk.Gravity.SOUTH_WEST, Gdk.Gravity.NORTH_WEST, None)
+
+    def _toggle_emoji_picker(self, button: Gtk.Button) -> None:
+        if self._emoji_popover is None:
+            pop = Gtk.Popover.new(button)
+            pop.set_position(Gtk.PositionType.TOP)
+            grid = Gtk.FlowBox()
+            grid.set_max_children_per_line(8)
+            grid.set_selection_mode(Gtk.SelectionMode.NONE)
+            grid.get_style_context().add_class("emoji-grid")
+            grid.set_border_width(8)
+            for emoji in EMOJI_SET:
+                btn = Gtk.Button(label=emoji)
+                btn.connect("clicked", lambda _b, e=emoji: self._insert_emoji(e))
+                grid.add(btn)
+            scroll = Gtk.ScrolledWindow()
+            scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            scroll.set_min_content_height(180)
+            scroll.set_max_content_height(220)
+            scroll.set_min_content_width(280)
+            scroll.add(grid)
+            pop.add(scroll)
+            pop.show_all()
+            self._emoji_popover = pop
+        assert self._emoji_popover is not None
+        if self._emoji_popover.get_visible():
+            self._emoji_popover.popdown()
+        else:
+            self._emoji_popover.set_relative_to(button)
+            self._emoji_popover.popup()
+
+    def _insert_emoji(self, emoji: str) -> None:
+        text = self.msg_entry.get_text() or ""
+        pos = self.msg_entry.get_position()
+        new = text[:pos] + emoji + text[pos:]
+        self.msg_entry.set_text(new)
+        self.msg_entry.set_position(pos + len(emoji))
+        self.msg_entry.grab_focus_without_selecting()
+        if self._emoji_popover is not None:
+            self._emoji_popover.popdown()
 
     def refresh_inbox(self, initial: bool = False) -> None:
         try:
@@ -628,7 +912,29 @@ class AidylinkWindow(Gtk.Window):
         messages = resp.get("messages") or []
         if not isinstance(messages, list):
             return
+        cfg = load_config()
+        my_id = cfg.node_id if cfg else ""
+        previews: dict[str, str] = {}
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            from_id = str(msg.get("from_id") or "")
+            to_id = str(msg.get("to_id") or "")
+            peer_id = to_id if from_id == my_id else from_id
+            if not peer_id or peer_id in ("*", my_id):
+                continue
+            text = str(msg.get("text") or "").strip()
+            if not text:
+                filename = str(msg.get("filename") or "")
+                text = f"📎 {filename}" if filename else "📎 Archivo"
+            previews[peer_id] = text
+        if previews != self._previews:
+            self._previews = previews
+            self._rebuild_contacts = True
+
         selected_id = str((self._selected_peer_data or {}).get("node_id") or "")
+        if self._selected_mismatch is not None and not selected_id:
+            return
         filtered: list[dict[str, Any]] = []
         for msg in messages:
             if not isinstance(msg, dict):
@@ -1004,6 +1310,8 @@ class AidylinkWindow(Gtk.Window):
             "to": peer.get("node_id") or peer.get("display_name") or "",
             "text": caption,
             "file": str(path.resolve()),
+            "host": peer.get("host") or "",
+            "port": peer.get("message_port") or "",
         }
         self._append_notice(f"Enviando {path.name}…")
         try:
@@ -1607,12 +1915,14 @@ class AidylinkWindow(Gtk.Window):
 
         peer = self._selected_peer()
         if not peer:
-            self._append_notice("⚠ Selecciona un computador disponible primero.")
+            self._append_notice("⚠ Selecciona un chat a la izquierda primero.")
             return
         payload: dict[str, Any] = {
             "cmd": "send",
             "to": peer.get("node_id") or peer.get("display_name") or "",
             "text": text,
+            "host": peer.get("host") or "",
+            "port": peer.get("message_port") or "",
         }
 
         try:
@@ -1624,6 +1934,8 @@ class AidylinkWindow(Gtk.Window):
         if resp.get("ok"):
             self.msg_entry.set_text("")
             self.refresh_inbox()
+            self._rebuild_contacts = True
+            self.refresh_peers(silent=True)
         else:
             self._append_notice(
                 "⚠ No se pudo enviar. Revisa que el otro computador siga conectado."

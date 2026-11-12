@@ -117,17 +117,23 @@ class ApplicationsController:
             return
         matches = windows_for_application(application, snapshot_windows(self._hyprland.snapshot))
         active_ws = self._hyprland.active_workspace_id
-        # Prefer windows already on this desktop so browsers (and similar
-        # single-instance apps) can also open on other workspaces instead of
-        # always jumping to the first existing window elsewhere.
+        # Prefer windows already on this desktop so a dock click on Chrome /
+        # Cursor / Thunar raises *that* app here, while browsers can still
+        # open a new window on another workspace instead of jumping away.
         local = tuple(
             window for window in matches if int(window.workspace_id) == int(active_ws)
         )
         if local:
-            target = next_window_to_focus(
-                local,
-                self._hyprland.snapshot.active_window.address if self._hyprland.snapshot else "",
+            active_address = (
+                self._hyprland.snapshot.active_window.address
+                if self._hyprland.snapshot
+                else ""
             )
+            # Single window of this app: always raise it (do not cycle away).
+            if len(local) == 1:
+                target = local[0]
+            else:
+                target = next_window_to_focus(local, active_address)
             if target is not None and target.address:
                 self._event_bus.emit(WINDOW_FOCUS_REQUESTED, target.address)
                 return

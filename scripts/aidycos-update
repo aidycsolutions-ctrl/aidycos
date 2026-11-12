@@ -275,7 +275,8 @@ bash "\${installer}" --no-reboot
 mkdir -p "\$(dirname "\${MARKER}")"
 printf '%s\\n' "\${LATEST}" >"\${MARKER}"
 echo
-echo "AidyCOS quedó actualizado. Cierra y vuelve a iniciar la sesión para cargar todos los cambios."
+echo "AidyCOS quedó actualizado."
+echo "Atajos y Alt+Tab se recargan en caliente; si algo de la sesión no cambia, cierra sesión una vez."
 echo
 read -r -p "Pulsa Enter para cerrar esta ventana…" _
 EOF

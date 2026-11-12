@@ -699,47 +699,63 @@ def cmd_focus(address: str | None = None) -> None:
 
 
 def _alt_tab_candidates() -> list[dict[str, Any]]:
-    """Mapped windows on the active desktop, excluding minimized / shell.
+    """Mapped windows on the active desktop only, excluding minimized / shell.
 
     Order is stable across presses: address. Sorting by ``focusHistoryID``
     would reshuffle after every focus and Alt+Tab would only bounce between
-    the two most recent windows.
+    the two most recent windows. Stay on the current desktop so Alt+Tab never
+    jumps workspaces (use Super+Left/Right or Ctrl+Alt+PgUp/PgDn for that).
     """
-    workspace_id = query("activeworkspace").get("id")
+    active_ws = query("activeworkspace").get("id")
     windows = [
         window
         for window in query("clients")
         if is_managed(window)
         and not is_minimized(window)
-        and (window.get("workspace") or {}).get("id") == workspace_id
+        and (window.get("workspace") or {}).get("id") == active_ws
+        and not str((window.get("workspace") or {}).get("name") or "").startswith("special:")
     ]
     windows.sort(key=lambda c: str(c.get("address") or ""))
     return windows
 
 
-def cmd_alt_tab(direction: str | None = None) -> None:
-    """Cycle windows on the current desktop only (do not jump workspaces)."""
-    windows = _alt_tab_candidates()
-    if len(windows) < 2:
-        if windows:
-            address = windows[0]["address"]
-            dispatch(
-                f"focuswindow address:{address}",
-                f"alterzorder top,address:{address}",
-            )
-        return
+def _alt_tab_active_index(addresses: list[str]) -> int:
+    """Index of the focused window, surviving focus stolen by the Jugoo bar."""
     active = normalize_address((query("activewindow") or {}).get("address"))
-    addresses = [normalize_address(window["address"]) for window in windows]
-    try:
-        index = addresses.index(active) if active else 0
-    except ValueError:
-        index = 0
-    step = -1 if (direction or "").lower() in {"prev", "previous", "back"} else 1
-    target = windows[(index + step) % len(windows)]
+    if active:
+        try:
+            return addresses.index(active)
+        except ValueError:
+            pass
+    recent = most_recent_managed()
+    if recent is not None:
+        recent_address = normalize_address(recent.get("address"))
+        try:
+            return addresses.index(recent_address)
+        except ValueError:
+            pass
+    return 0
+
+
+def cmd_alt_tab(direction: str | None = None) -> None:
+    """Cycle windows on the current desktop; raise and focus the next one."""
+    windows = _alt_tab_candidates()
+    if not windows:
+        return
+    if len(windows) == 1:
+        target = windows[0]
+    else:
+        addresses = [normalize_address(window["address"]) for window in windows]
+        index = _alt_tab_active_index(addresses)
+        step = -1 if (direction or "").lower() in {"prev", "previous", "back"} else 1
+        target = windows[(index + step) % len(windows)]
+    address = target["address"]
+    # Do not batch ``bringactivetotop``: in the same [[BATCH]] it can raise the
+    # *previous* active window before focuswindow settles, so focus moves to a
+    # buried window and it looks like Alt+Tab only stole focus.
     dispatch(
-        f"focuswindow address:{target['address']}",
-        f"alterzorder top,address:{target['address']}",
-        f"bringactivetotop",
+        f"focuswindow address:{address}",
+        f"alterzorder top,address:{address}",
     )
 
 

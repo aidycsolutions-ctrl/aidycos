@@ -389,7 +389,8 @@ if getent group lpadmin >/dev/null 2>&1; then
     echo "Usuario ${USER} añadido al grupo lpadmin (cierra sesión para aplicarlo)."
   fi
 fi
-# Seed the shared HP Wi‑Fi catalog so a test PC can «Aplicar catálogo».
+# Seed + apply the shared printer catalog so other AidyCOS PCs get queues
+# without running lpadmin by hand.
 printer_catalog_src="${ROOT}/packaging/printers/shared-printers.json"
 printer_catalog_dst="${HOME}/.local/share/aidycos/shared-printers.json"
 if [[ -f "${printer_catalog_src}" ]]; then
@@ -399,6 +400,13 @@ if [[ -f "${printer_catalog_src}" ]]; then
     install -D -m 0644 "${printer_catalog_src}" "${docs_dir}/shared-printers.json"
   fi
   echo "Catálogo de impresoras AidyCOS listo en ${printer_catalog_dst}"
+  if [[ -f "${ROOT}/scripts/apply-shared-printers.py" ]]; then
+    if python3 "${ROOT}/scripts/apply-shared-printers.py" "${printer_catalog_dst}"; then
+      echo "Impresoras compartidas aplicadas desde el catálogo AidyCOS."
+    else
+      echo "Aviso: no se pudieron aplicar las impresoras del catálogo (¿CUPS/lpadmin?)." >&2
+    fi
+  fi
 fi
 # Keep Synaptic/Flatpak available on older profiles that predate the module list.
 if ! command -v synaptic >/dev/null 2>&1; then
@@ -469,6 +477,14 @@ fi
 # Migrate Debian-installer ifupdown Wi-Fi into NM so the bar does not show "LAN".
 bash "${ROOT}/packaging/network/apply-aidycos-network.sh"
 sudo systemctl enable --now upower.service
+
+# Jugoo volume reads prefer pactl (pipewire-pulse). Without it, the bar can still
+# change volume via wpctl but used to show a permanent mute "x". Keep the Pulse
+# compatibility socket enabled for the graphical user session.
+if dpkg-query -W -f='${db:Status-Status}' pipewire-pulse 2>/dev/null | grep -qx installed; then
+  sudo systemctl enable --global pipewire-pulse.socket >/dev/null 2>&1 || true
+  systemctl --user enable --now pipewire-pulse.socket pipewire-pulse.service >/dev/null 2>&1 || true
+fi
 
 # USB sticks need udisks2 + gvfs + Thunar daemon with automount enabled.
 # A wireless mouse works without this stack (HID); removable storage does not.
@@ -602,8 +618,7 @@ input {
     numlock_by_default = true
 }
 bind = SUPER, SPACE, exec, jugoo action launcher
-bind = CTRL, SPACE, exec, jugoo action launcher
-bind = CTRL, E, exec, /usr/bin/env GDK_BACKEND=wayland /usr/bin/thunar
+bind = SUPER, E, exec, /usr/bin/env GDK_BACKEND=wayland /usr/bin/thunar
 bind = , Print, exec, ~/.local/bin/captura.sh
 bind = ALT, F4, exec, jugoo action session
 bind = SUPER, LEFT, workspace, -1
@@ -619,9 +634,16 @@ else
   missing=0
   grep -qE '^[[:space:]]*numlock_by_default[[:space:]]*=[[:space:]]*true' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*SPACE,[[:space:]]*exec,[[:space:]]*jugoo action launcher' "${HYPR_AIDYCOS_CONF}" || missing=1
-  grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*CTRL,[[:space:]]*SPACE,[[:space:]]*exec,[[:space:]]*jugoo action launcher' "${HYPR_AIDYCOS_CONF}" || missing=1
-  if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*CTRL,[[:space:]]*E,' "${HYPR_AIDYCOS_CONF}" \
-     && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*CTRL,[[:space:]]*E,' "${HYPR_CONF}"; }; then
+  # Drop legacy Ctrl+Space launcher (canonical is Super+Space).
+  if grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*CTRL,[[:space:]]*SPACE,[[:space:]]*exec,[[:space:]]*jugoo action launcher' "${HYPR_AIDYCOS_CONF}"; then
+    missing=1
+  fi
+  if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*E,' "${HYPR_AIDYCOS_CONF}" \
+     && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*E,' "${HYPR_CONF}"; }; then
+    missing=1
+  fi
+  # Migrate legacy Ctrl+E → Super+E for Thunar.
+  if grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*CTRL,[[:space:]]*E,' "${HYPR_AIDYCOS_CONF}"; then
     missing=1
   fi
   if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*,[[:space:]]*Print,' "${HYPR_AIDYCOS_CONF}" \
@@ -664,12 +686,15 @@ EOF
     if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*SPACE,[[:space:]]*exec,[[:space:]]*jugoo action launcher' "${HYPR_AIDYCOS_CONF}"; then
       printf '\nbind = SUPER, SPACE, exec, jugoo action launcher\n' >>"${HYPR_AIDYCOS_CONF}"
     fi
-    if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*CTRL,[[:space:]]*SPACE,[[:space:]]*exec,[[:space:]]*jugoo action launcher' "${HYPR_AIDYCOS_CONF}"; then
-      printf 'bind = CTRL, SPACE, exec, jugoo action launcher\n' >>"${HYPR_AIDYCOS_CONF}"
+    if grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*CTRL,[[:space:]]*SPACE,[[:space:]]*exec,[[:space:]]*jugoo action launcher' "${HYPR_AIDYCOS_CONF}"; then
+      sed -i -E '/^[[:space:]]*bind[[:space:]]*=[[:space:]]*CTRL,[[:space:]]*SPACE,[[:space:]]*exec,[[:space:]]*jugoo action launcher/d' "${HYPR_AIDYCOS_CONF}"
     fi
-    if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*CTRL,[[:space:]]*E,' "${HYPR_AIDYCOS_CONF}" \
-       && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*CTRL,[[:space:]]*E,' "${HYPR_CONF}"; }; then
-      printf 'bind = CTRL, E, exec, /usr/bin/env GDK_BACKEND=wayland /usr/bin/thunar\n' >>"${HYPR_AIDYCOS_CONF}"
+    if grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*CTRL,[[:space:]]*E,' "${HYPR_AIDYCOS_CONF}"; then
+      sed -i -E 's/^[[:space:]]*bind[[:space:]]*=[[:space:]]*CTRL,[[:space:]]*E,/bind = SUPER, E,/' "${HYPR_AIDYCOS_CONF}"
+    fi
+    if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*E,' "${HYPR_AIDYCOS_CONF}" \
+       && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*E,' "${HYPR_CONF}"; }; then
+      printf 'bind = SUPER, E, exec, /usr/bin/env GDK_BACKEND=wayland /usr/bin/thunar\n' >>"${HYPR_AIDYCOS_CONF}"
     fi
     if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*,[[:space:]]*Print,' "${HYPR_AIDYCOS_CONF}" \
        && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*,[[:space:]]*Print,' "${HYPR_CONF}"; }; then
@@ -728,6 +753,53 @@ elif [[ -f "${HYPR_AIDYCOS_CONF}" ]] && ! grep -qF 'source = ~/.config/hypr/conf
 elif [[ ! -f "${HYPR_AIDYCOS_CONF}" ]]; then
   printf '\nsource = ~/.config/hypr/config/jugoo_ventanas.conf\n' >>"${HYPR_CONF}"
 fi
+
+# Alt+Tab must be owned only by jugoo_ventanas.conf. Skel hyprland.conf still ships
+# cyclenext+bringactivetotop; when both fire with 2 windows the cycle takes two
+# steps and looks like focus was lost without switching.
+for hypr_file in "${HYPR_CONF}" "${HYPR_AIDYCOS_CONF}"; do
+  if [[ -f "${hypr_file}" ]] && grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*ALT([[:space:]]+SHIFT)?,[[:space:]]*Tab,' "${hypr_file}"; then
+    cp -a "${hypr_file}" "${hypr_file}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
+    sed -i -E \
+      -e '/^[[:space:]]*bind[[:space:]]*=[[:space:]]*ALT([[:space:]]+SHIFT)?,[[:space:]]*Tab,[[:space:]]*cyclenext/d' \
+      -e '/^[[:space:]]*bind[[:space:]]*=[[:space:]]*ALT([[:space:]]+SHIFT)?,[[:space:]]*Tab,[[:space:]]*bringactivetotop/d' \
+      -e '/^[[:space:]]*bind[[:space:]]*=[[:space:]]*ALT([[:space:]]+SHIFT)?,[[:space:]]*Tab,[[:space:]]*exec,[[:space:]]*.*ventanas/d' \
+      "${hypr_file}"
+    if grep -qF 'cross-desktop cycle via ventanas' "${hypr_file}"; then
+      sed -i 's/cross-desktop cycle via ventanas/current-desktop cycle via ventanas/g' "${hypr_file}"
+    fi
+    if ! grep -qF 'Alt+Tab is owned by jugoo_ventanas.conf' "${hypr_file}"; then
+      printf '\n# Alt+Tab is owned by jugoo_ventanas.conf (current-desktop cycle via ventanas).\n' >>"${hypr_file}"
+    fi
+    echo "Alt+Tab duplicado eliminado de ${hypr_file} (queda solo jugoo_ventanas.conf)."
+  fi
+done
+
+# Hot-apply window manager bits so a normal aidycos-update does not need a
+# manual hyprctl reload / daemon restart (or logout) for Alt+Tab and snaps.
+reload_hypr_windows() {
+  local runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  local pidfile="${runtime}/jugoo-ventanas.pid"
+  local old_pid=""
+  [[ -r "${pidfile}" ]] && old_pid="$(tr -d '[:space:]' <"${pidfile}" || true)"
+  if [[ -n "${old_pid}" ]]; then
+    kill "${old_pid}" 2>/dev/null || true
+  fi
+  # Clear stale FIFO/pid even if the old process already exited.
+  rm -f "${runtime}/jugoo-ventanas.fifo" "${pidfile}"
+  if command -v hyprctl >/dev/null 2>&1 && [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}${WAYLAND_DISPLAY:-}" ]]; then
+    hyprctl reload >/dev/null 2>&1 || true
+  fi
+  # exec-once does not re-run on reload; start the daemon if Hyprland is up.
+  if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" || -n "${WAYLAND_DISPLAY:-}" ]]; then
+    if ! kill -0 "$(tr -d '[:space:]' <"${pidfile}" 2>/dev/null || true)" 2>/dev/null; then
+      nohup python3 "${HYPR_DIR}/scripts/ventanas.py" daemon >/dev/null 2>&1 &
+      disown || true
+    fi
+    echo "Hyprland recargado y daemon de ventanas reiniciado (Alt+Tab listo sin cerrar sesión)."
+  fi
+}
+reload_hypr_windows
 
 if [[ ! -e "${HYPR_CONF}" ]]; then
   cat >"${HYPR_CONF}" <<'EOF'

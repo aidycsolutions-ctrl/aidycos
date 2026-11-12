@@ -18,8 +18,11 @@ from ..audio.volume_slider import VolumeSlider
 
 
 def _volume_icon_name(state: SystemVolumeState | None) -> str:
+    # Unknown state must not look muted: on some test PCs pactl is down while
+    # wpctl still changes volume, so system_volume stays None and the old
+    # fallback drew a permanent mute "x" even though audio worked.
     if state is None:
-        return "audio-volume-muted-symbolic"
+        return "audio-volume-medium-symbolic"
     if state.is_muted or state.volume <= 0.001:
         return "audio-volume-muted-symbolic"
     if state.volume < 0.34:
