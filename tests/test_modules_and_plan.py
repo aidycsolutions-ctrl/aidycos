@@ -24,6 +24,7 @@ class ModuleTests(unittest.TestCase):
             "gvfs",
             "gvfs-fuse",
             "thunar-volman",
+            "xdg-user-dirs",
             "usbutils",
             "librsvg2-common",
             "python3-gi-cairo",

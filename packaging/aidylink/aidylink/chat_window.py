@@ -24,6 +24,7 @@ except (ImportError, ValueError):  # GStreamer WebRTC is an optional desktop add
     NativeCall = None  # type: ignore[assignment,misc]
 from .config import LinkConfig, load_config, save_config
 from .native_auth import start_google_login
+from .branding import apply_aidychat_branding
 from .paths import data_dir
 
 
@@ -64,6 +65,7 @@ class AidyChatWindow(Gtk.Window):
         self.set_default_size(1120, 740)
         self.set_position(Gtk.WindowPosition.CENTER)
         self.get_style_context().add_class("aidylink")
+        apply_aidychat_branding(self)
         _install_style()
         self._chats: list[dict[str, Any]] = []
         self._active_chat: dict[str, Any] | None = None
@@ -117,8 +119,9 @@ class AidyChatWindow(Gtk.Window):
         self.sidebar.pack_start(brand, False, False, 0)
 
         self.search = Gtk.SearchEntry()
-        self.search.set_placeholder_text("Buscar conversación")
+        self.search.set_placeholder_text("Buscar en tus chats")
         self.search.connect("search-changed", self._filter_chats)
+        self.search.set_tooltip_text("Filtra la lista. Para hallar gente nueva usa +")
         search_box = Gtk.Box()
         search_box.set_border_width(10)
         search_box.pack_start(self.search, True, True, 0)
@@ -603,22 +606,34 @@ class AidyChatWindow(Gtk.Window):
     def open_account_dialog(self) -> None:
         dialog = Gtk.Dialog(title="Cuenta AidyChat", transient_for=self, flags=0)
         dialog.add_buttons(
+            "Google", Gtk.ResponseType.APPLY,
             Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
-            "Cambiar cuenta de Google", Gtk.ResponseType.OK,
+            "Entrar con AidyC", Gtk.ResponseType.OK,
         )
-        dialog.set_default_size(460, 220)
+        dialog.set_default_size(460, 320)
         box = dialog.get_content_area()
         box.set_spacing(8)
         box.set_border_width(12)
         box.pack_start(
             Gtk.Label(
-                label="Tu cuenta está conectada. AidyLink usa el inicio de sesión seguro de Google en el navegador.",
+                label="Entra con el mismo usuario y contraseña de AidyC, o cambia a Google.",
                 xalign=0,
+                wrap=True,
             ),
             False,
             False,
             0,
         )
+        user_e = Gtk.Entry()
+        user_e.set_placeholder_text("Usuario AidyC")
+        pass_e = Gtk.Entry()
+        pass_e.set_placeholder_text("Contraseña")
+        pass_e.set_visibility(False)
+        pass_e.set_input_purpose(Gtk.InputPurpose.PASSWORD)
+        box.pack_start(Gtk.Label(label="Usuario AidyC", xalign=0), False, False, 0)
+        box.pack_start(user_e, False, False, 0)
+        box.pack_start(Gtk.Label(label="Contraseña", xalign=0), False, False, 0)
+        box.pack_start(pass_e, False, False, 0)
         advanced = Gtk.Expander(label="Opciones avanzadas de llamadas")
         advanced_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         turn = Gtk.Entry()
@@ -628,14 +643,60 @@ class AidyChatWindow(Gtk.Window):
         advanced_box.pack_start(turn, False, False, 0)
         advanced.add(advanced_box)
         box.pack_start(advanced, False, False, 0)
+        dialog.set_default_response(Gtk.ResponseType.OK)
         dialog.show_all()
         response = dialog.run()
+        username = (user_e.get_text() or "").strip()
+        password = pass_e.get_text() or ""
         if (turn.get_text() or "").strip() != self.cfg.cloud.turn_server:
             self.cfg.cloud.turn_server = (turn.get_text() or "").strip()
             save_config(self.cfg)
         dialog.destroy()
+        if response == Gtk.ResponseType.APPLY:
+            self._start_google_relogin()
+            return
         if response != Gtk.ResponseType.OK:
             return
+        if not username or not password:
+            self.sidebar_status.set_text("Escribe usuario y contraseña de AidyC")
+            return
+        self.sidebar_status.set_text("Validando cuenta AidyC…")
+
+        def work() -> None:
+            try:
+                data = self.bridge.login_aidyc(username, password)
+                save_config(self.cfg)
+                user = data.get("user") if isinstance(data.get("user"), dict) else {}
+                result = str(user.get("username") or username)
+                error = None
+            except Exception as exc:
+                result, error = None, exc
+            GLib.idle_add(finish, result, error)
+
+        def finish(name: str | None, error: Exception | None) -> bool:
+            if error:
+                self.sidebar_status.set_text(f"No se pudo iniciar sesión: {error}")
+                return GLib.SOURCE_REMOVE
+            self.bridge = AidyChatBridge(self.cfg)
+            if self.call_engine is not None:
+                self.call_engine.bridge = self.bridge
+            self.sidebar_status.set_text(f"Conectado como {name or 'AidyChat'}")
+            self.refresh_chats()
+            try:
+                subprocess.run(
+                    ["systemctl", "--user", "restart", "aidylink.service"],
+                    check=False,
+                    timeout=8,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception:
+                pass
+            return GLib.SOURCE_REMOVE
+
+        threading.Thread(target=work, daemon=True, name="aidychat-aidyc-login").start()
+
+    def _start_google_relogin(self) -> None:
         self.sidebar_status.set_text("Preparando inicio de sesión con Google…")
 
         def done(username: str | None, error: Exception | None) -> None:
@@ -689,54 +750,126 @@ class AidyChatWindow(Gtk.Window):
         start_google_login(self.cfg, done, on_ready=ready)
 
     def open_new_chat(self) -> None:
-        dialog = Gtk.Dialog(title="Nueva conversación", transient_for=self, flags=0)
-        dialog.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, "Buscar", Gtk.ResponseType.OK)
-        dialog.set_default_size(430, 140)
+        dialog = Gtk.Dialog(title="Buscar usuario", transient_for=self, flags=0)
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            "Abrir chat", Gtk.ResponseType.OK,
+        )
+        dialog.set_default_size(460, 360)
         box = dialog.get_content_area()
         box.set_spacing(8)
         box.set_border_width(12)
-        box.pack_start(Gtk.Label(label="Busca por nombre de usuario o teléfono", xalign=0), False, False, 0)
-        query = Gtk.Entry()
-        query.set_placeholder_text("Nombre o teléfono")
-        query.connect("activate", lambda *_: dialog.response(Gtk.ResponseType.OK))
+        box.pack_start(
+            Gtk.Label(
+                label="Busca por nombre de chat, usuario AidyC o teléfono",
+                xalign=0,
+                wrap=True,
+            ),
+            False,
+            False,
+            0,
+        )
+        query = Gtk.SearchEntry()
+        query.set_placeholder_text("Ej. María, admin, 3001234567")
         box.pack_start(query, False, False, 0)
+        status = Gtk.Label(label="Escribe al menos 2 letras y pulsa Enter", xalign=0)
+        status.get_style_context().add_class("link-muted")
+        box.pack_start(status, False, False, 0)
+        results = Gtk.ListBox()
+        results.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_min_content_height(180)
+        scroll.add(results)
+        box.pack_start(scroll, True, True, 0)
+        found_users: list[dict[str, Any]] = []
+
+        def clear_rows() -> None:
+            for child in list(results.get_children()):
+                results.remove(child)
+
+        def fill_rows(users: list[dict[str, Any]]) -> None:
+            clear_rows()
+            found_users.clear()
+            found_users.extend(users)
+            for item in users:
+                row = Gtk.ListBoxRow()
+                row.user_data = item
+                name = str(item.get("username") or "?")
+                aidyc = str(item.get("aidyc_username") or "").strip()
+                phone = str(item.get("phone") or "").strip()
+                bits = [name]
+                if aidyc and aidyc.lower() != name.lower():
+                    bits.append(f"AidyC: {aidyc}")
+                if phone:
+                    bits.append(phone)
+                label = Gtk.Label(label=" · ".join(bits), xalign=0)
+                label.set_margin_top(8)
+                label.set_margin_bottom(8)
+                label.set_margin_start(8)
+                label.set_margin_end(8)
+                row.add(label)
+                results.add(row)
+            results.show_all()
+            if users:
+                results.select_row(results.get_row_at_index(0))
+                status.set_text(f"{len(users)} resultado(s)")
+            else:
+                status.set_text("Sin resultados")
+
+        def run_search(*_args: object) -> None:
+            text = (query.get_text() or "").strip()
+            if len(text) < 2:
+                status.set_text("Escribe al menos 2 letras")
+                clear_rows()
+                found_users.clear()
+                return
+            status.set_text("Buscando…")
+
+            def work() -> None:
+                try:
+                    result = self.bridge.search_user(text)
+                    error = None
+                except Exception as exc:
+                    result, error = None, exc
+                GLib.idle_add(done_search, result, error)
+
+            def done_search(result: Any, error: Exception | None) -> bool:
+                if error:
+                    status.set_text(f"Error: {error}")
+                    clear_rows()
+                    found_users.clear()
+                    return GLib.SOURCE_REMOVE
+                users = result.get("users") if isinstance(result, dict) else None
+                if not isinstance(users, list):
+                    user = result.get("user") if isinstance(result, dict) else None
+                    users = [user] if isinstance(user, dict) else []
+                fill_rows([u for u in users if isinstance(u, dict)])
+                return GLib.SOURCE_REMOVE
+
+            threading.Thread(target=work, daemon=True, name="aidychat-user-search").start()
+
+        query.connect("activate", run_search)
+        query.connect("search-changed", lambda *_: None)
+        search_btn = Gtk.Button(label="Buscar")
+        search_btn.connect("clicked", run_search)
+        box.pack_start(search_btn, False, False, 0)
         dialog.show_all()
         response = dialog.run()
-        text = (query.get_text() or "").strip()
+        row = results.get_selected_row()
+        user = getattr(row, "user_data", None) if row is not None else None
+        if user is None and len(found_users) == 1:
+            user = found_users[0]
         dialog.destroy()
-        if response != Gtk.ResponseType.OK or not text:
-            return
-        try:
-            result = self.bridge.search_user(text)
-        except Exception as exc:
-            self.sidebar_status.set_text(f"Búsqueda: {exc}")
-            return
-        users = result.get("users") if isinstance(result.get("users"), list) else []
-        user = result.get("user") if isinstance(result.get("user"), dict) else None
-        if user is None and len(users) == 1:
-            user = users[0]
-        if user is None and len(users) > 1:
-            names = [str(item.get("username") or item.get("id")) for item in users]
-            pick = Gtk.Dialog(title="Elige un contacto", transient_for=self, flags=0)
-            pick.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, "Abrir chat", Gtk.ResponseType.OK)
-            choices = Gtk.ComboBoxText()
-            for name in names:
-                choices.append_text(name)
-            choices.set_active(0)
-            pick.get_content_area().pack_start(choices, True, True, 12)
-            pick.show_all()
-            answer = pick.run()
-            index = choices.get_active()
-            pick.destroy()
-            if answer == Gtk.ResponseType.OK and 0 <= index < len(users):
-                user = users[index]
-        if user is None:
-            self.sidebar_status.set_text("No se encontró un contacto con ese nombre o teléfono")
+        if response != Gtk.ResponseType.OK or not isinstance(user, dict):
             return
         try:
             chat_id = self.bridge.create_chat(int(user["id"]))
             self.refresh_chats()
-            self._active_chat = {"chat_id": chat_id, "username": user.get("username") or text}
+            self._active_chat = {
+                "chat_id": chat_id,
+                "username": user.get("username") or "Contacto",
+            }
             self._last_id[chat_id] = 0
             self._build_conversation(self._active_chat)
             self._load_messages(initial=True)
@@ -769,6 +902,7 @@ def run_cloud_chat() -> int:
     cfg = load_config()
     if not cfg or not cfg.cloud.enabled:
         return 2
+    apply_aidychat_branding()
     win = AidyChatWindow(cfg)
     win.show_all()
     Gtk.main()

@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+export PYTHONPATH=/opt/aidyc/aidyship${PYTHONPATH:+:$PYTHONPATH}
+exec python3 -m aidyship "$@"

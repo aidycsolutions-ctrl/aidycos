@@ -1,0 +1,12 @@
+name = "aidyship"
+description = "AidyShip: commit/push rápido a GitHub con sesión gh por usuario"
+depends_on = ["desktop-runtime"]
+
+[packages]
+apt = [
+  "git",
+  "gh",
+  "python3-gi",
+  "gir1.2-gtk-3.0",
+  "libnotify-bin",
+]

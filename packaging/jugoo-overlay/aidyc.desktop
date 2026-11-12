@@ -2,8 +2,10 @@
 Type=Application
 Name=AidyC
 Comment=Descargar o abrir AidyC
-Exec=aidyc
+Exec=/usr/local/bin/aidyc
+TryExec=/usr/bin/aidyc
 Icon=aidyc
 Terminal=false
 Categories=Utility;
 StartupNotify=true
+StartupWMClass=aidyc

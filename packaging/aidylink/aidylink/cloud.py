@@ -48,23 +48,26 @@ class AidyChatBridge:
         return base + path
 
     def _auth_headers(self) -> dict[str, str]:
-        """Send Bearer and a properly quoted aidychat_auth cookie.
+        """Send Bearer and a cookie that Flask can rehydrate.
 
-        Some reverse proxies strip ``Authorization``. The signed token often
-        contains ``=``; putting it unquoted in Cookie makes parsers truncate
-        it and check-session returns authenticated=false.
+        Some reverse proxies strip ``Authorization``. Prefer a raw cookie when
+        the token is cookie-safe (itsdangerous URL-safe alphabet); quote when
+        the value contains ``=`` so parsers do not truncate it.
         """
-        token = (self.cfg.cloud.bearer_token or "").strip()
+        token = (self.cfg.cloud.bearer_token or "").strip().strip('"')
+        if token.lower().startswith("bearer "):
+            token = token[7:].strip()
+        token = token.replace(" ", "+")
         if not token:
             return {}
-        cookie = SimpleCookie()
-        cookie["aidychat_auth"] = token
-        # name="value" only — drop Path/etc. from OutputString.
-        cookie_pair = cookie["aidychat_auth"].OutputString().split(";", 1)[0]
-        return {
-            "Authorization": f"Bearer {token}",
-            "Cookie": cookie_pair,
-        }
+        headers = {"Authorization": f"Bearer {token}"}
+        if all(ch.isalnum() or ch in "-_." for ch in token):
+            headers["Cookie"] = f"aidychat_auth={token}"
+        else:
+            cookie = SimpleCookie()
+            cookie["aidychat_auth"] = token
+            headers["Cookie"] = cookie["aidychat_auth"].OutputString().split(";", 1)[0]
+        return headers
 
     def _request(
         self,
@@ -108,7 +111,13 @@ class AidyChatBridge:
         return [chat for chat in chats if isinstance(chat, dict)]
 
     def search_user(self, query: str) -> dict[str, Any]:
-        return self._request("GET", "/api/users/search", query={"q": query})
+        try:
+            return self._request("GET", "/api/users/search", query={"q": query})
+        except RuntimeError as exc:
+            # API returns 404 when nobody matches.
+            if "HTTP 404" in str(exc):
+                return {"found": False, "users": []}
+            raise
 
     def create_chat(self, other_user_id: int) -> int:
         data = self._request("POST", "/api/chats", data={"user2_id": int(other_user_id)})
@@ -248,6 +257,39 @@ class AidyChatBridge:
 
     def check_session(self) -> dict[str, Any]:
         return self._request("GET", "/api/check-session")
+
+    def login_aidyc(self, username: str, password: str) -> dict[str, Any]:
+        """Sign in with the same AidyC ERP username/password."""
+        username = (username or "").strip()
+        password = password or ""
+        if not username or not password:
+            raise RuntimeError("Usuario y contraseña requeridos")
+        if not self.cfg.cloud.base_url:
+            self.cfg.cloud.base_url = "https://www.aidycsolutions.com"
+        # Auth endpoint must work without a prior bearer token.
+        previous = self.cfg.cloud.bearer_token
+        self.cfg.cloud.bearer_token = ""
+        try:
+            data = self._request(
+                "POST",
+                "/api/auth/aidyc",
+                data={"username": username, "password": password},
+            )
+        finally:
+            self.cfg.cloud.bearer_token = previous
+        if not isinstance(data, dict) or not data.get("success") or not data.get("token"):
+            raise RuntimeError(
+                str((data or {}).get("error") if isinstance(data, dict) else None)
+                or "No se pudo iniciar sesión con AidyC"
+            )
+        token = str(data["token"]).strip()
+        user = data.get("user") if isinstance(data.get("user"), dict) else {}
+        self.cfg.cloud.bearer_token = token
+        self.cfg.cloud.enabled = True
+        if user.get("id") is not None:
+            self.cfg.cloud.peer_user_ids["self"] = int(user["id"])
+            self._self_user_id = int(user["id"])
+        return data
 
     def refresh_self_id(self) -> int | None:
         try:

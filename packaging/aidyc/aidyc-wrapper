@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# AidyCOS launcher: open the Debian AidyC binary and brand its X11 window
+# (class + icon) without rebuilding the package.
+set -euo pipefail
+BRAND_HELPER="${AIDYCOS_AIDYC_BRAND_HELPER:-}"
+if [[ -z "$BRAND_HELPER" ]]; then
+  if [[ -f /usr/local/libexec/aidycos/aidyc-window-brand.py ]]; then
+    BRAND_HELPER=/usr/local/libexec/aidycos/aidyc-window-brand.py
+  elif [[ -f "${XDG_DATA_HOME:-$HOME/.local/share}/../libexec/aidycos/aidyc-window-brand.py" ]]; then
+    BRAND_HELPER="${HOME}/.local/libexec/aidycos/aidyc-window-brand.py"
+  else
+    BRAND_HELPER="${HOME}/.local/libexec/aidycos/aidyc-window-brand.py"
+  fi
+fi
+REAL_AIDYC="${AIDYCOS_AIDYC_BIN:-/usr/bin/aidyc}"
+if [[ ! -x "$REAL_AIDYC" ]]; then
+  echo "AidyC no está instalada ($REAL_AIDYC)." >&2
+  exit 127
+fi
+"$REAL_AIDYC" "$@" &
+pid=$!
+if [[ -f "$BRAND_HELPER" ]]; then
+  python3 "$BRAND_HELPER" --pid "$pid" >/dev/null 2>&1 &
+fi
+wait "$pid"

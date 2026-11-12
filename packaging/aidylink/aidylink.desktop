@@ -11,3 +11,4 @@ Terminal=false
 Categories=Network;InstantMessaging;Office;
 StartupNotify=true
 Keywords=chat;aidyc;intercom;mensajes;aidylink;
+StartupWMClass=aidychat

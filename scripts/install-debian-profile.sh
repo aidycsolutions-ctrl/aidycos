@@ -33,6 +33,7 @@ Vista previa del perfil AidyCOS para Debian 13:
   * Instalar el comando y acceso de menú para buscar actualizaciones Linux de AidyC.
   * Quitar la versión anterior del paquete AidyC si está instalada (conservar sus datos).
   * Instalar AidyChat nativo, icono/acceso de escritorio y daemon de usuario para notificaciones.
+  * Instalar AidyShip (commit/push GitHub con gh por usuario), icono de menú y atajo Super+G.
   * Habilitar NetworkManager y UPower para los indicadores de Wi-Fi y batería de Jugoo.
   * Migrar Wi-Fi de ifupdown (instalador Debian) a NetworkManager para que Jugoo no lo vea como LAN.
   * Instalar librsvg2-common para que los iconos symbolic SVG de Adwaita no salgan como rectángulos.
@@ -41,6 +42,7 @@ Vista previa del perfil AidyCOS para Debian 13:
   * Instalar Firefox ESR como navegador por defecto del perfil.
   * Instalar Synaptic, Flatpak/Flathub y el agente Polkit para descargar OnlyOffice u otras apps.
   * Instalar udisks2/gvfs/gvfs-fuse/thunar-volman, activar automount y thunar --daemon para USB.
+  * Unificar Descargas/Downloads (XDG) y refrescar Thunar al terminar descargas del navegador.
   * Instalar botones de cerrar, maximizar y minimizar, y atajos de Hyprland para ventanas y escritorios.
   * Configurar GRUB sin menú, modo gráfico con fallbacks y el splash de Plymouth con logo (apply-aidycos-boot.sh).
   * Preferir la resolución del monitor externo detectado para GRUB/Plymouth cuando exista.
@@ -315,7 +317,39 @@ install_jugoo() {
   rm -rf "${staging_dir}"
 
   sudo install -D -m 0755 "${ROOT}/packaging/jugoo-launcher" /usr/local/bin/jugoo
+  # Parche de iconos AidyC/AidyChat en Jugoo sin tocar /opt si el overlay ya lo trajo.
+  install -d "${HOME}/.local/share/aidycos/patches"
+  install -m 0644 "${ROOT}/packaging/jugoo-overlay/shell/icons.py" \
+    "${HOME}/.local/share/aidycos/patches/icons.py"
+  if [[ -f "${ROOT}/packaging/jugoo-overlay/patches/jugoo_aidycos_boot.py" ]]; then
+    install -m 0644 "${ROOT}/packaging/jugoo-overlay/patches/jugoo_aidycos_boot.py" \
+      "${HOME}/.local/share/aidycos/patches/jugoo_aidycos_boot.py"
+  fi
+  install -D -m 0755 "${ROOT}/packaging/jugoo-launcher" "${HOME}/.local/bin/jugoo"
   install -D -m 0644 "${ROOT}/packaging/jugoo-overlay/aidyc.desktop" "${HOME}/.local/share/applications/aidyc.desktop"
+  # Logo AidyC en hicolor + lanzador que marca WM_CLASS/icono sin recompilar AidyC.
+  sudo install -d -m 0755 /usr/local/libexec/aidycos /usr/share/pixmaps
+  if [[ -f "${ROOT}/packaging/aidyc/aidyc.png" ]]; then
+    sudo install -D -m 0644 "${ROOT}/packaging/aidyc/aidyc.png" /usr/share/pixmaps/aidyc.png
+  elif [[ -f /opt/aidyc/AidyC/Aidylogo.png ]]; then
+    sudo install -D -m 0644 /opt/aidyc/AidyC/Aidylogo.png /usr/share/pixmaps/aidyc.png
+  fi
+  for icon_size in 16 24 32 48 64 128 256 512; do
+    if [[ -f "${ROOT}/packaging/aidyc/icons/aidyc-${icon_size}.png" ]]; then
+      sudo install -D -m 0644 \
+        "${ROOT}/packaging/aidyc/icons/aidyc-${icon_size}.png" \
+        "/usr/share/icons/hicolor/${icon_size}x${icon_size}/apps/aidyc.png"
+      install -D -m 0644 \
+        "${ROOT}/packaging/aidyc/icons/aidyc-${icon_size}.png" \
+        "${HOME}/.local/share/icons/hicolor/${icon_size}x${icon_size}/apps/aidyc.png"
+    fi
+  done
+  sudo install -m 0755 "${ROOT}/packaging/aidyc/aidyc-wrapper" /usr/local/bin/aidyc
+  sudo install -m 0755 "${ROOT}/packaging/aidyc/aidyc-window-brand.py" /usr/local/libexec/aidycos/aidyc-window-brand.py
+  if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    sudo gtk-update-icon-cache -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
+    gtk-update-icon-cache -f "${HOME}/.local/share/icons/hicolor" >/dev/null 2>&1 || true
+  fi
   if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "${HOME}/.local/share/applications" >/dev/null 2>&1 || true
   fi
@@ -495,6 +529,15 @@ mkdir -p "${XDG_CONFIG_HOME:-${HOME}/.config}/xfce4/xfconf/xfce-perchannel-xml"
 install -m 0644 \
   "${ROOT}/packaging/thunar/thunar-volman.xml" \
   "${XDG_CONFIG_HOME:-${HOME}/.config}/xfce4/xfconf/xfce-perchannel-xml/thunar-volman.xml"
+# Keep browser downloads on one folder (Descargas/Downloads) and poke Thunar
+# when *.crdownload/*.part finalize so the final file shows up without F5.
+sudo install -D -m 0755 \
+  "${ROOT}/packaging/thunar/aidycos-download-dir.py" \
+  /usr/local/bin/aidycos-download-dir
+if ! command -v xdg-user-dirs-update >/dev/null 2>&1; then
+  sudo apt-get install -y --no-install-recommends xdg-user-dirs
+fi
+/usr/local/bin/aidycos-download-dir ensure || true
 if getent group plugdev >/dev/null 2>&1; then
   if ! id -nG "${USER}" | tr ' ' '\n' | grep -qx plugdev; then
     sudo usermod -aG plugdev "${USER}" || true
@@ -577,6 +620,57 @@ install_aidylink() {
 }
 install_aidylink
 
+install_aidyship() {
+  local aidyship_dir=/opt/aidyc/aidyship
+  local desktop_dir="${HOME}/.local/share/applications"
+  local desktop_entry="${ROOT}/packaging/aidyship/aidyship.desktop"
+  local icon_size
+  # GitHub CLI is required for per-user login; git is already in the bootstrap set.
+  if ! command -v gh >/dev/null 2>&1; then
+    sudo apt-get install -y --no-install-recommends gh
+  fi
+  if ! dpkg-query -W -f='${db:Status-Status}' python3-gi 2>/dev/null | grep -qx 'installed'; then
+    sudo apt-get install -y --no-install-recommends python3-gi gir1.2-gtk-3.0
+  fi
+  if ! command -v notify-send >/dev/null 2>&1; then
+    sudo apt-get install -y --no-install-recommends libnotify-bin
+  fi
+  sudo install -d -m 0755 "${aidyship_dir}/aidyship" /usr/local/bin /usr/share/applications
+  sudo install -m 0644 "${ROOT}/packaging/aidyship/aidyship/"*.py "${aidyship_dir}/aidyship/"
+  sudo install -m 0644 "${ROOT}/packaging/aidyship/README.md" "${aidyship_dir}/README.md"
+  sudo install -m 0755 "${ROOT}/packaging/aidyship/aidyship-wrapper" /usr/local/bin/aidyship
+  sudo install -m 0644 "${desktop_entry}" /usr/share/applications/aidyship.desktop
+  for icon_size in 16 24 32 48 64 128 256 512; do
+    if [[ -f "${ROOT}/packaging/aidyship/icons/aidyship-${icon_size}.png" ]]; then
+      sudo install -D -m 0644 \
+        "${ROOT}/packaging/aidyship/icons/aidyship-${icon_size}.png" \
+        "/usr/share/icons/hicolor/${icon_size}x${icon_size}/apps/aidyship.png"
+    fi
+  done
+  if [[ -f "${ROOT}/packaging/aidyship/aidyship.png" ]]; then
+    sudo install -D -m 0644 "${ROOT}/packaging/aidyship/aidyship.png" /usr/share/pixmaps/aidyship.png
+  fi
+  install -d "${desktop_dir}" "${HOME}/.local/share/icons/hicolor"
+  install -m 0644 "${desktop_entry}" "${desktop_dir}/aidyship.desktop"
+  for icon_size in 16 24 32 48 64 128 256 512; do
+    if [[ -f "${ROOT}/packaging/aidyship/icons/aidyship-${icon_size}.png" ]]; then
+      install -D -m 0644 \
+        "${ROOT}/packaging/aidyship/icons/aidyship-${icon_size}.png" \
+        "${HOME}/.local/share/icons/hicolor/${icon_size}x${icon_size}/apps/aidyship.png"
+    fi
+  done
+  if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    sudo gtk-update-icon-cache -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
+    gtk-update-icon-cache -f "${HOME}/.local/share/icons/hicolor" >/dev/null 2>&1 || true
+  fi
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    sudo update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+    update-desktop-database "${desktop_dir}" >/dev/null 2>&1 || true
+  fi
+  echo "AidyShip instalado. Abre el menú o Super+G; la primera vez pide conectar tu GitHub."
+}
+install_aidyship
+
 CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
 HYPR_DIR="${CONFIG_HOME}/hypr"
 HYPR_CONF="${HYPR_DIR}/hyprland.conf"
@@ -619,6 +713,7 @@ input {
 }
 bind = SUPER, SPACE, exec, jugoo action launcher
 bind = SUPER, E, exec, /usr/bin/env GDK_BACKEND=wayland /usr/bin/thunar
+bind = SUPER, G, exec, aidyship ui
 bind = , Print, exec, ~/.local/bin/captura.sh
 bind = ALT, F4, exec, jugoo action session
 bind = SUPER, LEFT, workspace, -1
@@ -628,6 +723,8 @@ bind = SUPER SHIFT, U, exec, aidycos-update --check
 exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE DISPLAY
 exec-once = /usr/local/bin/aidycos-prefer-external-display
 exec-once = /usr/bin/thunar --daemon
+exec-once = /usr/local/bin/aidycos-download-dir ensure
+exec-once = /usr/local/bin/aidycos-download-dir watch
 EOF
   printf 'exec-once = %s\n' "${POLKIT_AGENT}" >>"${HYPR_AIDYCOS_CONF}"
 else
@@ -664,12 +761,15 @@ else
   grep -qF 'exec-once = /usr/local/bin/aidycos-prefer-external-display' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*(hyprpolkitagent|polkit-mate-authentication-agent-1)' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qF 'bind = SUPER SHIFT, U, exec, aidycos-update --check' "${HYPR_AIDYCOS_CONF}" || missing=1
+  grep -qF 'bind = SUPER, G, exec, aidyship ui' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*dbus-update-activation-environment' "${HYPR_AIDYCOS_CONF}" \
     || grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*dbus-update-activation-environment' "${HYPR_CONF}" 2>/dev/null \
     || missing=1
   grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*thunar[[:space:]]+--daemon' "${HYPR_AIDYCOS_CONF}" \
     || grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*thunar[[:space:]]+--daemon' "${HYPR_CONF}" 2>/dev/null \
     || missing=1
+  grep -qF 'exec-once = /usr/local/bin/aidycos-download-dir ensure' "${HYPR_AIDYCOS_CONF}" || missing=1
+  grep -qF 'exec-once = /usr/local/bin/aidycos-download-dir watch' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qE '^[[:space:]]*env[[:space:]]*=[[:space:]]*XDG_CURRENT_DESKTOP,' "${HYPR_AIDYCOS_CONF}" \
     || grep -qE '^[[:space:]]*env[[:space:]]*=[[:space:]]*XDG_CURRENT_DESKTOP,' "${HYPR_CONF}" 2>/dev/null \
     || missing=1
@@ -728,6 +828,9 @@ EOF
     if ! grep -qF 'bind = SUPER SHIFT, U, exec, aidycos-update --check' "${HYPR_AIDYCOS_CONF}"; then
       printf 'bind = SUPER SHIFT, U, exec, aidycos-update --check\n' >>"${HYPR_AIDYCOS_CONF}"
     fi
+    if ! grep -qF 'bind = SUPER, G, exec, aidyship ui' "${HYPR_AIDYCOS_CONF}"; then
+      printf 'bind = SUPER, G, exec, aidyship ui\n' >>"${HYPR_AIDYCOS_CONF}"
+    fi
     if ! grep -qE '^[[:space:]]*env[[:space:]]*=[[:space:]]*XDG_CURRENT_DESKTOP,' "${HYPR_AIDYCOS_CONF}" \
        && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*env[[:space:]]*=[[:space:]]*XDG_CURRENT_DESKTOP,' "${HYPR_CONF}"; }; then
       printf 'env = XDG_CURRENT_DESKTOP,Hyprland\nenv = XDG_SESSION_TYPE,wayland\n' >>"${HYPR_AIDYCOS_CONF}"
@@ -739,6 +842,12 @@ EOF
     if ! grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*thunar[[:space:]]+--daemon' "${HYPR_AIDYCOS_CONF}" \
        && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*thunar[[:space:]]+--daemon' "${HYPR_CONF}"; }; then
       printf 'exec-once = /usr/bin/thunar --daemon\n' >>"${HYPR_AIDYCOS_CONF}"
+    fi
+    if ! grep -qF 'exec-once = /usr/local/bin/aidycos-download-dir ensure' "${HYPR_AIDYCOS_CONF}"; then
+      printf 'exec-once = /usr/local/bin/aidycos-download-dir ensure\n' >>"${HYPR_AIDYCOS_CONF}"
+    fi
+    if ! grep -qF 'exec-once = /usr/local/bin/aidycos-download-dir watch' "${HYPR_AIDYCOS_CONF}"; then
+      printf 'exec-once = /usr/local/bin/aidycos-download-dir watch\n' >>"${HYPR_AIDYCOS_CONF}"
     fi
   fi
 fi

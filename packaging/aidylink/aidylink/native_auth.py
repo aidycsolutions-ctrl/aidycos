@@ -17,7 +17,95 @@ from .cloud import AidyChatBridge
 from .config import LinkConfig, save_config
 
 DEFAULT_BASE_URL = "https://www.aidycsolutions.com"
+# Apex (sin www) no responde en 443; no lo uses como fallback.
+ALT_BASE_URLS = (
+    "https://www.aidycsolutions.com",
+)
 LOGIN_URL = DEFAULT_BASE_URL + "/aidychat/loginchat"
+
+# Runs on 127.0.0.1 after the HTTPS login page redirects here. The token is
+# carried in the URL hash (not the query) so CSP form-action/connect-src on the
+# production site cannot block the handoff, and query truncation cannot eat it.
+_INTERSTITIAL_HTML = """<!doctype html>
+<meta charset="utf-8">
+<title>AidyChat</title>
+<p>Completando inicio de sesión…</p>
+<script>
+(function () {
+  const q = new URLSearchParams(location.search);
+  const h = new URLSearchParams((location.hash || "").replace(/^#/, ""));
+  let token = (h.get("t") || h.get("token") || q.get("token") || "").trim();
+  const state = (q.get("state") || h.get("state") || "").trim();
+  if (!token) {
+    document.body.innerHTML = "<h2>Falta el token</h2><p>Vuelve a AidyChat e inténtalo de nuevo.</p>";
+    return;
+  }
+  // Some browsers turn '+' into spaces while decoding.
+  token = token.replace(/ /g, '+');
+  fetch("/aidylink-auth", {
+    method: "POST",
+    headers: {"Content-Type": "application/x-www-form-urlencoded"},
+    body: new URLSearchParams({token, state}).toString(),
+    cache: "no-store",
+  }).then(async (res) => {
+    const html = await res.text();
+    document.open();
+    document.write(html);
+    document.close();
+  }).catch((err) => {
+    document.body.innerHTML = "<h2>No se pudo completar</h2><p>" +
+      String(err || "error") + "</p><p>Vuelve a AidyChat e inténtalo de nuevo.</p>";
+  });
+})();
+</script>
+"""
+
+
+def _normalize_token(raw: str) -> str:
+    token = (raw or "").strip()
+    # Decode twice in case a proxy or browser left percent-encoding in place.
+    for _ in range(2):
+        decoded = urllib.parse.unquote_plus(token)
+        if decoded == token:
+            break
+        token = decoded
+    token = token.strip().strip('"').strip("'")
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    # URL handlers sometimes turn '+' into spaces.
+    token = token.replace(" ", "+")
+    # Trim accidental wrapping from copy/paste or HTML entities.
+    token = token.replace("\n", "").replace("\r", "").replace("\t", "")
+    return token
+
+
+def _validate_cloud_session(cfg: LinkConfig, token: str) -> dict:
+    """Try check-session against www/apex until one accepts the token."""
+    last: dict = {"authenticated": False}
+    original_base = cfg.cloud.base_url
+    bases: list[str] = []
+    for base in (original_base, *ALT_BASE_URLS):
+        base = (base or "").rstrip("/")
+        if base and base not in bases:
+            bases.append(base)
+    try:
+        for base in bases:
+            cfg.cloud.base_url = base
+            cfg.cloud.bearer_token = token
+            cfg.cloud.enabled = True
+            bridge = AidyChatBridge(cfg)
+            session = bridge.check_session()
+            last = session if isinstance(session, dict) else {"authenticated": False}
+            if last.get("authenticated"):
+                return last
+        return last
+    finally:
+        # Keep the base that worked (enabled + token already set). If none
+        # worked, restore whatever we started with for a clean error path.
+        if not last.get("authenticated"):
+            cfg.cloud.base_url = original_base or DEFAULT_BASE_URL
+            cfg.cloud.bearer_token = ""
+            cfg.cloud.enabled = False
 
 
 def open_login_url(url: str) -> bool:
@@ -87,9 +175,8 @@ def start_google_login(
                 self.send_error(404)
                 return
             try:
-                received_state = (fields.get("state") or [""])[0]
-                # URLSearchParams / some browsers may turn '+' into spaces.
-                token = (fields.get("token") or [""])[0].strip().replace(" ", "+")
+                received_state = _normalize_token((fields.get("state") or [""])[0])
+                token = _normalize_token((fields.get("token") or [""])[0])
                 if not token:
                     self.send_error(400, "Falta el token de AidyChat")
                     return
@@ -100,20 +187,27 @@ def start_google_login(
                 ):
                     self.send_error(400, "Estado de inicio de sesión inválido")
                     return
-                cfg.cloud.base_url = DEFAULT_BASE_URL
-                cfg.cloud.bearer_token = token
-                cfg.cloud.enabled = True
-                bridge = AidyChatBridge(cfg)
-                session = bridge.check_session()
+                parts = token.count(".")
+                if parts < 2 or len(token) < 20:
+                    raise RuntimeError(
+                        "El token llegó incompleto al escritorio "
+                        f"(len={len(token)}, parts={parts + 1}). "
+                        "Cierra el navegador e inténtalo otra vez."
+                    )
+                session = _validate_cloud_session(cfg, token)
                 user = session.get("user") if isinstance(session.get("user"), dict) else {}
                 user_id = user.get("id")
                 if not session.get("authenticated") or user_id is None:
                     raise RuntimeError(
                         "El servidor no aceptó el token "
-                        f"(authenticated={session.get('authenticated')!r}). "
-                        "Vuelve a intentar el inicio de sesión."
+                        f"(authenticated={session.get('authenticated')!r}, "
+                        f"len={len(token)}). Vuelve a intentar el inicio de sesión."
                     )
                 cfg.cloud.peer_user_ids["self"] = int(user_id)
+                cfg.cloud.enabled = True
+                cfg.cloud.bearer_token = token
+                if not cfg.cloud.base_url:
+                    cfg.cloud.base_url = DEFAULT_BASE_URL
                 save_config(cfg)
                 result["username"] = str(user.get("username") or "AidyChat")
                 self.send_response(200)
@@ -158,13 +252,23 @@ def start_google_login(
                 self.send_error(404)
                 return
             fields = urllib.parse.parse_qs(parsed.query)
+            token = _normalize_token((fields.get("token") or [""])[0])
+            if not token:
+                # Token travels in the hash; browser keeps it client-side.
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(_INTERSTITIAL_HTML.encode("utf-8"))
+                return
             self._take_fields(fields)
 
         def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-            if self.path != "/aidylink-auth" or completed.is_set():
+            parsed = urllib.parse.urlparse(self.path)
+            if parsed.path != "/aidylink-auth" or completed.is_set():
                 self.send_error(404)
                 return
-            length = min(int(self.headers.get("Content-Length", "0")), 8192)
+            length = min(int(self.headers.get("Content-Length", "0")), 16384)
             fields = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
             self._take_fields(fields)
 

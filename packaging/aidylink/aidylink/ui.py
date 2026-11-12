@@ -21,6 +21,7 @@ from .config import default_team_secret, init_config, load_config, save_config
 from .daemon import control_request
 from .messages import MAX_ATTACHMENT_BYTES
 from .native_auth import start_google_login
+from .branding import apply_aidychat_branding
 from .paths import control_socket_path
 
 
@@ -432,6 +433,7 @@ class AidylinkWindow(Gtk.Window):
         self.set_border_width(0)
         self.set_position(Gtk.WindowPosition.CENTER)
         self.get_style_context().add_class("aidychat-lan")
+        apply_aidychat_branding(self)
         _install_chat_style()
 
         self._peers: list[dict[str, Any]] = []
@@ -855,7 +857,7 @@ class AidylinkWindow(Gtk.Window):
         items = (
             ("Emparejar / código de grupo", self.open_pair_dialog),
             ("Ajustes de grupo local", self.open_group_dialog),
-            ("Cuenta Google / AidyChat nube", self.open_cloud_dialog),
+            ("Cuenta AidyC / AidyChat nube", self.open_cloud_dialog),
             ("Actualizar equipos", self._manual_refresh),
         )
         for label, handler in items:
@@ -1827,6 +1829,95 @@ class AidylinkWindow(Gtk.Window):
         if cfg is None:
             self._append_line("⚠ No se encontró la configuración de AidyChat.")
             return
+        dialog = Gtk.Dialog(title="Cuenta AidyChat", transient_for=self, flags=0)
+        dialog.add_buttons(
+            "Google", Gtk.ResponseType.APPLY,
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            "Entrar", Gtk.ResponseType.OK,
+        )
+        dialog.set_default_size(420, 260)
+        box = dialog.get_content_area()
+        box.set_spacing(8)
+        box.set_border_width(12)
+        box.pack_start(
+            Gtk.Label(
+                label="Entra con el mismo usuario y contraseña de AidyC.",
+                xalign=0,
+                wrap=True,
+            ),
+            False,
+            False,
+            0,
+        )
+        user_e = Gtk.Entry()
+        user_e.set_placeholder_text("Usuario AidyC")
+        user_e.set_activates_default(True)
+        pass_e = Gtk.Entry()
+        pass_e.set_placeholder_text("Contraseña")
+        pass_e.set_visibility(False)
+        pass_e.set_input_purpose(Gtk.InputPurpose.PASSWORD)
+        pass_e.set_activates_default(True)
+        box.pack_start(Gtk.Label(label="Usuario", xalign=0), False, False, 0)
+        box.pack_start(user_e, False, False, 0)
+        box.pack_start(Gtk.Label(label="Contraseña", xalign=0), False, False, 0)
+        box.pack_start(pass_e, False, False, 0)
+        dialog.set_default_response(Gtk.ResponseType.OK)
+        dialog.show_all()
+        response = dialog.run()
+        username = (user_e.get_text() or "").strip()
+        password = pass_e.get_text() or ""
+        dialog.destroy()
+        if response == Gtk.ResponseType.APPLY:
+            self._start_google_login(cfg)
+            return
+        if response != Gtk.ResponseType.OK:
+            return
+        if not username or not password:
+            self._append_line("⚠ Escribe usuario y contraseña de AidyC.")
+            return
+        self._append_line("Validando cuenta AidyC…")
+        self.google_btn.set_sensitive(False)
+
+        def work() -> None:
+            try:
+                from .cloud import AidyChatBridge
+
+                if not cfg.cloud.base_url:
+                    cfg.cloud.base_url = "https://www.aidycsolutions.com"
+                bridge = AidyChatBridge(cfg)
+                data = bridge.login_aidyc(username, password)
+                save_config(cfg)
+                user = data.get("user") if isinstance(data.get("user"), dict) else {}
+                result = str(user.get("username") or username)
+                error = None
+            except Exception as exc:
+                result, error = None, exc
+            GLib.idle_add(finish, result, error)
+
+        def finish(name: str | None, error: Exception | None) -> bool:
+            self.google_btn.set_sensitive(True)
+            if error:
+                self._append_line(f"⚠ No se pudo iniciar sesión: {error}")
+                return GLib.SOURCE_REMOVE
+            self._append_line(f"✓ Sesión iniciada como {name or 'AidyChat'}.")
+            try:
+                subprocess.run(
+                    ["systemctl", "--user", "restart", "aidylink.service"],
+                    check=False,
+                    timeout=8,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception:
+                pass
+            self.destroy()
+            return GLib.SOURCE_REMOVE
+
+        import threading
+
+        threading.Thread(target=work, daemon=True, name="aidychat-aidyc-login").start()
+
+    def _start_google_login(self, cfg: Any) -> None:
         self.google_btn.set_sensitive(False)
         self._append_line("Preparando inicio de sesión con Google…")
 
@@ -1960,6 +2051,7 @@ def run_ui() -> int:
         dialog.destroy()
         return 1
 
+    apply_aidychat_branding()
     cfg = load_config()
     if cfg is not None and cfg.cloud.enabled:
         # Keep the local LAN window available for accounts without AidyChat;

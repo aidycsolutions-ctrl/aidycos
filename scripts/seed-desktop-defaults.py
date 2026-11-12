@@ -82,6 +82,7 @@ def default_icons(home: Path) -> list[dict[str, object]]:
     y = 48
     candidates = [
         ("AidyChat", "application", "aidychat", "aidychat"),
+        ("AidyShip", "application", "aidyship", "aidyship"),
         ("Firefox", "application", "firefox-esr", "firefox-esr"),
         ("Archivos", "directory", str(home), "user-home"),
         ("Terminal", "application", "foot", "utilities-terminal"),

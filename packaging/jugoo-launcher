@@ -10,7 +10,12 @@ elif [ -d "${HOME}/.local/share/aidycos/jugoo/shell" ]; then
 else
   JUGOO_DIR=/opt/aidyc/jugoo
 fi
+
+BOOT="${HOME}/.local/share/aidycos/patches/jugoo_aidycos_boot.py"
 # Do not inherit a polluted PYTHONPATH from a previous session.
 export PYTHONPATH="${JUGOO_DIR}"
 cd "${JUGOO_DIR}"
+if [ -f "$BOOT" ]; then
+  exec python3 "$BOOT" "$@"
+fi
 exec python3 -m shell "$@"

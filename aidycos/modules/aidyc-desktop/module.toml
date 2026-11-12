@@ -59,6 +59,8 @@ apt = [
   "gvfs-backends",
   "gvfs-fuse",
   "thunar-volman",
+  # Canonical ~/Descargas (or Downloads) via XDG; used by aidycos-download-dir.
+  "xdg-user-dirs",
   "ntfs-3g",
   "exfatprogs",
   "dosfstools",

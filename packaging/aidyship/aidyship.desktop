@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=AidyShip
+GenericName=GitHub
+Comment=Commit y push rápido a GitHub desde AidyCOS
+Exec=/usr/local/bin/aidyship ui
+TryExec=/usr/local/bin/aidyship
+Icon=aidyship
+Terminal=false
+Categories=Development;RevisionControl;
+StartupNotify=true
+Keywords=git;github;commit;push;aidyc;aidyship;
+StartupWMClass=aidyship
