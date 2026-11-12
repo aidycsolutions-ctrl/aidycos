@@ -16,6 +16,26 @@ Al aplicar este perfil, se quita la versión anterior de AidyC si está instalad
 
 AidyCOS comprueba GitHub diariamente y muestra una ventana de confirmación cuando detecta un commit nuevo en `main`; solo descarga y reaplica el perfil si aceptas. También puedes iniciar la comprobación desde **Actualizar AidyCOS** en el menú o con `Super+Shift+U` (avisará al instante mientras consulta GitHub). Al aceptar, abre una terminal nueva (foot u otra disponible) para descargar el perfil y pedir la contraseña; el acceso del menú no usa `Terminal=true` para evitar que la consola quede en blanco tras el «Sí». Requiere conexión a Internet.
 
+### Quitar AidyCOS y volver atrás
+
+Si pruebas el perfil y no te sirve, puedes deshacerlo. Restaura el gestor de pantalla, GRUB/Plymouth y la red cuando hay respaldos `*.aidycos-backup*`, y quita Jugoo/tema/lanzadores del perfil. Conserva tus archivos y los datos de AidyC/AidyChat. Por defecto no hace `apt remove` de paquetes (el equipo sigue pudiendo arrancar); usa `--remove-packages` si también quieres quitar Hyprland (y SDDM si había otro gestor).
+
+Desde el menú: **Quitar AidyCOS**. En terminal:
+
+```sh
+aidycos-uninstall
+# o
+aidycos uninstall
+```
+
+Vista previa sin cambios: `aidycos uninstall --dry-run`. Sin reinicio: `--no-reboot`. Remoto (pide confirmación escribiendo `quitar`):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/aidycsolutions-ctrl/aidycos/main/uninstall.sh | bash
+```
+
+Si el equipo quedó sin escritorio gráfico, instala uno de Debian (`sudo apt install task-gnome-desktop`, por ejemplo) y reinicia.
+
 El perfil replica la base funcional que se definió para la ISO, no los mecanismos propios de un sistema live. No instala live-boot, no crea usuarios temporales y no configura contraseñas. El equipo conserva su instalación Debian y los archivos personales. Antes de añadir atajos de Hyprland, el instalador guarda una copia de la configuración existente.
 
 ## Probar desde el checkout
@@ -124,6 +144,7 @@ CLI → detección /etc/os-release → adaptador de paquetes
 - `aidycos doctor`: informa distribución y soporte.
 - `aidycos plan <módulo...>`: muestra el plan sin cambios.
 - `aidycos install <módulo...>`: muestra el plan; `--apply` lo ejecuta.
+- `aidycos uninstall`: quita el perfil y restaura respaldos del sistema anterior.
 
 ## Camino al repositorio público
 

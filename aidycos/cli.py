@@ -19,6 +19,18 @@ def _parser() -> argparse.ArgumentParser:
 
     commands.add_parser("modules", help="Lista los módulos disponibles")
     commands.add_parser("doctor", help="Muestra distribución y soporte disponible")
+    uninstall = commands.add_parser(
+        "uninstall",
+        help="Quita el perfil AidyCOS y restaura respaldos del sistema anterior",
+    )
+    uninstall.add_argument("--dry-run", action="store_true", help="Solo muestra qué haría")
+    uninstall.add_argument("--yes", "-y", action="store_true", help="No pedir confirmación")
+    uninstall.add_argument("--no-reboot", action="store_true", help="No reiniciar al terminar")
+    uninstall.add_argument(
+        "--remove-packages",
+        action="store_true",
+        help="También quita paquetes Hyprland/SDDM del perfil",
+    )
     for command, help_text in (("plan", "Muestra qué instalaría un módulo"),
                                ("install", "Planifica o instala un módulo")):
         sub = commands.add_parser(command, help=help_text)
@@ -26,6 +38,41 @@ def _parser() -> argparse.ArgumentParser:
         if command == "install":
             sub.add_argument("--apply", action="store_true", help="Ejecuta los comandos del gestor de paquetes")
     return parser
+
+
+def _uninstall_script() -> str:
+    candidates = [
+        os.environ.get("AIDYCOS_UNINSTALL"),
+        os.path.expanduser("~/.local/bin/aidycos-uninstall"),
+        "/usr/local/bin/aidycos-uninstall",
+        os.path.join(os.path.dirname(__file__), "..", "scripts", "uninstall-debian-profile.sh"),
+    ]
+    for path in candidates:
+        if not path:
+            continue
+        resolved = os.path.abspath(path)
+        if os.path.isfile(resolved) and os.access(resolved, os.X_OK):
+            return resolved
+        if os.path.isfile(resolved):
+            return resolved
+    raise FileNotFoundError(
+        "No se encontró aidycos-uninstall. Reaplica el perfil o usa "
+        "scripts/uninstall-debian-profile.sh"
+    )
+
+
+def _run_uninstall(args: argparse.Namespace) -> int:
+    script = _uninstall_script()
+    argv = ["bash", script]
+    if args.dry_run:
+        argv.append("--dry-run")
+    if args.yes:
+        argv.append("--yes")
+    if args.no_reboot:
+        argv.append("--no-reboot")
+    if args.remove_packages:
+        argv.append("--remove-packages")
+    return subprocess.run(argv, check=False).returncode
 
 
 def _print_doctor() -> int:
@@ -78,8 +125,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "doctor":
             return _print_doctor()
+        if args.command == "uninstall":
+            return _run_uninstall(args)
         return _show_plan(args.modules, apply=getattr(args, "apply", False))
-    except (ModuleError, UnsupportedDistribution, OSError) as error:
+    except (ModuleError, UnsupportedDistribution, OSError, FileNotFoundError) as error:
         print(f"AidyCOS: {error}", file=sys.stderr)
         return 2
 

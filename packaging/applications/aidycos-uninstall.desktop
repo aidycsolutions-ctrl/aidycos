@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Quitar AidyCOS
+Comment=Quitar el perfil AidyCOS y restaurar el sistema anterior cuando sea posible
+Exec=aidycos-uninstall
+Icon=system-software-remove
+Terminal=true
+Categories=System;Settings;
+StartupNotify=true

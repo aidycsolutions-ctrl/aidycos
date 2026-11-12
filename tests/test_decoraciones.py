@@ -30,6 +30,7 @@ class DecoracionesTests(unittest.TestCase):
     def test_non_csd_keeps_hyprbars(self) -> None:
         self.assertFalse(decoraciones.client_draws_title_buttons(class_name="foot"))
         self.assertFalse(decoraciones.client_draws_title_buttons(class_name="thunar"))
+        self.assertFalse(decoraciones.client_draws_title_buttons(class_name="aidychat"))
         # libadwaita in maps alone must not hide hyprbars (zenity false positive).
         self.assertFalse(
             decoraciones.client_draws_title_buttons(
@@ -37,6 +38,15 @@ class DecoracionesTests(unittest.TestCase):
                 maps="/usr/lib/libadwaita-1.so.0",
             )
         )
+
+    def test_updated_rules_never_hides_aidychat(self) -> None:
+        previous = decoraciones.render_csd_rules(["firefox-esr", "aidychat"])
+        rendered = decoraciones.updated_rules(previous, ["firefox-esr", "aidychat"])
+        self.assertIsNotNone(rendered)
+        assert rendered is not None
+        classes = decoraciones.classes_in_rules(rendered)
+        self.assertEqual(classes, {"firefox-esr"})
+        self.assertNotIn("aidychat", classes)
 
     def test_executable_fallback(self) -> None:
         self.assertTrue(

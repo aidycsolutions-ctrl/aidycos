@@ -90,8 +90,10 @@ class AidyChatBridge:
             body = json.dumps(data).encode("utf-8")
             headers["Content-Type"] = "application/json"
         req = urllib.request.Request(url, data=body, headers=headers, method=method)
+        # Keep interactive chat snappy; long uploads use their own timeout.
+        timeout = 8.0 if method == "GET" else 10.0
         try:
-            with urllib.request.urlopen(req, timeout=12) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
                 raw = resp.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:200]

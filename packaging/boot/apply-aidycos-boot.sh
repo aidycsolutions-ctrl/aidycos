@@ -62,6 +62,10 @@ run_root install -D -m 0755 "${ROOT}/packaging/boot/aidycos-grub-background" /us
 
 # Prefer Theme= in plymouthd.conf (Debian 13) and keep a default.plymouth link.
 run_root install -d -m 0755 /etc/plymouth
+if run_root test -e /etc/plymouth/plymouthd.conf \
+   && ! run_root test -e /etc/plymouth/plymouthd.conf.aidycos-backup; then
+  run_root cp -a /etc/plymouth/plymouthd.conf /etc/plymouth/plymouthd.conf.aidycos-backup
+fi
 run_root tee /etc/plymouth/plymouthd.conf >/dev/null <<'EOF'
 # Managed by AidyCOS. Quiet boot splash with the AidyCOS logo.
 [Daemon]

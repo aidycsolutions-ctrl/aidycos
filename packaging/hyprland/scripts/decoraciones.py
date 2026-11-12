@@ -36,6 +36,19 @@ _CSD_EXECUTABLE = frozenset(
         "chatgpt",
     }
 )
+# Apps that never ship min/max/close themselves — always keep hyprbars.
+# Defense against stale jugoo_hyprbars_csd.conf entries after class renames.
+_FORCE_HYPRBARS_CLASS = frozenset(
+    {
+        "aidychat",
+        "aidylink",
+        "aidyc",
+        "aidyship",
+        "foot",
+        "thunar",
+        "xfce4-terminal",
+    }
+)
 _CLASS_MARK = re.compile(r"^# class: (.+)$", re.MULTILINE)
 SHELL_CLASS = "com.jugoo.Shell"
 
@@ -55,7 +68,10 @@ def client_draws_title_buttons(
     libadwaita does not guarantee minimize/maximize/close buttons.
     """
     del maps  # intentionally unused — see docstring
-    if _CSD_CLASS.match((class_name or "").strip()):
+    name = (class_name or "").strip()
+    if name.lower() in _FORCE_HYPRBARS_CLASS:
+        return False
+    if _CSD_CLASS.match(name):
         return True
     base = (executable or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
     return base in _CSD_EXECUTABLE
@@ -91,13 +107,19 @@ def render_csd_rules(classes: Iterable[str]) -> str:
 
 def updated_rules(previous: str, detected: Iterable[str]) -> str | None:
     """Merge detected classes; drop stale false positives from older heuristics."""
-    detected_set = {name.strip() for name in detected if name and name.strip()}
+    detected_set = {
+        name.strip()
+        for name in detected
+        if name and name.strip() and client_draws_title_buttons(class_name=name.strip())
+    }
     classes = {
         name
         for name in classes_in_rules(previous)
         if name in detected_set or client_draws_title_buttons(class_name=name)
     }
     classes.update(detected_set)
+    # Never hide hyprbars on apps we know lack caption buttons.
+    classes = {name for name in classes if name.lower() not in _FORCE_HYPRBARS_CLASS}
     rendered = render_csd_rules(classes)
     if (previous or "").strip() == rendered.strip():
         return None

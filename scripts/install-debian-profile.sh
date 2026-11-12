@@ -54,6 +54,7 @@ Vista previa del perfil AidyCOS para Debian 13:
   * Retrasar cups-browsed hasta el entorno gráfico.
   * Instalar el gestor de impresoras y Alt+F4 para el menú de apagado.
   * Mantener usuario, contraseña y autologin actuales; cambiar el gestor de sesión a SDDM y respaldar los ajustes Hyprland tocados.
+  * Instalar el comando y acceso de menú «Quitar AidyCOS» para devolver el sistema anterior.
 No se hicieron cambios.
 EOF
   exit 0
@@ -193,6 +194,8 @@ ensure_source() {
     exit 1
   fi
   printf '%s\n' "${content}" | sudo tee "${path}" >/dev/null
+  sudo install -d -m 0755 /var/lib/aidycos
+  printf '%s\n' "${path}" | sudo tee -a /var/lib/aidycos/created-apt-sources >/dev/null
   echo "Fuente APT de AidyCOS añadida: ${path}"
 }
 
@@ -397,8 +400,13 @@ install_jugoo
 # need an explicit launcher that checks GitHub and compares Debian versions.
 sudo install -m 0755 "${ROOT}/scripts/aidyc-update" /usr/local/bin/aidyc-update
 sudo install -m 0755 "${ROOT}/scripts/aidycos-onlyoffice" /usr/local/bin/aidycos-onlyoffice
+sudo install -m 0755 "${ROOT}/scripts/uninstall-debian-profile.sh" /usr/local/bin/aidycos-uninstall
+install -D -m 0755 "${ROOT}/scripts/uninstall-debian-profile.sh" \
+  "${HOME}/.local/bin/aidycos-uninstall"
 install -D -m 0644 "${ROOT}/packaging/applications/aidyc-update.desktop" \
   "${HOME}/.local/share/applications/aidyc-update.desktop"
+install -D -m 0644 "${ROOT}/packaging/applications/aidycos-uninstall.desktop" \
+  "${HOME}/.local/share/applications/aidycos-uninstall.desktop"
 # Friendly Spanish entry for the CUPS printer manager.
 install -D -m 0644 "${ROOT}/packaging/applications/aidycos-impresoras.desktop" \
   "${HOME}/.local/share/applications/aidycos-impresoras.desktop"
@@ -697,12 +705,18 @@ fi
 install -m 0644 "${ROOT}/packaging/hyprland/config/jugoo_ventanas.conf" "${HYPR_WINDOWS_CONF}"
 sudo install -m 0755 "${ROOT}/packaging/hyprland/aidycos-prefer-external-display" /usr/local/bin/aidycos-prefer-external-display
 
-# Title-bar buttons: compile hyprbars here (not via Jugoo). Needs network +
-# hyprland-dev from backports; without this the test laptop has no min/close.
+# Title-bar buttons: compile hyprbars here (not via Jugoo). Sources are vendored
+# so flaky GitHub/SSL on test laptops cannot leave windows without min/close.
+# hyprland-dev still comes from backports; failure must abort the profile.
 if ! bash "${ROOT}/packaging/hyprland/setup-hyprbars.sh"; then
   echo "ERROR: no se pudieron instalar los botones de título (hyprbars)." >&2
   echo "Sin ~/.local/lib/jugoo/hyprbars.so las ventanas no muestran minimizar/cerrar." >&2
-  echo "Revisa red, hyprland-dev (trixie-backports) y vuelve a aplicar el perfil." >&2
+  echo "Revisa hyprland-dev (trixie-backports) y vuelve a aplicar el perfil." >&2
+  exit 1
+fi
+if [[ ! -f "${HOME}/.local/lib/jugoo/hyprbars.so" || ! -f "${HYPR_HYPERBARS_CONF}" ]]; then
+  echo "ERROR: hyprbars no quedó instalado tras setup-hyprbars.sh." >&2
+  exit 1
 fi
 if [[ ! -e "${HYPR_AIDYCOS_CONF}" ]]; then
   cat >"${HYPR_AIDYCOS_CONF}" <<'EOF'
@@ -1071,11 +1085,15 @@ configure_login
 systemctl --user daemon-reload >/dev/null 2>&1 || true
 systemctl --user enable --now aidycos-update-check.timer >/dev/null 2>&1 || true
 
+sudo install -d -m 0755 /var/lib/aidycos
+printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" | sudo tee /var/lib/aidycos/profile-installed >/dev/null
+
 cat <<EOF
 
 AidyCOS quedó aplicado sobre Debian 13.
 GRUB queda oculto en modo gráfico (con resoluciones de respaldo; prioriza el monitor externo si estaba conectado al aplicar el perfil). Plymouth muestra solo el logo AidyCOS y SDDM muestra logo y formulario de acceso en cada pantalla.
 En SDDM selecciona la sesión Hyprland la primera vez; luego se recordará. NumLock queda activo en SDDM y Hyprland. Si se modificó tu configuración de Hyprland, revisa el respaldo indicado arriba.
+Si el perfil no te sirve, quítalo con «Quitar AidyCOS» en el menú, \`aidycos-uninstall\` o \`aidycos uninstall\`.
 EOF
 
 if [[ "${NO_REBOOT}" == 1 ]]; then

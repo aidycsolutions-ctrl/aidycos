@@ -37,8 +37,11 @@ fi
 echo "AidyCOS quedó instalado en ${VENV_DIR}."
 
 install -m 0755 "${ROOT}/scripts/aidycos-update" "${BIN_DIR}/aidycos-update"
+install -m 0755 "${ROOT}/scripts/uninstall-debian-profile.sh" "${BIN_DIR}/aidycos-uninstall"
 install -D -m 0644 "${ROOT}/packaging/applications/aidycos-update.desktop" \
   "${DATA_HOME}/applications/aidycos-update.desktop"
+install -D -m 0644 "${ROOT}/packaging/applications/aidycos-uninstall.desktop" \
+  "${DATA_HOME}/applications/aidycos-uninstall.desktop"
 install -D -m 0644 "${ROOT}/packaging/systemd/aidycos-update-check.service" \
   "${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user/aidycos-update-check.service"
 install -D -m 0644 "${ROOT}/packaging/systemd/aidycos-update-check.timer" \

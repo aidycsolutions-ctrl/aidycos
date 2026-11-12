@@ -70,7 +70,8 @@ class AidyChatWindow(Gtk.Window):
         self._chats: list[dict[str, Any]] = []
         self._active_chat: dict[str, Any] | None = None
         self._last_id: dict[int, int] = {}
-        self._busy = False
+        self._inflight = 0
+        self._load_gen = 0
         self._local_devices_window: Gtk.Window | None = None
         self._recorder: subprocess.Popen[bytes] | None = None
         self._record_path: Path | None = None
@@ -141,7 +142,7 @@ class AidyChatWindow(Gtk.Window):
         self._show_empty_conversation()
         self.connect("destroy", self._on_destroy)
         self.refresh_chats()
-        GLib.timeout_add_seconds(3, self._tick)
+        GLib.timeout_add_seconds(2, self._tick)
 
     def _show_empty_conversation(self) -> None:
         for child in self.conversation.get_children():
@@ -163,9 +164,12 @@ class AidyChatWindow(Gtk.Window):
         window.show_all()
 
     def _call(self, action: Callable[[], Any], done: Callable[[Any, Exception | None], None]) -> None:
-        if self._busy:
-            return
-        self._busy = True
+        """Run network work without blocking other actions.
+
+        The old global ``_busy`` flag silently dropped loads/sends while any
+        other request was in flight — that felt like a broken WhatsApp.
+        """
+        self._inflight += 1
 
         def work() -> None:
             try:
@@ -176,7 +180,7 @@ class AidyChatWindow(Gtk.Window):
             GLib.idle_add(finish, result, error)
 
         def finish(result: Any, error: Exception | None) -> bool:
-            self._busy = False
+            self._inflight = max(0, self._inflight - 1)
             done(result, error)
             return GLib.SOURCE_REMOVE
 
@@ -184,8 +188,7 @@ class AidyChatWindow(Gtk.Window):
 
     def refresh_chats(self) -> None:
         def fetch() -> list[dict[str, Any]]:
-            self.bridge.refresh_self_id()
-            save_config(self.cfg)
+            # Don't hit check-session + disk on every sidebar refresh.
             return self.bridge.list_chats()
 
         self._call(fetch, self._chats_loaded)
@@ -194,10 +197,28 @@ class AidyChatWindow(Gtk.Window):
         if error:
             self.sidebar_status.set_text(f"Sin conexión: {error}")
             return
-        active_id = self._active_chat.get("chat_id") if self._active_chat else None
-        self._chats = chats or []
+        active_id = (
+            int(self._active_chat.get("chat_id") or 0) if self._active_chat else 0
+        )
+        normalized: list[dict[str, Any]] = []
+        for chat in chats or []:
+            if not isinstance(chat, dict):
+                continue
+            item = dict(chat)
+            cid = int(item.get("chat_id") or item.get("id") or 0)
+            if not cid:
+                continue
+            item["chat_id"] = cid
+            normalized.append(item)
+        self._chats = normalized
         self.sidebar_status.set_text(f"{len(self._chats)} conversaciones · AidyChat")
-        for child in self.chat_list.get_children():
+        # Preserve selection without destroying the open conversation pane.
+        previous = self.chat_list.get_selected_row()
+        previous_id = 0
+        if previous is not None:
+            prev_chat = getattr(previous, "chat_data", {}) or {}
+            previous_id = int(prev_chat.get("chat_id") or 0)
+        for child in list(self.chat_list.get_children()):
             self.chat_list.remove(child)
         selected = None
         for chat in self._chats:
@@ -226,11 +247,17 @@ class AidyChatWindow(Gtk.Window):
             box.pack_start(snippet, False, False, 0)
             row.add(box)
             self.chat_list.add(row)
-            if chat.get("chat_id") == active_id:
+            if chat["chat_id"] == active_id or chat["chat_id"] == previous_id:
                 selected = row
         self.chat_list.show_all()
         if selected:
-            self.chat_list.select_row(selected)
+            # Block signal re-entry that would rebuild the conversation.
+            self.chat_list.handler_block_by_func(self._on_chat_selected)
+            try:
+                self.chat_list.select_row(selected)
+                self._active_chat = getattr(selected, "chat_data", self._active_chat)
+            finally:
+                self.chat_list.handler_unblock_by_func(self._on_chat_selected)
         elif self._chats and self._active_chat is None:
             self.chat_list.select_row(self.chat_list.get_row_at_index(0))
 
@@ -247,9 +274,25 @@ class AidyChatWindow(Gtk.Window):
         chat = getattr(row, "chat_data", None)
         if not isinstance(chat, dict):
             return
+        chat_id = int(chat.get("chat_id") or chat.get("id") or 0)
+        if not chat_id:
+            self.sidebar_status.set_text("Ese chat no tiene id válido")
+            return
+        # Avoid rebuilding the whole pane if the same chat is re-selected
+        # (ListBox fires again after refresh_chats).
+        if (
+            self._active_chat
+            and int(self._active_chat.get("chat_id") or 0) == chat_id
+            and hasattr(self, "message_box")
+        ):
+            self._active_chat = chat
+            return
+        chat = dict(chat)
+        chat["chat_id"] = chat_id
         self._active_chat = chat
-        self._last_id[int(chat.get("chat_id") or 0)] = 0
+        self._last_id[chat_id] = 0
         self._build_conversation(chat)
+        self.sidebar_status.set_text(f"Cargando chat con {chat.get('username') or 'contacto'}…")
         self._load_messages(initial=True)
 
     def _build_conversation(self, chat: dict[str, Any]) -> None:
@@ -315,30 +358,64 @@ class AidyChatWindow(Gtk.Window):
         chat = self._active_chat
         if not chat:
             return
-        chat_id = int(chat.get("chat_id") or 0)
+        chat_id = int(chat.get("chat_id") or chat.get("id") or 0)
+        if not chat_id:
+            return
         since_id = 0 if initial else self._last_id.get(chat_id, 0)
+        self._load_gen += 1
+        gen = self._load_gen
         self._call(
             lambda: self.bridge.get_messages(chat_id, since_id=since_id),
-            lambda data, error: self._messages_loaded(chat_id, data, error, initial),
+            lambda data, error: self._messages_loaded(chat_id, data, error, initial, gen),
         )
 
-    def _messages_loaded(self, chat_id: int, data: Any, error: Exception | None, initial: bool) -> None:
+    def _messages_loaded(
+        self,
+        chat_id: int,
+        data: Any,
+        error: Exception | None,
+        initial: bool,
+        gen: int,
+    ) -> None:
+        if gen != self._load_gen:
+            return
         if error:
             self.sidebar_status.set_text(f"No se pudieron cargar mensajes: {error}")
             return
         if not self._active_chat or int(self._active_chat.get("chat_id") or 0) != chat_id:
             return
+        if not hasattr(self, "message_box"):
+            return
         messages = data.get("messages") if isinstance(data, dict) else []
+        if not isinstance(messages, list):
+            messages = []
         if initial:
-            for child in self.message_box.get_children():
+            for child in list(self.message_box.get_children()):
                 self.message_box.remove(child)
+            self._last_id[chat_id] = 0
         my_id = int(self.cfg.cloud.peer_user_ids.get("self") or 0)
-        for msg in messages or []:
+        if not my_id:
+            # Resolve once in background without blocking the bubble render.
+            self._call(self.bridge.refresh_self_id, lambda *_: None)
+            my_id = int(self.cfg.cloud.peer_user_ids.get("self") or 0)
+        added = 0
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
             mid = int(msg.get("id") or 0)
             if mid <= self._last_id.get(chat_id, 0) and not initial:
                 continue
-            self._last_id[chat_id] = max(mid, self._last_id.get(chat_id, 0))
+            if mid:
+                self._last_id[chat_id] = max(mid, self._last_id.get(chat_id, 0))
             self._append_message(msg, my_id)
+            added += 1
+        name = str(self._active_chat.get("username") or "chat")
+        if initial:
+            self.sidebar_status.set_text(
+                f"{name} · {len(messages)} mensaje(s)" if messages else f"{name} · sin mensajes aún"
+            )
+        elif added:
+            self.sidebar_status.set_text(f"{name} · {added} nuevo(s)")
         GLib.idle_add(self._scroll_to_end)
 
     def _append_message(self, msg: dict[str, Any], my_id: int) -> None:
@@ -452,10 +529,24 @@ class AidyChatWindow(Gtk.Window):
         if not text:
             return
         chat_id = int(self._active_chat.get("chat_id") or 0)
-        self.entry.set_sensitive(False)
+        my_id = int(self.cfg.cloud.peer_user_ids.get("self") or 0)
+        # Optimistic bubble — WhatsApp-feel while the POST is in flight.
+        self.entry.set_text("")
+        if hasattr(self, "message_box"):
+            self._append_message(
+                {
+                    "id": 0,
+                    "sender_id": my_id,
+                    "content": text,
+                    "message_type": "text",
+                    "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                },
+                my_id,
+            )
+            GLib.idle_add(self._scroll_to_end)
         self._call(
             lambda: self.bridge.send_chat_message(chat_id, text),
-            lambda _data, error: self._message_sent(error, clear=True),
+            lambda _data, error: self._message_sent(error, clear=False),
         )
 
     def _message_sent(self, error: Exception | None, *, clear: bool) -> None:
@@ -465,8 +556,9 @@ class AidyChatWindow(Gtk.Window):
                 self.entry.set_text("")
         if error:
             self.sidebar_status.set_text(f"No se pudo enviar: {error}")
+            return
+        # Pull server ids in background; don't also refresh the whole sidebar.
         self._load_messages()
-        self.refresh_chats()
 
     def _choose_attachment(self) -> None:
         if not self._active_chat:
@@ -505,8 +597,7 @@ class AidyChatWindow(Gtk.Window):
             self.sidebar_status.set_text(f"No se pudo enviar {filename}: {error}")
         else:
             self.sidebar_status.set_text(f"Archivo enviado: {filename}")
-        self._load_messages()
-        self.refresh_chats()
+            self._load_messages()
         return GLib.SOURCE_REMOVE
 
     def _toggle_recording(self) -> None:
@@ -877,7 +968,8 @@ class AidyChatWindow(Gtk.Window):
             self.sidebar_status.set_text(f"No se pudo abrir conversación: {exc}")
 
     def _tick(self) -> bool:
-        if self._active_chat and not self._busy:
+        # Poll lightly; never block sends/loads with a global busy gate.
+        if self._active_chat and self._inflight < 3:
             self._load_messages()
         if self.call_engine is not None:
             self.call_engine.check_incoming()
