@@ -83,7 +83,7 @@ class JugooDeploymentTests(unittest.TestCase):
         self.assertIn("aidycos-onlyoffice.desktop", installer)
         self.assertIn("aidycos-onlyoffice", installer)
         self.assertIn("hyprpolkitagent", installer)
-        self.assertIn("DESKTOP_ICONS_ENABLED = True", (
+        self.assertIn("DESKTOP_ICONS_ENABLED = False", (
             ROOT / "packaging" / "jugoo-overlay" / "install.py"
         ).read_text(encoding="utf-8"))
 

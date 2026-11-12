@@ -66,12 +66,21 @@ class SeedDesktopDefaultsTests(unittest.TestCase):
                     seed.ensure_desktop_icons(icons_path, home=home, reset=False, clear=False)
                 )
 
-                # Recover installs that previously forced False + empty desktop.
+                # Default seed path keeps the icon layer disabled.
+                settings = json.loads(settings_path.read_text(encoding="utf-8"))
+                settings["values"]["escritorio.icons_enabled"] = True
+                settings_path.write_text(
+                    json.dumps(settings, indent=2) + "\n", encoding="utf-8"
+                )
+                self.assertTrue(seed.ensure_icons_disabled(settings_path))
+                settings = json.loads(settings_path.read_text(encoding="utf-8"))
+                self.assertFalse(settings["values"]["escritorio.icons_enabled"])
+                self.assertFalse(seed.ensure_icons_disabled(settings_path))
+
+                # Legacy enable helper still works when forced.
                 self.assertTrue(seed.ensure_icons_enabled(settings_path, force=True))
                 settings = json.loads(settings_path.read_text(encoding="utf-8"))
                 self.assertTrue(settings["values"]["escritorio.icons_enabled"])
-
-                # Do not override an explicit disable without force.
                 settings["values"]["escritorio.icons_enabled"] = False
                 settings_path.write_text(
                     json.dumps(settings, indent=2) + "\n", encoding="utf-8"

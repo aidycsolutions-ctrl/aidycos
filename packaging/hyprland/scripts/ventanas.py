@@ -233,27 +233,15 @@ def _executable(pid: int) -> str:
         return ""
 
 
-def _maps(pid: int) -> str:
-    if pid <= 0:
-        return ""
-    try:
-        return Path(f"/proc/{pid}/maps").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return ""
-
-
 def _draws_title_buttons(window: dict[str, Any]) -> bool:
+    """Re-check with current heuristics (do not trust stale CSD rule cache)."""
     class_name = str(window.get("class") or "")
     if not class_name or class_name == SHELL_CLASS:
         return False
-    if class_name in _own_titlebar_classes:
-        return True
     pid = int(window.get("pid") or 0)
-    executable = _executable(pid)
-    if client_draws_title_buttons(class_name=class_name, executable=executable):
-        return True
     return client_draws_title_buttons(
-        class_name=class_name, executable=executable, maps=_maps(pid)
+        class_name=class_name,
+        executable=_executable(pid),
     )
 
 

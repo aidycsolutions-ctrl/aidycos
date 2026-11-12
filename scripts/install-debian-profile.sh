@@ -429,19 +429,29 @@ fi
 # Seed wallpaper/icons after .desktop helpers exist (OnlyOffice, Synaptic, AidyChat).
 python3 "${ROOT}/scripts/seed-desktop-defaults.py" || true
 # GTK apps need an explicit icon theme on minimal Hyprland sessions.
+# Also force minimize/maximize/close: GNOME/libadwaita CSD often hides minimize
+# under the default decoration layout, and those apps skip hyprbars.
 GTK3_SETTINGS="${XDG_CONFIG_HOME:-${HOME}/.config}/gtk-3.0/settings.ini"
 GTK4_SETTINGS="${XDG_CONFIG_HOME:-${HOME}/.config}/gtk-4.0/settings.ini"
-for gtk_settings in "${GTK3_SETTINGS}" "${GTK4_SETTINGS}"; do
+ensure_gtk_setting() {
+  local gtk_settings="$1" key="$2" value="$3"
   mkdir -p "$(dirname "${gtk_settings}")"
   if [[ ! -f "${gtk_settings}" ]]; then
-    printf '[Settings]\ngtk-icon-theme-name=Adwaita\ngtk-theme-name=Adwaita\n' >"${gtk_settings}"
-  elif ! grep -qE '^[[:space:]]*gtk-icon-theme-name[[:space:]]*=' "${gtk_settings}"; then
-    if grep -qE '^[[:space:]]*\[Settings\]' "${gtk_settings}"; then
-      sed -i '/^[[:space:]]*\[Settings\]/a gtk-icon-theme-name=Adwaita' "${gtk_settings}"
-    else
-      printf '\n[Settings]\ngtk-icon-theme-name=Adwaita\n' >>"${gtk_settings}"
-    fi
+    printf '[Settings]\n%s=%s\n' "${key}" "${value}" >"${gtk_settings}"
+    return
   fi
+  if grep -qE "^[[:space:]]*${key}[[:space:]]*=" "${gtk_settings}"; then
+    sed -i -E "s|^[[:space:]]*${key}[[:space:]]*=.*|${key}=${value}|" "${gtk_settings}"
+  elif grep -qE '^[[:space:]]*\[Settings\]' "${gtk_settings}"; then
+    sed -i "/^[[:space:]]*\[Settings\]/a ${key}=${value}" "${gtk_settings}"
+  else
+    printf '\n[Settings]\n%s=%s\n' "${key}" "${value}" >>"${gtk_settings}"
+  fi
+}
+for gtk_settings in "${GTK3_SETTINGS}" "${GTK4_SETTINGS}"; do
+  ensure_gtk_setting "${gtk_settings}" "gtk-icon-theme-name" "Adwaita"
+  ensure_gtk_setting "${gtk_settings}" "gtk-theme-name" "Adwaita"
+  ensure_gtk_setting "${gtk_settings}" "gtk-decoration-layout" "icon:minimize,maximize,close"
 done
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
   sudo gtk-update-icon-cache -f /usr/share/icons/Adwaita >/dev/null 2>&1 || true

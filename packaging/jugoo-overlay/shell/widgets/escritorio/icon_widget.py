@@ -1,4 +1,4 @@
-"""Single desktop icon: glyph + label, click-to-open / drag."""
+"""Single desktop icon: glyph + label, double-click-to-open / drag."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 gi.require_version("Pango", "1.0")
 
-from gi.repository import Gdk, Gtk, Pango
+from gi.repository import Gdk, GLib, Gtk, Pango
 
 from ...config import (
     DESKTOP_ICON_CELL_HEIGHT,
@@ -30,6 +30,9 @@ OnMoveEnd = Callable[[str, int, int], None]
 _ICON_ALIASES = {
     "firefox": "firefox-esr",
 }
+
+# Guard against repeated open requests from noisy click sequences.
+_ACTIVATE_COOLDOWN_MS = 600
 
 
 class DesktopIconWidget(Gtk.EventBox):
@@ -54,6 +57,10 @@ class DesktopIconWidget(Gtk.EventBox):
         self._press_root: tuple[float, float] | None = None
         self._origin: tuple[int, int] = (shortcut.x, shortcut.y)
         self._current: tuple[int, int] = (shortcut.x, shortcut.y)
+        self._last_click_ms: int | None = None
+        self._last_click_root: tuple[float, float] | None = None
+        self._activate_armed = False
+        self._last_activate_ms: int | None = None
 
         self.set_visible_window(True)
         self.set_can_focus(True)
@@ -115,13 +122,18 @@ class DesktopIconWidget(Gtk.EventBox):
     def _on_button_press(self, _widget: Gtk.Widget, event: Gdk.EventButton) -> bool:
         if event.button != 1:
             return False
-        # Ignore synthetic double-press; open happens on release (Wayland-safe).
+        # GTK emits BUTTON_PRESS then _2BUTTON_PRESS for the second click.
+        # Arm open here; actual open runs once on the matching release.
         if event.type == Gdk.EventType._2BUTTON_PRESS:
+            self._activate_armed = True
+            return True
+        if event.type != Gdk.EventType.BUTTON_PRESS:
             return True
         self._on_select(self.shortcut_id)
         self._press_root = (float(event.x_root), float(event.y_root))
         self._origin = self._current
         self._dragging = False
+        self._activate_armed = False
         return True
 
     def _on_motion(self, _widget: Gtk.Widget, event: Gdk.EventMotion) -> bool:
@@ -133,6 +145,9 @@ class DesktopIconWidget(Gtk.EventBox):
             if (dx * dx + dy * dy) < (DESKTOP_ICON_DRAG_THRESHOLD_PX ** 2):
                 return False
             self._dragging = True
+            self._activate_armed = False
+            self._last_click_ms = None
+            self._last_click_root = None
         self._current = (
             max(0, int(self._origin[0] + dx)),
             max(0, int(self._origin[1] + dy)),
@@ -150,8 +165,16 @@ class DesktopIconWidget(Gtk.EventBox):
         if self._dragging:
             self._on_move_end(self.shortcut_id, self._current[0], self._current[1])
         else:
-            # Single click (no drag): open. Double-click is unreliable on GTK3/Wayland.
-            self._on_activate(self.shortcut_id)
+            root = (float(event.x_root), float(event.y_root))
+            should_open = self._activate_armed or self._is_double_click(root)
+            self._activate_armed = False
+            if should_open:
+                self._last_click_ms = None
+                self._last_click_root = None
+                self._activate_once()
+            else:
+                self._last_click_ms = _now_ms()
+                self._last_click_root = root
         self._press_root = None
         self._dragging = False
         return True
@@ -159,9 +182,51 @@ class DesktopIconWidget(Gtk.EventBox):
     def _on_key_press(self, _widget: Gtk.Widget, event: Gdk.EventKey) -> bool:
         keyval = event.keyval
         if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_space):
-            self._on_activate(self.shortcut_id)
+            self._activate_once()
             return True
         return False
+
+    def _is_double_click(self, root: tuple[float, float]) -> bool:
+        """Manual double-click detection (more reliable than only _2BUTTON_PRESS)."""
+        if self._last_click_ms is None or self._last_click_root is None:
+            return False
+        now = _now_ms()
+        time_limit, distance_limit = _double_click_thresholds()
+        if (now - self._last_click_ms) > time_limit:
+            return False
+        dx = root[0] - self._last_click_root[0]
+        dy = root[1] - self._last_click_root[1]
+        return (dx * dx + dy * dy) <= (distance_limit * distance_limit)
+
+    def _activate_once(self) -> None:
+        now = _now_ms()
+        if (
+            self._last_activate_ms is not None
+            and (now - self._last_activate_ms) < _ACTIVATE_COOLDOWN_MS
+        ):
+            return
+        self._last_activate_ms = now
+        self._on_activate(self.shortcut_id)
+
+
+def _now_ms() -> int:
+    return int(GLib.get_monotonic_time() // 1000)
+
+
+def _double_click_thresholds() -> tuple[int, int]:
+    settings = Gtk.Settings.get_default()
+    time_ms = 400
+    distance_px = 5
+    if settings is not None:
+        try:
+            time_ms = int(settings.get_property("gtk-double-click-time"))
+        except Exception:  # noqa: BLE001 — keep defaults if settings are odd
+            pass
+        try:
+            distance_px = int(settings.get_property("gtk-double-click-distance"))
+        except Exception:  # noqa: BLE001
+            pass
+    return max(200, time_ms), max(1, distance_px)
 
 
 def _resolve_icon_name(icon: str, kind: str) -> str:

@@ -12,6 +12,7 @@ gi.require_version("GtkLayerShell", "0.1")
 from gi.repository import Gdk, GLib, Gtk, GtkLayerShell
 
 from .. import config as shell_config
+from ..bar_position import configure_bar_layer_shell, exclusive_zone_size
 from ..eventbus import EventBus
 from ..identity import WAYLAND_APP_ID
 from ..models import FloatingClient
@@ -96,11 +97,11 @@ class BarRetractController:
             self._keep_full_exclusive()
 
     def _keep_full_exclusive(self) -> bool:
-        bar_height = max(1, int(self._shell.get_allocated_height()))
-        GtkLayerShell.set_margin(
-            self._shell, GtkLayerShell.Edge.TOP, int(shell_config.TOP_MARGIN)
+        configure_bar_layer_shell(self._shell)
+        GtkLayerShell.set_exclusive_zone(
+            self._shell,
+            exclusive_zone_size(self._shell),
         )
-        GtkLayerShell.set_exclusive_zone(self._shell, bar_height)
         self._auto_exclusive = False
         self._applied_retract_px = 0
         self._reveal_strip.set_armed(False)

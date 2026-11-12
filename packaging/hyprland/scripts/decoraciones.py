@@ -5,12 +5,14 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
-# Toolkits that paint caption buttons inside the client and ignore SSD.
+# Apps known to paint caption buttons (min + max + close) inside the client.
+# Do not add broad toolkit heuristics here: GNOME/libadwaita often omit minimize
+# unless gtk-decoration-layout is set, and /proc maps false-positives (zenity).
 _CSD_CLASS = re.compile(
     r"^(?:"
-    r"google-chrome(?:-[\w-]+)?|chromium(?:-browser)?|brave-browser|"
+    r"google-chrome(?:-[\w-]+)?|chrome-[\w-]+|chromium(?:-browser)?|brave-browser|"
     r"microsoft-edge|vivaldi|"
-    r"firefox(?:-esr)?|librewolf|zen|"
+    r"firefox(?:-esr)?|org\.mozilla\.firefox|librewolf|zen|"
     r"cursor|code|code-oss|codium|vscodium|"
     r"codex|com\.openai\.(?:codex|chatgpt)|chatgpt|openai-chatgpt|"
     r"discord|slack|spotify|"
@@ -48,13 +50,15 @@ def client_draws_title_buttons(
 
     Hyprland has no generic CSD-button capability, so use stable class/app_id
     and process metadata for applications known to draw those controls.
+
+    ``maps`` is accepted for call-site compatibility but ignored: linking
+    libadwaita does not guarantee minimize/maximize/close buttons.
     """
+    del maps  # intentionally unused — see docstring
     if _CSD_CLASS.match((class_name or "").strip()):
         return True
     base = (executable or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
-    if base in _CSD_EXECUTABLE:
-        return True
-    return "libadwaita" in (maps or "")
+    return base in _CSD_EXECUTABLE
 
 
 def classes_in_rules(text: str) -> set[str]:
@@ -86,9 +90,14 @@ def render_csd_rules(classes: Iterable[str]) -> str:
 
 
 def updated_rules(previous: str, detected: Iterable[str]) -> str | None:
-    """Return new rule text when ``detected`` adds a class, else None."""
-    classes = classes_in_rules(previous)
-    classes.update(name.strip() for name in detected if name and name.strip())
+    """Merge detected classes; drop stale false positives from older heuristics."""
+    detected_set = {name.strip() for name in detected if name and name.strip()}
+    classes = {
+        name
+        for name in classes_in_rules(previous)
+        if name in detected_set or client_draws_title_buttons(class_name=name)
+    }
+    classes.update(detected_set)
     rendered = render_csd_rules(classes)
     if (previous or "").strip() == rendered.strip():
         return None

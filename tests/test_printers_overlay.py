@@ -133,8 +133,8 @@ class PrintersOverlayTests(unittest.TestCase):
             page_text = (
                 root / "shell/widgets/configuraciones/printers_page.py"
             ).read_text(encoding="utf-8")
-            self.assertIn("Exportar catálogo", page_text)
-            self.assertIn("Importar catálogo", page_text)
+            self.assertIn("Publicar catálogo", page_text)
+            self.assertIn("Aplicar catálogo", page_text)
 
     def test_service_parses_spanish_lpstat(self) -> None:
         service = _load_service()
@@ -156,7 +156,8 @@ class PrintersOverlayTests(unittest.TestCase):
         }
 
         def fake_run(argv, **_kwargs):
-            key = tuple(argv)
+            tool = Path(argv[0]).name
+            key = (tool, *argv[1:])
 
             class Result:
                 returncode = 0
@@ -167,13 +168,16 @@ class PrintersOverlayTests(unittest.TestCase):
 
         original_run = service.subprocess.run
         original_which = service.shutil.which
+        original_access = service.os.access
         service.subprocess.run = fake_run
-        service.shutil.which = lambda _name: "/usr/bin/lpstat"
+        service.shutil.which = lambda _name: None
+        service.os.access = lambda _path, _mode: True
         try:
             snapshot = service.list_printers()
         finally:
             service.subprocess.run = original_run
             service.shutil.which = original_which
+            service.os.access = original_access
 
         self.assertIsNone(snapshot.error)
         self.assertEqual(snapshot.default_name, "HP_Smart_Tank_WiFi")
@@ -264,8 +268,10 @@ class PrintersOverlayTests(unittest.TestCase):
             original_run = service.subprocess.run
             original_which = service.shutil.which
             original_list = service.list_printers
+            original_access = service.os.access
             service.subprocess.run = fake_run
-            service.shutil.which = lambda name: f"/usr/bin/{name}"
+            service.shutil.which = lambda _name: None
+            service.os.access = lambda _path, _mode: True
             service.list_printers = lambda: service.PrintersSnapshot(
                 printers=(),
                 default_name=None,
@@ -275,15 +281,29 @@ class PrintersOverlayTests(unittest.TestCase):
             finally:
                 service.subprocess.run = original_run
                 service.shutil.which = original_which
+                service.os.access = original_access
                 service.list_printers = original_list
 
             self.assertEqual(result.added, ("HP_Smart_Tank_WiFi",))
             self.assertEqual(result.default_set, "HP_Smart_Tank_WiFi")
             self.assertTrue(
-                any(cmd[:1] == ("lpadmin",) for cmd in recorded),
+                any(cmd and str(cmd[0]).endswith("lpadmin") for cmd in recorded),
                 recorded,
             )
-            self.assertIn(("lpoptions", "-d", "HP_Smart_Tank_WiFi"), recorded)
+            self.assertTrue(
+                any(
+                    len(cmd) >= 3
+                    and str(cmd[0]).endswith("lpoptions")
+                    and cmd[1:] == ("-d", "HP_Smart_Tank_WiFi")
+                    for cmd in recorded
+                ),
+                recorded,
+            )
+
+    def test_cups_bin_finds_sbin_tools(self) -> None:
+        service = _load_service()
+        self.assertTrue(service.cups_bin("lpadmin").endswith("/lpadmin"))
+        self.assertIn("/sbin/", service.cups_bin("lpadmin").replace("\\", "/"))
 
     def test_catalog_rejects_local_uri(self) -> None:
         service = _load_service()

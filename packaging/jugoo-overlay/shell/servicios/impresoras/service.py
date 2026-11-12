@@ -97,9 +97,36 @@ class PrintersError(RuntimeError):
     """Raised when a printer action cannot be completed."""
 
 
+_CUPS_BIN_DIRS = ("/usr/sbin", "/usr/bin", "/sbin", "/bin")
+
+
+def cups_bin(name: str) -> str:
+    """Resolve a CUPS tool even when /usr/sbin is missing from PATH.
+
+    Desktop sessions (and Jugoo) often omit ``/usr/sbin``, so ``lpadmin`` /
+    ``cupsctl`` / ``cupsenable`` would otherwise look "missing".
+    """
+    tool = str(name or "").strip()
+    if not tool:
+        raise PrintersError("Falta el nombre de la herramienta CUPS")
+    found = shutil.which(tool)
+    if found:
+        return found
+    for directory in _CUPS_BIN_DIRS:
+        candidate = Path(directory) / tool
+        try:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+        except OSError:
+            continue
+    raise PrintersError(f"Falta {tool} (paquete cups-client)")
+
+
 def list_printers() -> PrintersSnapshot:
     """Snapshot of local printers. Never raises; errors go into ``error``."""
-    if shutil.which("lpstat") is None:
+    try:
+        cups_bin("lpstat")
+    except PrintersError:
         return PrintersSnapshot(
             printers=(),
             default_name=None,
@@ -138,7 +165,10 @@ def set_default_printer(name: str) -> None:
     target = str(name or "").strip()
     if not target:
         raise PrintersError("Falta el nombre de la impresora")
-    _run(["lpoptions", "-d", target], label="definir impresora predeterminada")
+    _run(
+        [cups_bin("lpoptions"), "-d", target],
+        label="definir impresora predeterminada",
+    )
 
 
 def set_printer_enabled(name: str, enabled: bool) -> None:
@@ -146,16 +176,15 @@ def set_printer_enabled(name: str, enabled: bool) -> None:
     if not target:
         raise PrintersError("Falta el nombre de la impresora")
     command = "cupsenable" if enabled else "cupsdisable"
-    if shutil.which(command) is None:
-        raise PrintersError(f"Falta {command} (paquete cups-client)")
-    _run([command, target], label=("activar" if enabled else "desactivar") + " impresora")
+    _run(
+        [cups_bin(command), target],
+        label=("activar" if enabled else "desactivar") + " impresora",
+    )
 
 
 def cancel_jobs(name: str | None = None) -> None:
     """Cancel jobs for one printer, or all jobs when ``name`` is None."""
-    if shutil.which("cancel") is None:
-        raise PrintersError("Falta cancel (paquete cups-client)")
-    argv = ["cancel", "-a"]
+    argv = [cups_bin("cancel"), "-a"]
     if name:
         argv.append(str(name).strip())
     _run(argv, label="cancelar trabajos")
@@ -197,6 +226,32 @@ def launch_cups_web() -> None:
 def default_catalog_path() -> Path:
     base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
     return Path(base) / "aidycos" / CATALOG_FILENAME
+
+
+def documents_catalog_path() -> Path:
+    """User-visible copy under Documentos/Documents for easy sharing."""
+    for name in ("Documentos", "Documents"):
+        folder = Path.home() / name
+        if folder.is_dir():
+            return folder / CATALOG_FILENAME
+    return Path.home() / CATALOG_FILENAME
+
+
+def discover_catalog_candidates() -> tuple[Path, ...]:
+    """Known locations to try when applying a shared catalog."""
+    seen: list[Path] = []
+    for candidate in (
+        default_catalog_path(),
+        documents_catalog_path(),
+        Path.home() / CATALOG_FILENAME,
+        Path.home() / "Descargas" / CATALOG_FILENAME,
+        Path.home() / "Downloads" / CATALOG_FILENAME,
+    ):
+        resolved = candidate.expanduser()
+        if resolved in seen:
+            continue
+        seen.append(resolved)
+    return tuple(seen)
 
 
 def is_network_uri(uri: str) -> bool:
@@ -359,12 +414,28 @@ def export_share_catalog(
     """Write a shareable AidyCOS printer catalog and return its path."""
     target = Path(path) if path else default_catalog_path()
     catalog = build_share_catalog(include_local_via_cups=include_local_via_cups)
+    payload = json.dumps(catalog_to_dict(catalog), indent=2, ensure_ascii=False) + "\n"
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
-        json.dumps(catalog_to_dict(catalog), indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    target.write_text(payload, encoding="utf-8")
     return target
+
+
+def publish_share_catalog(*, include_local_via_cups: bool = False) -> tuple[Path, ...]:
+    """One-click publish: write the default catalog and a Documents copy."""
+    primary = export_share_catalog(
+        default_catalog_path(),
+        include_local_via_cups=include_local_via_cups,
+    )
+    written = [primary]
+    documents = documents_catalog_path()
+    if documents.resolve() != primary.resolve():
+        try:
+            documents.parent.mkdir(parents=True, exist_ok=True)
+            documents.write_text(primary.read_text(encoding="utf-8"), encoding="utf-8")
+            written.append(documents)
+        except OSError:
+            pass
+    return tuple(written)
 
 
 def load_share_catalog(path: Path | str | None = None) -> ShareCatalog:
@@ -378,44 +449,86 @@ def load_share_catalog(path: Path | str | None = None) -> ShareCatalog:
     return catalog_from_dict(payload)
 
 
+def resolve_catalog_path(path: Path | str | None = None) -> Path:
+    """Return an existing catalog path, searching known locations when needed."""
+    if path is not None:
+        target = Path(path).expanduser()
+        if not target.is_file():
+            raise PrintersError(f"No se encontró el catálogo: {target}")
+        return target
+    for candidate in discover_catalog_candidates():
+        if candidate.is_file():
+            return candidate
+    raise PrintersError(
+        "No hay catálogo AidyCOS. En el PC de origen pulsa «Publicar catálogo» "
+        "y copia shared-printers.json a este equipo."
+    )
+
+
 def import_share_catalog(
     path: Path | str | None = None,
     *,
     catalog: ShareCatalog | None = None,
+    force: bool = True,
 ) -> ImportResult:
-    """Add printers from an AidyCOS catalog onto this machine."""
-    data = catalog or load_share_catalog(path)
+    """Add printers from an AidyCOS catalog onto this machine.
+
+    ``force=True`` (default) re-applies queues even when the URI already matches,
+    so import stays reliable across PCs and after CUPS resets.
+    """
+    data = catalog or load_share_catalog(resolve_catalog_path(path) if path is None else path)
     existing = {item.name: item for item in list_printers().printers}
     added: list[str] = []
     updated: list[str] = []
     skipped: list[str] = []
     preferred_default: str | None = None
+    errors: list[str] = []
 
     for entry in data.printers:
         current = existing.get(entry.name)
-        if current is not None and (current.device_uri or "").strip() == entry.device_uri:
+        same_uri = (
+            current is not None
+            and (current.device_uri or "").strip() == entry.device_uri
+        )
+        if same_uri and not force:
             skipped.append(entry.name)
         else:
-            add_or_update_printer(entry.name, entry.device_uri)
-            if current is None:
-                added.append(entry.name)
-            else:
-                updated.append(entry.name)
-            existing[entry.name] = PrinterInfo(
-                name=entry.name,
-                enabled=True,
-                accepting=True,
-                is_default=False,
-                state_text="importada",
-                device_uri=entry.device_uri,
-            )
+            try:
+                add_or_update_printer(entry.name, entry.device_uri)
+                try:
+                    set_printer_enabled(entry.name, True)
+                except PrintersError:
+                    pass
+                if current is None:
+                    added.append(entry.name)
+                elif same_uri:
+                    skipped.append(entry.name)
+                else:
+                    updated.append(entry.name)
+                existing[entry.name] = PrinterInfo(
+                    name=entry.name,
+                    enabled=True,
+                    accepting=True,
+                    is_default=False,
+                    state_text="importada",
+                    device_uri=entry.device_uri,
+                )
+            except PrintersError as error:
+                errors.append(f"{entry.name}: {error}")
+                continue
         if entry.is_default:
             preferred_default = entry.name
 
     default_set = None
-    if preferred_default:
-        set_default_printer(preferred_default)
-        default_set = preferred_default
+    if preferred_default and preferred_default in existing:
+        try:
+            set_default_printer(preferred_default)
+            default_set = preferred_default
+        except PrintersError as error:
+            errors.append(f"predeterminada: {error}")
+
+    if errors and not (added or updated or skipped):
+        raise PrintersError("; ".join(errors))
 
     return ImportResult(
         added=tuple(added),
@@ -433,17 +546,16 @@ def add_or_update_printer(name: str, device_uri: str) -> None:
         raise PrintersError("Falta el nombre de la impresora")
     if not is_network_uri(uri):
         raise PrintersError(f"URI no compartible: {uri or '(vacía)'}")
-    if shutil.which("lpadmin") is None:
-        raise PrintersError("Falta lpadmin (paquete cups-client)")
+    lpadmin = cups_bin("lpadmin")
 
-    everywhere = ["lpadmin", "-p", target, "-v", uri, "-m", "everywhere", "-E"]
+    everywhere = [lpadmin, "-p", target, "-v", uri, "-m", "everywhere", "-E"]
     try:
         _run(everywhere, label=f"añadir impresora «{target}»")
         return
     except PrintersError:
         # Older CUPS / drivers: create the queue without an explicit model.
         _run(
-            ["lpadmin", "-p", target, "-v", uri, "-E"],
+            [lpadmin, "-p", target, "-v", uri, "-E"],
             label=f"añadir impresora «{target}»",
         )
 
@@ -451,6 +563,7 @@ def add_or_update_printer(name: str, device_uri: str) -> None:
 def enable_lan_sharing(*, share_printers: Sequence[str] | None = None) -> None:
     """Allow other LAN hosts to use printers attached to this PC."""
     _cupsctl_share_printers(True)
+    lpadmin = cups_bin("lpadmin")
     names = [sanitize_printer_name(item) for item in (share_printers or ())]
     if not names:
         snapshot = list_printers()
@@ -463,7 +576,7 @@ def enable_lan_sharing(*, share_printers: Sequence[str] | None = None) -> None:
         if not name:
             continue
         _run(
-            ["lpadmin", "-p", name, "-o", "printer-is-shared=true"],
+            [lpadmin, "-p", name, "-o", "printer-is-shared=true"],
             label=f"compartir «{name}» en la LAN",
         )
 
@@ -481,23 +594,23 @@ def sanitize_printer_name(name: str) -> str:
 
 
 def _cupsctl_share_printers(enabled: bool) -> None:
-    if shutil.which("cupsctl") is None:
-        raise PrintersError("Falta cupsctl (paquete cups-client)")
+    cupsctl = cups_bin("cupsctl")
     flag = "--share-printers" if enabled else "--no-share-printers"
     try:
-        _run(["cupsctl", flag], label="activar el compartido CUPS")
+        _run([cupsctl, flag], label="activar el compartido CUPS")
         return
     except PrintersError:
-        if shutil.which("pkexec") is None:
+        pkexec = shutil.which("pkexec")
+        if pkexec is None:
             raise
         _run(
-            ["pkexec", "cupsctl", flag],
+            [pkexec, cupsctl, flag],
             label="activar el compartido CUPS (con privilegios)",
         )
 
 
 def _read_default() -> str | None:
-    out = _capture(["lpstat", "-d"])
+    out = _capture([cups_bin("lpstat"), "-d"])
     for line in out.splitlines():
         match = _DEFAULT_RE.search(line.strip())
         if match:
@@ -507,7 +620,7 @@ def _read_default() -> str | None:
 
 
 def _read_accepting() -> dict[str, bool]:
-    out = _capture(["lpstat", "-a"])
+    out = _capture([cups_bin("lpstat"), "-a"])
     result: dict[str, bool] = {}
     for line in out.splitlines():
         text = line.strip()
@@ -524,7 +637,7 @@ def _read_accepting() -> dict[str, bool]:
 
 
 def _read_printer_states() -> dict[str, tuple[bool, str]]:
-    out = _capture(["lpstat", "-p"])
+    out = _capture([cups_bin("lpstat"), "-p"])
     result: dict[str, tuple[bool, str]] = {}
     for line in out.splitlines():
         text = line.strip()
@@ -541,7 +654,7 @@ def _read_printer_states() -> dict[str, tuple[bool, str]]:
 
 def _read_uris() -> dict[str, str]:
     try:
-        out = _capture(["lpstat", "-v"])
+        out = _capture([cups_bin("lpstat"), "-v"])
     except PrintersError:
         return {}
     result: dict[str, str] = {}

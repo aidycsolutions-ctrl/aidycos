@@ -215,7 +215,7 @@ def ensure_desktop_icons(
 
 
 def ensure_icons_enabled(settings_path: Path, *, force: bool = False) -> bool:
-    """Turn desktop icons on when unset, or when recovering a broken empty desktop."""
+    """Legacy helper: turn desktop icons on when unset (or when ``force``)."""
     if settings_path.is_file():
         try:
             payload = json.loads(settings_path.read_text(encoding="utf-8"))
@@ -237,6 +237,33 @@ def ensure_icons_enabled(settings_path: Path, *, force: bool = False) -> bool:
         return False
 
     values["escritorio.icons_enabled"] = True
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return True
+
+
+def ensure_icons_disabled(settings_path: Path) -> bool:
+    """Keep the desktop-icon layer off (default for AidyCOS)."""
+    if settings_path.is_file():
+        try:
+            payload = json.loads(settings_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            payload = {"version": 1, "values": {}}
+    else:
+        payload = {"version": 1, "values": {}}
+
+    values = payload.setdefault("values", {})
+    if not isinstance(values, dict):
+        values = {}
+        payload["values"] = values
+
+    if values.get("escritorio.icons_enabled") is False:
+        return False
+
+    values["escritorio.icons_enabled"] = False
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
@@ -312,11 +339,10 @@ def main() -> int:
             print(f"Iconos del escritorio conservados: {icons_path}")
 
     settings_path = root / "settings.json"
-    # Older builds forced icons_enabled=False with an empty list; recover those.
-    recover = (was_empty and seeded and not args.clear_icons) or args.reset_icons
-    if ensure_icons_enabled(settings_path, force=recover):
+    # Desktop icons stay off: the layer-shell click path has been unreliable.
+    if ensure_icons_disabled(settings_path):
         changed = True
-        print("Iconos del escritorio activados en settings.json")
+        print("Iconos del escritorio desactivados en settings.json")
 
     return 0 if changed or chosen is not None else 0
 

@@ -297,8 +297,8 @@ def install_desktop_icons(root: Path) -> None:
     config_text = config.read_text(encoding="utf-8")
     if "DESKTOP_ICONS_ENABLED" not in config_text:
         config_text = config_text.rstrip() + (
-            "\n\n# AidyCOS: escritorio con accesos directos habilitados.\n"
-            "DESKTOP_ICONS_ENABLED = True\n"
+            "\n\n# AidyCOS: capa de iconos del escritorio (apagada por defecto).\n"
+            "DESKTOP_ICONS_ENABLED = False\n"
             "DESKTOP_ICONS_PATH = \"desktop-icons.json\"\n"
             "DESKTOP_ICON_SIZE = 48\n"
             "DESKTOP_ICON_LABEL_WIDTH = 96\n"
@@ -307,9 +307,10 @@ def install_desktop_icons(root: Path) -> None:
             "DESKTOP_ICON_DRAG_THRESHOLD_PX = 6\n"
         )
     else:
+        # Keep desktop icons off; do not force-enable on overlay refresh.
         config_text = re.sub(
-            r"^(\s*DESKTOP_ICONS_ENABLED\s*=\s*)False(\s*)$",
-            r"\g<1>True\g<2>",
+            r"^(\s*DESKTOP_ICONS_ENABLED\s*=\s*)True(\s*)$",
+            r"\g<1>False\g<2>",
             config_text,
             count=1,
             flags=re.MULTILINE,
@@ -1033,6 +1034,290 @@ def install_native_workspace_dispatch(root: Path) -> None:
     )
 
 
+def install_bar_position(root: Path) -> None:
+    """Configuraciones → Barra → Posición (arriba / abajo / izquierda / derecha)."""
+    overlay = Path(__file__).parent / "shell"
+    install_overlay_file(overlay / "bar_position.py", root / "shell/bar_position.py")
+    install_overlay_file(overlay / "layout.py", root / "shell/layout.py")
+
+    config = root / "shell/config.py"
+    config_text = config.read_text(encoding="utf-8")
+    if "BAR_POSITION" not in config_text:
+        try_replace_once(
+            config,
+            "# Layer-shell top inset. 0 anchors the bar flush with the monitor edge (y=0).\n"
+            "TOP_MARGIN = 0\n",
+            "# Layer-shell edge for the bar: top | bottom | left | right.\n"
+            'BAR_POSITION = "top"\n'
+            "# Layer-shell inset on the active edge. 0 anchors flush with the monitor.\n"
+            "TOP_MARGIN = 0\n",
+            "añadir BAR_POSITION en config",
+        )
+
+    schema = root / "shell/settings/schema.py"
+    schema_text = schema.read_text(encoding="utf-8")
+    if 'key="barra.position"' not in schema_text:
+        setting = '''        SettingDef(
+            key="barra.position",
+            category=CategoryId.BARRA,
+            label="Posición de la barra",
+            description="Borde del monitor donde se coloca la barra Jugoo.",
+            value_type="choice",
+            default=getattr(shell_config, "BAR_POSITION", "top"),
+            config_attr="BAR_POSITION",
+            apply=APPLY_RELOAD,
+            choices=(
+                ("top", "Arriba"),
+                ("bottom", "Abajo"),
+                ("left", "Izquierda"),
+                ("right", "Derecha"),
+            ),
+            tier="A",
+            section="Geometría",
+        ),
+'''
+        # Prefer inserting just before the top-margin control when present.
+        margin_anchor = '        SettingDef(\n            key="barra.top_margin",'
+        if margin_anchor in schema_text:
+            schema_text = schema_text.replace(margin_anchor, setting + margin_anchor, 1)
+        else:
+            anchor = "    )\n\n\ndef settings_by_key"
+            if anchor not in schema_text:
+                raise SystemExit(f"No se pudo registrar barra.position: {schema}")
+            schema_text = schema_text.replace(anchor, setting + anchor, 1)
+        backup = schema.with_suffix(schema.suffix + ".aidycos-backup")
+        if not backup.exists():
+            shutil.copy2(schema, backup)
+        schema.write_text(schema_text, encoding="utf-8")
+
+    try_replace_once(
+        schema,
+        '            label="Margen superior",\n'
+        '            description="Inset de la barra respecto al borde del monitor.",\n',
+        '            label="Margen del borde",\n'
+        '            description="Inset de la barra respecto al borde elegido.",\n',
+        "renombrar margen de la barra",
+    )
+
+    identity = root / "shell/window_identity.py"
+    try_replace_once(
+        identity,
+        '    """Top-left popup coordinates: centered on the anchor, top below the button."""\n'
+        "    edge = shell_config.POPUP_EDGE_MARGIN if margin is None else margin\n"
+        "    popup_left = button_center_x - popup_width // 2\n"
+        "    popup_top = fixed_top if fixed_top is not None else button_bottom + offset\n"
+        "\n"
+        "    if monitor is not None:\n"
+        "        mon_left = monitor.x\n"
+        "        mon_top = monitor.y\n"
+        "        mon_right = monitor.x + monitor.width\n"
+        "        mon_bottom = monitor.y + monitor.height\n"
+        "\n"
+        "        popup_left = max(\n"
+        "            mon_left + edge,\n"
+        "            min(popup_left, mon_right - popup_width - edge),\n"
+        "        )\n"
+        "        # Never slide the window up to fit a taller size: that overlaps the bar.\n"
+        "        # Popups grow downward; content that does not fit scrolls.\n"
+        "        popup_top = max(mon_top + edge, popup_top)\n"
+        "\n"
+        "    return int(popup_left), int(popup_top)\n",
+        '    """Top-left popup coordinates relative to the configured bar edge."""\n'
+        "    from .bar_position import compute_popup_for_bar\n"
+        "\n"
+        "    return compute_popup_for_bar(\n"
+        "        button_left=button_center_x,\n"
+        "        button_top=button_bottom - 1,\n"
+        "        button_width=1,\n"
+        "        button_height=1,\n"
+        "        popup_width=popup_width,\n"
+        "        popup_height=popup_height,\n"
+        "        offset=offset,\n"
+        "        fixed_top=fixed_top,\n"
+        "        monitor=monitor,\n"
+        "        margin=margin,\n"
+        "    )\n",
+        "posicionar popups según el borde de la barra",
+    )
+    try_replace_once(
+        identity,
+        '    """Position a popup from anchor geometry and popup size; return the top edge used."""\n'
+        "    geometry = anchor_button_geometry(anchor)\n"
+        "    if geometry is None:\n"
+        "        return None\n"
+        "\n"
+        "    popup_width, popup_height = popup_window_size(window)\n"
+        "    monitor = monitor_containing_point(geometry.center_x, geometry.bottom)\n"
+        "    popup_left, popup_top = compute_popup_top_left(\n"
+        "        button_center_x=geometry.center_x,\n"
+        "        button_bottom=geometry.bottom,\n"
+        "        popup_width=popup_width,\n"
+        "        popup_height=popup_height,\n"
+        "        offset=offset + extra_y_offset,\n"
+        "        fixed_top=(fixed_top + extra_y_offset) if fixed_top is not None else None,\n"
+        "        monitor=monitor,\n"
+        "        margin=margin,\n"
+        "    )\n"
+        "    reposition_popup(window, title=title, x=popup_left, y=popup_top)\n"
+        "    return popup_top\n",
+        '    """Position a popup from anchor geometry and popup size; return the top edge used."""\n'
+        "    from .bar_position import compute_popup_for_bar\n"
+        "\n"
+        "    geometry = anchor_button_geometry(anchor)\n"
+        "    if geometry is None:\n"
+        "        return None\n"
+        "\n"
+        "    popup_width, popup_height = popup_window_size(window)\n"
+        "    monitor = monitor_containing_point(geometry.center_x, geometry.bottom)\n"
+        "    popup_left, popup_top = compute_popup_for_bar(\n"
+        "        button_left=geometry.left,\n"
+        "        button_top=geometry.top,\n"
+        "        button_width=geometry.width,\n"
+        "        button_height=geometry.height,\n"
+        "        popup_width=popup_width,\n"
+        "        popup_height=popup_height,\n"
+        "        offset=offset + extra_y_offset,\n"
+        "        fixed_top=(fixed_top + extra_y_offset) if fixed_top is not None else None,\n"
+        "        monitor=monitor,\n"
+        "        margin=margin,\n"
+        "    )\n"
+        "    reposition_popup(window, title=title, x=popup_left, y=popup_top)\n"
+        "    return popup_top\n",
+        "anclar popups al botón con la posición de barra",
+    )
+
+    app = root / "shell/app.py"
+    try_replace_once(
+        app,
+        "from .config import (\n"
+        "    ACTIVE_THEME,\n"
+        "    HYPRLAND_THEME_EXPORT_PATH,\n"
+        "    PERSISTENT_WORKSPACES,\n"
+        "    TOP_MARGIN,\n"
+        ")\n",
+        "from .bar_position import (\n"
+        "    apply_bar_expand_flags,\n"
+        "    apply_bar_size_requests,\n"
+        "    configure_bar_layer_shell,\n"
+        ")\n"
+        "from .config import (\n"
+        "    ACTIVE_THEME,\n"
+        "    HYPRLAND_THEME_EXPORT_PATH,\n"
+        "    PERSISTENT_WORKSPACES,\n"
+        ")\n",
+        "importar helpers de posición de barra",
+    )
+    try_replace_once(
+        app,
+        "    def _configure_layer_shell(self) -> None:\n"
+        "        GtkLayerShell.init_for_window(self)\n"
+        "        GtkLayerShell.set_namespace(self, APP_ID)\n"
+        "        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.TOP)\n"
+        "        for edge in (\n"
+        "            GtkLayerShell.Edge.TOP,\n"
+        "            GtkLayerShell.Edge.LEFT,\n"
+        "            GtkLayerShell.Edge.RIGHT,\n"
+        "        ):\n"
+        "            GtkLayerShell.set_anchor(self, edge, True)\n"
+        "        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, TOP_MARGIN)\n"
+        "        GtkLayerShell.auto_exclusive_zone_enable(self)\n"
+        "        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)\n"
+        "        monitor = _gdk_monitor()\n"
+        "        if monitor is not None:\n"
+        "            GtkLayerShell.set_monitor(self, monitor)\n",
+        "    def _configure_layer_shell(self) -> None:\n"
+        "        GtkLayerShell.init_for_window(self)\n"
+        "        GtkLayerShell.set_namespace(self, APP_ID)\n"
+        "        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.TOP)\n"
+        "        configure_bar_layer_shell(self)\n"
+        "        GtkLayerShell.auto_exclusive_zone_enable(self)\n"
+        "        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)\n"
+        "        monitor = _gdk_monitor()\n"
+        "        if monitor is not None:\n"
+        "            GtkLayerShell.set_monitor(self, monitor)\n",
+        "anclar la barra al borde configurado",
+    )
+    try_replace_once(
+        app,
+        "        self.layout = ShellLayout()\n"
+        "        monitor = _gdk_monitor()\n"
+        "        if monitor is not None:\n"
+        "            self.layout.set_size_request(monitor.get_geometry().width, -1)\n"
+        "\n"
+        "        # Starfield paints the void; layout modules sit as its child above the stars.\n"
+        "        self._bar_host = StarfieldBackground(\n"
+        "            self.event_bus,\n"
+        "            corner_radius=0.0,\n"
+        "            draw_rim=True,\n"
+        "        )\n"
+        "        self._bar_host.get_style_context().add_class(\"shell-bar-host\")\n"
+        "        self._bar_host.set_hexpand(True)\n"
+        "        self._bar_host.set_halign(Gtk.Align.FILL)\n"
+        "        self._bar_host.add(self.layout)\n"
+        "\n"
+        "        self._overlay = Gtk.Overlay()\n"
+        "        self._overlay.set_hexpand(True)\n"
+        "        self._overlay.set_halign(Gtk.Align.FILL)\n"
+        "        if monitor is not None:\n"
+        "            self._overlay.set_size_request(monitor.get_geometry().width, -1)\n"
+        "        self._overlay.add(self._bar_host)\n"
+        "        self.add(self._overlay)\n"
+        "        if monitor is not None:\n"
+        "            self.set_size_request(monitor.get_geometry().width, -1)\n",
+        "        self.layout = ShellLayout()\n"
+        "        monitor = _gdk_monitor()\n"
+        "\n"
+        "        # Starfield paints the void; layout modules sit as its child above the stars.\n"
+        "        self._bar_host = StarfieldBackground(\n"
+        "            self.event_bus,\n"
+        "            corner_radius=0.0,\n"
+        "            draw_rim=True,\n"
+        "        )\n"
+        "        self._bar_host.get_style_context().add_class(\"shell-bar-host\")\n"
+        "        self._bar_host.add(self.layout)\n"
+        "\n"
+        "        self._overlay = Gtk.Overlay()\n"
+        "        self._overlay.add(self._bar_host)\n"
+        "        self.add(self._overlay)\n"
+        "        for widget in (self.layout, self._bar_host, self._overlay, self):\n"
+        "            apply_bar_expand_flags(widget)\n"
+        "        apply_bar_size_requests(\n"
+        "            (self.layout, self._overlay, self),\n"
+        "            monitor,\n"
+        "        )\n",
+        "dimensionar la barra horizontal o vertical",
+    )
+
+    style = root / "shell/style.css"
+    style_text = style.read_text(encoding="utf-8")
+    if "shell-bar-vertical" not in style_text:
+        css = """
+
+/* AidyCOS: vertical bar (left / right edge). */
+box.shell-bar.shell-bar-vertical {
+    box-shadow:
+        1px 0 0 @shell_glass_highlight,
+        3px 0 10px @shell_shadow_soft;
+}
+
+box.shell-bar.shell-bar-vertical box#shell-center,
+box.shell-bar.shell-bar-vertical box#shell-right {
+    margin-top: 0;
+    margin-bottom: 0;
+    margin-left: 4px;
+    margin-right: 4px;
+}
+
+box.shell-bar.shell-bar-vertical box.shell-module {
+    margin: 3px 0;
+}
+"""
+        backup = style.with_suffix(style.suffix + ".aidycos-backup")
+        if not backup.exists():
+            shutil.copy2(style, backup)
+        style.write_text(style_text.rstrip() + "\n" + css, encoding="utf-8")
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("Uso: install.py RUTA_DE_JUGOO")
@@ -1049,6 +1334,7 @@ def main() -> None:
 
     install_desktop_icons(root)
     install_applications_menu(root)
+    install_bar_position(root)
     # Keep the Jugoo bar visible: do not retract under maximized floating windows.
     config = root / "shell/config.py"
     config_text = config.read_text(encoding="utf-8")
