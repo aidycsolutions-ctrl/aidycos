@@ -1187,106 +1187,7 @@ def install_bar_position(root: Path) -> None:
     )
 
     app = root / "shell/app.py"
-    try_replace_once(
-        app,
-        "from .config import (\n"
-        "    ACTIVE_THEME,\n"
-        "    HYPRLAND_THEME_EXPORT_PATH,\n"
-        "    PERSISTENT_WORKSPACES,\n"
-        "    TOP_MARGIN,\n"
-        ")\n",
-        "from .bar_position import (\n"
-        "    apply_bar_expand_flags,\n"
-        "    apply_bar_size_requests,\n"
-        "    configure_bar_layer_shell,\n"
-        ")\n"
-        "from .config import (\n"
-        "    ACTIVE_THEME,\n"
-        "    HYPRLAND_THEME_EXPORT_PATH,\n"
-        "    PERSISTENT_WORKSPACES,\n"
-        ")\n",
-        "importar helpers de posición de barra",
-    )
-    try_replace_once(
-        app,
-        "    def _configure_layer_shell(self) -> None:\n"
-        "        GtkLayerShell.init_for_window(self)\n"
-        "        GtkLayerShell.set_namespace(self, APP_ID)\n"
-        "        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.TOP)\n"
-        "        for edge in (\n"
-        "            GtkLayerShell.Edge.TOP,\n"
-        "            GtkLayerShell.Edge.LEFT,\n"
-        "            GtkLayerShell.Edge.RIGHT,\n"
-        "        ):\n"
-        "            GtkLayerShell.set_anchor(self, edge, True)\n"
-        "        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, TOP_MARGIN)\n"
-        "        GtkLayerShell.auto_exclusive_zone_enable(self)\n"
-        "        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)\n"
-        "        monitor = _gdk_monitor()\n"
-        "        if monitor is not None:\n"
-        "            GtkLayerShell.set_monitor(self, monitor)\n",
-        "    def _configure_layer_shell(self) -> None:\n"
-        "        GtkLayerShell.init_for_window(self)\n"
-        "        GtkLayerShell.set_namespace(self, APP_ID)\n"
-        "        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.TOP)\n"
-        "        configure_bar_layer_shell(self)\n"
-        "        GtkLayerShell.auto_exclusive_zone_enable(self)\n"
-        "        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)\n"
-        "        monitor = _gdk_monitor()\n"
-        "        if monitor is not None:\n"
-        "            GtkLayerShell.set_monitor(self, monitor)\n",
-        "anclar la barra al borde configurado",
-    )
-    try_replace_once(
-        app,
-        "        self.layout = ShellLayout()\n"
-        "        monitor = _gdk_monitor()\n"
-        "        if monitor is not None:\n"
-        "            self.layout.set_size_request(monitor.get_geometry().width, -1)\n"
-        "\n"
-        "        # Starfield paints the void; layout modules sit as its child above the stars.\n"
-        "        self._bar_host = StarfieldBackground(\n"
-        "            self.event_bus,\n"
-        "            corner_radius=0.0,\n"
-        "            draw_rim=True,\n"
-        "        )\n"
-        "        self._bar_host.get_style_context().add_class(\"shell-bar-host\")\n"
-        "        self._bar_host.set_hexpand(True)\n"
-        "        self._bar_host.set_halign(Gtk.Align.FILL)\n"
-        "        self._bar_host.add(self.layout)\n"
-        "\n"
-        "        self._overlay = Gtk.Overlay()\n"
-        "        self._overlay.set_hexpand(True)\n"
-        "        self._overlay.set_halign(Gtk.Align.FILL)\n"
-        "        if monitor is not None:\n"
-        "            self._overlay.set_size_request(monitor.get_geometry().width, -1)\n"
-        "        self._overlay.add(self._bar_host)\n"
-        "        self.add(self._overlay)\n"
-        "        if monitor is not None:\n"
-        "            self.set_size_request(monitor.get_geometry().width, -1)\n",
-        "        self.layout = ShellLayout()\n"
-        "        monitor = _gdk_monitor()\n"
-        "\n"
-        "        # Starfield paints the void; layout modules sit as its child above the stars.\n"
-        "        self._bar_host = StarfieldBackground(\n"
-        "            self.event_bus,\n"
-        "            corner_radius=0.0,\n"
-        "            draw_rim=True,\n"
-        "        )\n"
-        "        self._bar_host.get_style_context().add_class(\"shell-bar-host\")\n"
-        "        self._bar_host.add(self.layout)\n"
-        "\n"
-        "        self._overlay = Gtk.Overlay()\n"
-        "        self._overlay.add(self._bar_host)\n"
-        "        self.add(self._overlay)\n"
-        "        for widget in (self.layout, self._bar_host, self._overlay, self):\n"
-        "            apply_bar_expand_flags(widget)\n"
-        "        apply_bar_size_requests(\n"
-        "            (self.layout, self._overlay, self),\n"
-        "            monitor,\n"
-        "        )\n",
-        "dimensionar la barra horizontal o vertical",
-    )
+    _patch_app_bar_position(app)
 
     style = root / "shell/style.css"
     style_text = style.read_text(encoding="utf-8")
@@ -1316,6 +1217,216 @@ box.shell-bar.shell-bar-vertical box.shell-module {
         if not backup.exists():
             shutil.copy2(style, backup)
         style.write_text(style_text.rstrip() + "\n" + css, encoding="utf-8")
+
+
+def _patch_app_bar_position(app: Path) -> None:
+    """Wire bar-position helpers into app.py without dropping TOP_MARGIN early.
+
+    Older AidyCOS /opt checkouts lack ``set_monitor`` inside
+    ``_configure_layer_shell``. A previous overlay pass removed the
+    ``TOP_MARGIN`` import before that method was rewritten, which crashed
+    Jugoo at startup with ``NameError: TOP_MARGIN``.
+    """
+    text = app.read_text(encoding="utf-8")
+    original = text
+
+    bar_import = (
+        "from .bar_position import (\n"
+        "    apply_bar_expand_flags,\n"
+        "    apply_bar_size_requests,\n"
+        "    configure_bar_layer_shell,\n"
+        ")\n"
+    )
+    if "from .bar_position import" not in text:
+        config_import = (
+            "from .config import (\n"
+            "    ACTIVE_THEME,\n"
+            "    HYPRLAND_THEME_EXPORT_PATH,\n"
+            "    PERSISTENT_WORKSPACES,\n"
+            "    TOP_MARGIN,\n"
+            ")\n"
+        )
+        config_import_no_margin = (
+            "from .config import (\n"
+            "    ACTIVE_THEME,\n"
+            "    HYPRLAND_THEME_EXPORT_PATH,\n"
+            "    PERSISTENT_WORKSPACES,\n"
+            ")\n"
+        )
+        if config_import in text:
+            text = text.replace(config_import, bar_import + config_import, 1)
+        elif config_import_no_margin in text:
+            # Repair a half-applied install: keep helpers and restore TOP_MARGIN.
+            text = text.replace(
+                config_import_no_margin,
+                bar_import + config_import,
+                1,
+            )
+        else:
+            print(f"Aviso: se omite import de posición de barra: {app}", flush=True)
+
+    configure_new = (
+        "    def _configure_layer_shell(self) -> None:\n"
+        "        GtkLayerShell.init_for_window(self)\n"
+        "        GtkLayerShell.set_namespace(self, APP_ID)\n"
+        "        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.TOP)\n"
+        "        configure_bar_layer_shell(self)\n"
+        "        GtkLayerShell.auto_exclusive_zone_enable(self)\n"
+        "        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)\n"
+    )
+    configure_with_monitor = configure_new + (
+        "        monitor = _gdk_monitor()\n"
+        "        if monitor is not None:\n"
+        "            GtkLayerShell.set_monitor(self, monitor)\n"
+    )
+    if "configure_bar_layer_shell(self)" not in text:
+        old_with_monitor = (
+            "    def _configure_layer_shell(self) -> None:\n"
+            "        GtkLayerShell.init_for_window(self)\n"
+            "        GtkLayerShell.set_namespace(self, APP_ID)\n"
+            "        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.TOP)\n"
+            "        for edge in (\n"
+            "            GtkLayerShell.Edge.TOP,\n"
+            "            GtkLayerShell.Edge.LEFT,\n"
+            "            GtkLayerShell.Edge.RIGHT,\n"
+            "        ):\n"
+            "            GtkLayerShell.set_anchor(self, edge, True)\n"
+            "        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, TOP_MARGIN)\n"
+            "        GtkLayerShell.auto_exclusive_zone_enable(self)\n"
+            "        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)\n"
+            "        monitor = _gdk_monitor()\n"
+            "        if monitor is not None:\n"
+            "            GtkLayerShell.set_monitor(self, monitor)\n"
+        )
+        old_without_monitor = (
+            "    def _configure_layer_shell(self) -> None:\n"
+            "        GtkLayerShell.init_for_window(self)\n"
+            "        GtkLayerShell.set_namespace(self, APP_ID)\n"
+            "        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.TOP)\n"
+            "        for edge in (\n"
+            "            GtkLayerShell.Edge.TOP,\n"
+            "            GtkLayerShell.Edge.LEFT,\n"
+            "            GtkLayerShell.Edge.RIGHT,\n"
+            "        ):\n"
+            "            GtkLayerShell.set_anchor(self, edge, True)\n"
+            "        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, TOP_MARGIN)\n"
+            "        GtkLayerShell.auto_exclusive_zone_enable(self)\n"
+            "        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE)\n"
+        )
+        if old_with_monitor in text:
+            text = text.replace(old_with_monitor, configure_with_monitor, 1)
+        elif old_without_monitor in text:
+            text = text.replace(old_without_monitor, configure_new, 1)
+        else:
+            print(f"Aviso: se omite anclar la barra al borde configurado: {app}", flush=True)
+
+    size_old = (
+        "        self.layout = ShellLayout()\n"
+        "        monitor = _gdk_monitor()\n"
+        "        if monitor is not None:\n"
+        "            self.layout.set_size_request(monitor.get_geometry().width, -1)\n"
+        "\n"
+        "        # Starfield paints the void; layout modules sit as its child above the stars.\n"
+        "        self._bar_host = StarfieldBackground(\n"
+        "            self.event_bus,\n"
+        "            corner_radius=0.0,\n"
+        "            draw_rim=True,\n"
+        "        )\n"
+        "        self._bar_host.get_style_context().add_class(\"shell-bar-host\")\n"
+        "        self._bar_host.set_hexpand(True)\n"
+        "        self._bar_host.set_halign(Gtk.Align.FILL)\n"
+        "        self._bar_host.add(self.layout)\n"
+        "\n"
+        "        self._overlay = Gtk.Overlay()\n"
+        "        self._overlay.set_hexpand(True)\n"
+        "        self._overlay.set_halign(Gtk.Align.FILL)\n"
+        "        if monitor is not None:\n"
+        "            self._overlay.set_size_request(monitor.get_geometry().width, -1)\n"
+        "        self._overlay.add(self._bar_host)\n"
+        "        self.add(self._overlay)\n"
+        "        if monitor is not None:\n"
+        "            self.set_size_request(monitor.get_geometry().width, -1)\n"
+    )
+    size_new = (
+        "        self.layout = ShellLayout()\n"
+        "        monitor = _gdk_monitor()\n"
+        "\n"
+        "        # Starfield paints the void; layout modules sit as its child above the stars.\n"
+        "        self._bar_host = StarfieldBackground(\n"
+        "            self.event_bus,\n"
+        "            corner_radius=0.0,\n"
+        "            draw_rim=True,\n"
+        "        )\n"
+        "        self._bar_host.get_style_context().add_class(\"shell-bar-host\")\n"
+        "        self._bar_host.add(self.layout)\n"
+        "\n"
+        "        self._overlay = Gtk.Overlay()\n"
+        "        self._overlay.add(self._bar_host)\n"
+        "        self.add(self._overlay)\n"
+        "        for widget in (self.layout, self._bar_host, self._overlay, self):\n"
+        "            apply_bar_expand_flags(widget)\n"
+        "        apply_bar_size_requests(\n"
+        "            (self.layout, self._overlay, self),\n"
+        "            monitor,\n"
+        "        )\n"
+    )
+    if "apply_bar_size_requests(" not in text:
+        if size_old in text:
+            text = text.replace(size_old, size_new, 1)
+        else:
+            print(f"Aviso: se omite dimensionar la barra horizontal o vertical: {app}", flush=True)
+
+    # Drop TOP_MARGIN from imports only once nothing references it.
+    if (
+        "TOP_MARGIN" in text
+        and "GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, TOP_MARGIN)" not in text
+        and "configure_bar_layer_shell(self)" in text
+    ):
+        text = text.replace(
+            "from .config import (\n"
+            "    ACTIVE_THEME,\n"
+            "    HYPRLAND_THEME_EXPORT_PATH,\n"
+            "    PERSISTENT_WORKSPACES,\n"
+            "    TOP_MARGIN,\n"
+            ")\n",
+            "from .config import (\n"
+            "    ACTIVE_THEME,\n"
+            "    HYPRLAND_THEME_EXPORT_PATH,\n"
+            "    PERSISTENT_WORKSPACES,\n"
+            ")\n",
+            1,
+        )
+
+    # Final safety net for half-applied installs still referencing TOP_MARGIN.
+    if (
+        "set_margin(self, GtkLayerShell.Edge.TOP, TOP_MARGIN)" in text
+        and "    TOP_MARGIN,\n" not in text
+    ):
+        broken = (
+            "from .config import (\n"
+            "    ACTIVE_THEME,\n"
+            "    HYPRLAND_THEME_EXPORT_PATH,\n"
+            "    PERSISTENT_WORKSPACES,\n"
+            ")\n"
+        )
+        fixed = (
+            "from .config import (\n"
+            "    ACTIVE_THEME,\n"
+            "    HYPRLAND_THEME_EXPORT_PATH,\n"
+            "    PERSISTENT_WORKSPACES,\n"
+            "    TOP_MARGIN,\n"
+            ")\n"
+        )
+        if broken in text:
+            text = text.replace(broken, fixed, 1)
+            print(f"Aviso: se restauró TOP_MARGIN en imports rotos: {app}", flush=True)
+
+    if text == original:
+        return
+    backup = app.with_suffix(app.suffix + ".aidycos-backup")
+    if not backup.exists():
+        shutil.copy2(app, backup)
+    app.write_text(text, encoding="utf-8")
 
 
 def main() -> None:
