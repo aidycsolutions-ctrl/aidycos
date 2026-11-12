@@ -1,0 +1,254 @@
+hp-check[156510]: info: :
+hp-check[156510]: info: :HP Linux Imaging and Printing System (ver. 3.22.10)
+hp-check[156510]: info: :Dependency/Version Check Utility ver. 15.1
+hp-check[156510]: info: :
+hp-check[156510]: info: :Copyright (c) 2001-18 HP Development Company, LP
+hp-check[156510]: info: :This software comes with ABSOLUTELY NO WARRANTY.
+hp-check[156510]: info: :This is free software, and you are welcome to distribute it
+hp-check[156510]: info: :under certain conditions. See COPYING file for more details.
+hp-check[156510]: info: :
+hp-check[156510]: info: :Note: hp-check can be run in three modes:
+hp-check[156510]: info: :1. Compile-time check mode (-c or --compile): Use this mode     
+hp-check[156510]: info: :before compiling the HPLIP supplied tarball (.tar.gz or .run) to
+hp-check[156510]: info: :determine if the proper dependencies are installed to           
+hp-check[156510]: info: :successfully compile HPLIP.                                     
+hp-check[156510]: info: :2. Run-time check mode (-r or --run): Use this mode to determine
+hp-check[156510]: info: :if a distro supplied package (.deb, .rpm, etc) or an already    
+hp-check[156510]: info: :built HPLIP supplied tarball has the proper dependencies        
+hp-check[156510]: info: :installed to successfully run.                                  
+hp-check[156510]: info: :3. Both compile- and run-time check mode (-b or --both)         
+hp-check[156510]: info: :(Default): This mode will check both of the above cases (both   
+hp-check[156510]: info: :compile- and run-time dependencies).                            
+hp-check[156510]: info: :
+hp-check[156510]: info: :Check types:                                                    
+hp-check[156510]: info: :a. EXTERNALDEP - External Dependencies                          
+hp-check[156510]: info: :b. GENERALDEP - General Dependencies (required both at compile  
+hp-check[156510]: info: :and run time)                                                   
+hp-check[156510]: info: :c. COMPILEDEP - Compile time Dependencies                       
+hp-check[156510]: info: :d. [All are run-time checks]                                    
+hp-check[156510]: info: :PYEXT SCANCONF QUEUES PERMISSION                                
+hp-check[156510]: info: :
+hp-check[156510]: info: :Status Types:
+hp-check[156510]: info: :    OK
+hp-check[156510]: info: :    MISSING       - Missing Dependency or Permission or Plug-in
+hp-check[156510]: info: :    INCOMPAT      - Incompatible dependency-version or Plugin-version
+hp-check[156510]: info: :
+warning: debian-13 version is not supported. Using debian-11 versions dependencies to verify and install...
+hp-check[156510]: info: :
+hp-check[156510]: info: :---------------
+hp-check[156510]: info: :| SYSTEM INFO |
+hp-check[156510]: info: :---------------
+hp-check[156510]: info: :
+hp-check[156510]: info: : Kernel: 6.12.107+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.107-1 (2026-08-29) GNU/Linux
+ Host: AidyCSO
+ Proc: 6.12.107+deb13-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.12.107-1 (2026-08-29) GNU/Linux
+ Distribution: debian 13
+hp-check[156510]: info: : Bitness: 64 bit
+
+hp-check[156510]: info: :
+hp-check[156510]: info: :-----------------------
+hp-check[156510]: info: :| HPLIP CONFIGURATION |
+hp-check[156510]: info: :-----------------------
+hp-check[156510]: info: :
+hp-check[156510]: info: :HPLIP-Version: HPLIP 3.22.10
+hp-check[156510]: info: :HPLIP-Home: /usr/share/hplip
+warning: HPLIP-Installation: Auto installation is not supported for debian distro  13 version 
+hp-check[156510]: info: :
+hp-check[156510]: info: :Current contents of '/etc/hp/hplip.conf' file:
+hp-check[156510]: info: :# hplip.conf.  Generated from hplip.conf.in by configure.
+
+[hplip]
+version=3.22.10
+
+[dirs]
+home=/usr/share/hplip
+run=/var/run
+ppd=/usr/share/ppd/hplip/HP
+ppdbase=/usr/share/ppd/hplip
+doc=/usr/share/doc/hplip
+html=/usr/share/doc/hplip-doc
+icon=no
+cupsbackend=/usr/lib/cups/backend
+cupsfilter=/usr/lib/cups/filter
+drv=/usr/share/cups/drv
+bin=/usr/bin
+apparmor=/etc/apparmor.d
+# Following values are determined at configure time and cannot be changed.
+[configure]
+network-build=yes
+libusb01-build=no
+pp-build=no
+gui-build=yes
+scanner-build=yes
+fax-build=yes
+dbus-build=yes
+cups11-build=no
+doc-build=yes
+shadow-build=no
+hpijs-install=yes
+foomatic-drv-install=yes
+foomatic-ppd-install=no
+foomatic-rip-hplip-install=no
+hpcups-install=yes
+cups-drv-install=yes
+cups-ppd-install=no
+internal-tag=3.22.10
+restricted-build=no
+ui-toolkit=qt5
+qt3=no
+qt4=no
+qt5=yes
+policy-kit=yes
+lite-build=no
+udev_sysfs_rules=no
+hpcups-only-build=no
+hpijs-only-build=no
+apparmor_build=no
+class-driver=no
+
+hp-check[156510]: info: :
+hp-check[156510]: info: :Current contents of '/var/lib/hp/hplip.state' file:
+hp-check[156510]: info: :Plugins are not installed. Could not access file: No such file or directory
+hp-check[156510]: info: :
+hp-check[156510]: info: :Current contents of '~/.hplip/hplip.conf' file:
+hp-check[156510]: info: :[installation]
+date_time = 11/11/26 22:13:40
+version = 3.22.10
+
+
+hp-check[156510]: info: : <Package-name>        <Package-Desc>      <Required/Optional> <Min-Version> <Installed-Version> <Status>   <Comment>
+hp-check[156510]: info: :
+hp-check[156510]: info: :-------------------------
+hp-check[156510]: info: :| External Dependencies |
+hp-check[156510]: info: :-------------------------
+hp-check[156510]: info: :
+hp-check[156510]: info: : error: cups          CUPS - Common Unix Printing System                           REQUIRED        1.1             -               INCOMPAT   'CUPS may not be installed or not running'
+hp-check[156510]: info: : gs                   GhostScript - PostScript and PDF language interpreter and previewer REQUIRED        7.05            10.05.1         OK         -
+hp-check[156510]: info: : xsane                xsane - Graphical scanner frontend for SANE                  OPTIONAL        0.9             0.999           OK         -
+hp-check[156510]: info: : scanimage            scanimage - Shell scanning program                           OPTIONAL        1.0             1.2.1           OK         -
+hp-check[156510]: info: : error: dbus          DBus - Message bus system                                    REQUIRED        -               1.16.2          MISSING    'DBUS may not be installed or not running'
+hp-check[156510]: info: : policykit            PolicyKit - Administrative policy framework                  OPTIONAL        -               -               OK         -
+hp-check[156510]: info: : network              network -wget                                                OPTIONAL        -               1.25.0          OK         -
+hp-check[156510]: info: : avahi-utils          avahi-utils                                                  OPTIONAL        -               0.8             OK         -
+hp-check[156510]: info: :
+hp-check[156510]: info: :------------------------
+hp-check[156510]: info: :| General Dependencies |
+hp-check[156510]: info: :------------------------
+hp-check[156510]: info: :
+hp-check[156510]: info: : libjpeg              libjpeg - JPEG library                                       REQUIRED        -               -               OK         -
+hp-check[156510]: info: : cups-devel           CUPS devel- Common Unix Printing System development files    REQUIRED        -               -               OK         -
+hp-check[156510]: info: : cups-image           CUPS image - CUPS image development files                    REQUIRED        -               -               OK         -
+hp-check[156510]: info: : libpthread           libpthread - POSIX threads library                           REQUIRED        -               b'2.41'         OK         -
+hp-check[156510]: info: : error: libusb        libusb - USB library                                         REQUIRED        -               1.0             MISSING    'libusb needs to be installed'
+hp-check[156510]: info: : sane                 SANE - Scanning library                                      REQUIRED        -               -               OK         -
+hp-check[156510]: info: : error: sane-devel    SANE - Scanning library development files                    REQUIRED        -               -               MISSING    'sane-devel needs to be installed'
+hp-check[156510]: info: : error: libavahi-dev  libavahi-dev                                                 REQUIRED        -               -               MISSING    'libavahi-dev needs to be installed'
+hp-check[156510]: info: : error: libnetsnmp-devel libnetsnmp-devel - SNMP networking library development files REQUIRED        5.0.9           -               MISSING    'libnetsnmp-devel needs to be installed'
+hp-check[156510]: info: : error: libcrypto     libcrypto - OpenSSL cryptographic library                    REQUIRED        -               3.5.7           MISSING    'libcrypto needs to be installed'
+hp-check[156510]: info: : python3X             Python 2.2 or greater - Python programming language          REQUIRED        2.2             3.13.5          OK         -
+hp-check[156510]: info: : python3-notify2      Python libnotify - Python bindings for the libnotify Desktop notifications OPTIONAL        -               -               OK         -
+hp-check[156510]: info: : error: python3-pyqt4-dbus PyQt 4 DBus - DBus Support for PyQt4                         OPTIONAL        4.0             -               MISSING    'python3-pyqt4-dbus needs to be installed'
+hp-check[156510]: info: : error: python3-pyqt4 PyQt 4- Qt interface for Python (for Qt version 4.x)         REQUIRED        4.0             -               MISSING    'python3-pyqt4 needs to be installed'
+hp-check[156510]: info: : python3-dbus         Python DBus - Python bindings for DBus                       REQUIRED        0.80.0          1.4.0           OK         -
+hp-check[156510]: info: : python3-xml          Python XML libraries                                         REQUIRED        -               2.8.3           OK         -
+hp-check[156510]: info: : python3-devel        Python devel - Python development files                      REQUIRED        2.2             3.13.5          OK         -
+hp-check[156510]: info: : python3-pil          PIL - Python Imaging Library (required for commandline scanning with hp-scan) OPTIONAL        -               12.3.0          OK         -
+hp-check[156510]: info: : python3-reportlab    Reportlab - PDF library for Python                           OPTIONAL        2.0             4.3.1           OK         -
+hp-check[156510]: info: :
+hp-check[156510]: info: :--------------
+hp-check[156510]: info: :| COMPILEDEP |
+hp-check[156510]: info: :--------------
+hp-check[156510]: info: :
+hp-check[156510]: info: : error: libtool       libtool - Library building support services                  REQUIRED        -               -               MISSING    'libtool needs to be installed'
+hp-check[156510]: info: : gcc                  gcc - GNU Project C and C++ Compiler                         REQUIRED        -               14.2.0          OK         -
+hp-check[156510]: info: : make                 make - GNU make utility to maintain groups of programs       REQUIRED        3.0             4.4.1           OK         -
+hp-check[156510]: info: :
+hp-check[156510]: info: :---------------------
+hp-check[156510]: info: :| Python Extentions |
+hp-check[156510]: info: :---------------------
+hp-check[156510]: info: :
+hp-check[156510]: info: : cupsext              CUPS-Extension                                               REQUIRED        -               3.22.10         OK         -
+hp-check[156510]: info: : hpmudext             IO-Extension                                                 REQUIRED        -               3.22.10         OK         -
+hp-check[156510]: info: :
+hp-check[156510]: info: :----------------------
+hp-check[156510]: info: :| Scan Configuration |
+hp-check[156510]: info: :----------------------
+hp-check[156510]: info: :
+hp-check[156510]: info: :'/etc/sane.d/dll.d/hpaio' not found.
+hp-check[156510]: info: : hpaio                HPLIP-SANE-Backend                                           REQUIRED        -               3.22.10         OK         'hpaio found in /etc/sane.d/dll.conf'
+hp-check[156510]: info: : scanext              Scan-SANE-Extension                                          REQUIRED        -               3.22.10         OK         -
+hp-check[156510]: info: :
+hp-check[156510]: info: :------------------------------
+hp-check[156510]: info: :| DISCOVERED SCANNER DEVICES |
+hp-check[156510]: info: :------------------------------
+hp-check[156510]: info: :
+hp-check[156510]: info: :device `v4l:/dev/video0' is a Noname USB2.0 HD UVC WebCam: USB2.0 HD virtual device
+device `airscan:e0:HP Smart Tank 580-590 series [94640E]' is a eSCL HP Smart Tank 580-590 series [94640E] ip=192.168.101.70
+
+hp-check[156510]: info: :
+hp-check[156510]: info: :--------------------------
+hp-check[156510]: info: :| DISCOVERED USB DEVICES |
+hp-check[156510]: info: :--------------------------
+hp-check[156510]: info: :
+hp-check[156510]: info: :No devices found.
+hp-check[156510]: info: :
+hp-check[156510]: info: :---------------------------------
+hp-check[156510]: info: :| INSTALLED CUPS PRINTER QUEUES |
+hp-check[156510]: info: :---------------------------------
+hp-check[156510]: info: :
+hp-check[156510]: info: :
+hp-check[156510]: info: :HP_Smart_Tank_580_590_series_94640E
+hp-check[156510]: info: :-----------------------------------
+hp-check[156510]: info: :Type: Unknown
+hp-check[156510]: info: :Device URI: implicitclass://HP_Smart_Tank_580_590_series_94640E/
+hp-check[156510]: info: :PPD: /etc/cups/ppd/HP_Smart_Tank_580_590_series_94640E.ppd
+hp-check[156510]: info: :PPD Description: HP Smart Tank 580-590 series, driverless, cups-filters 1.28.17
+hp-check[156510]: info: :Printer status: la impresora HP_Smart_Tank_580_590_series_94640E está inactiva.  activada desde mié 11 nov 2026 22:08:48	No suitable destination host found by cups-browsed.
+warning: Printer is not HPLIP installed. Printers must use the hp: or hpfax: CUPS backend for HP-Devices.
+hp-check[156510]: info: :
+hp-check[156510]: info: :Xprinter_XP58
+hp-check[156510]: info: :-------------
+hp-check[156510]: info: :Type: Unknown
+hp-check[156510]: info: :Device URI: usb://YICHIP3121/POS-58%20Printer?serial=B120300001
+hp-check[156510]: info: :PPD: /etc/cups/ppd/Xprinter_XP58.ppd
+hp-check[156510]: info: :PPD Description: J-speed XP-58
+hp-check[156510]: info: :Printer status: la impresora Xprinter_XP58 está inactiva.  activada desde jue 08 oct 2026 18:06:56
+warning: Printer is not HPLIP installed. Printers must use the hp: or hpfax: CUPS backend for HP-Devices.
+hp-check[156510]: info: :
+hp-check[156510]: info: :
+hp-check[156510]: info: :--------------
+hp-check[156510]: info: :| PERMISSION |
+hp-check[156510]: info: :--------------
+hp-check[156510]: info: :
+hp-check[156510]: info: :
+hp-check[156510]: info: :-----------
+hp-check[156510]: info: :| SUMMARY |
+hp-check[156510]: info: :-----------
+hp-check[156510]: info: :
+hp-check[156510]: info: :Missing Required Dependencies
+hp-check[156510]: info: :-----------------------------
+error: 'cups' package is missing or 'cups' service is not running.
+error: 'libcups2' package is missing/incompatible 
+error: 'libdbus-1-dev' package is missing/incompatible 
+error: 'libusb-1.0.0-dev' package is missing/incompatible 
+error: 'libsane-dev' package is missing/incompatible 
+error: 'libavahi-client-dev' package is missing/incompatible 
+error: 'libavahi-core-dev' package is missing/incompatible 
+error: 'libavahi-common-dev' package is missing/incompatible 
+error: 'libsnmp-dev' package is missing/incompatible 
+error: 'snmp' package is missing/incompatible 
+error: 'libssl-dev' package is missing/incompatible 
+error: 'python3-pyqt4' package is missing/incompatible 
+error: 'gtk2-engines-pixbuf' package is missing/incompatible 
+error: 'libtool' package is missing/incompatible 
+error: 'libtool-bin' package is missing/incompatible 
+hp-check[156510]: info: :
+hp-check[156510]: info: :Missing Optional Dependencies
+hp-check[156510]: info: :-----------------------------
+error: 'python3-dbus.mainloop.qt' package is missing/incompatible 
+hp-check[156510]: info: :
+hp-check[156510]: info: :Total Errors: 10
+hp-check[156510]: info: :Total Warnings: 2
+hp-check[156510]: info: :
+hp-check[156510]: info: :
+hp-check[156510]: info: :Done.

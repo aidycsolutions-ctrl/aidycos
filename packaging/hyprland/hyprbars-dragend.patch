@@ -1,0 +1,21 @@
+diff --git a/hyprbars/barDeco.cpp b/hyprbars/barDeco.cpp
+index 257c4c9..870d0d8 100644
+--- a/hyprbars/barDeco.cpp
++++ b/hyprbars/barDeco.cpp
+@@ -5,6 +5,7 @@
+ #include <hyprland/src/desktop/view/Window.hpp>
+ #include <hyprland/src/helpers/MiscFunctions.hpp>
+ #include <hyprland/src/managers/SeatManager.hpp>
++#include <hyprland/src/managers/EventManager.hpp>
+ #include <hyprland/src/managers/input/InputManager.hpp>
+ #include <hyprland/src/render/Renderer.hpp>
+ #include <hyprland/src/config/ConfigManager.hpp>
+@@ -249,6 +250,8 @@ void CHyprBar::handleUpEvent(Event::SCallbackInfo& info) {
+         if (m_bTouchEv)
+             Config::Actions::floatWindow(Config::Actions::eTogglableAction::TOGGLE_ACTION_DISABLE);
+ 
++        g_pEventManager->postEvent(SHyprIPCEvent{.event = "hyprbarsdragend", .data = std::format("{:x}", (uintptr_t)m_pWindow.lock().get())});
++
+         Log::logger->log(Log::DEBUG, "[hyprbars] Dragging ended on {:x}", (uintptr_t)m_pWindow.lock().get());
+     }
+ 

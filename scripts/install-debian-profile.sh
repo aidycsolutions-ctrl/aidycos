@@ -353,15 +353,9 @@ install_jugoo() {
     "${service_dir}/aidycos.conf"
   systemctl --user daemon-reload >/dev/null 2>&1 || true
   systemctl --user try-restart jugoo-task-watcher.service >/dev/null 2>&1 || true
-  if [[ -f "${jugoo_dir}/scripts/setup-hyprbars.sh" ]]; then
-    if ! bash "${jugoo_dir}/scripts/setup-hyprbars.sh"; then
-      echo "No se pudieron compilar los botones de título de Jugoo; se continúa sin cargar una configuración inexistente." >&2
-    fi
-  elif [[ -n "${source_dir}" ]]; then
-    echo "El checkout seleccionado de desarrollo no contiene scripts/setup-hyprbars.sh; no se instalaron los botones de título." >&2
-  else
-    echo "Este checkout de Jugoo no contiene scripts/setup-hyprbars.sh; se omiten los botones de título." >&2
-  fi
+  # hyprbars is owned by AidyCOS (packaging/hyprland/setup-hyprbars.sh) and runs
+  # after the ventanas scripts are installed further below — Jugoo upstream does
+  # not ship setup-hyprbars on the branches we clone.
 }
 install_jugoo
 
@@ -580,6 +574,14 @@ if [[ -e "${HYPR_WINDOWS_CONF}" ]] && ! cmp -s "${ROOT}/packaging/hyprland/confi
 fi
 install -m 0644 "${ROOT}/packaging/hyprland/config/jugoo_ventanas.conf" "${HYPR_WINDOWS_CONF}"
 sudo install -m 0755 "${ROOT}/packaging/hyprland/aidycos-prefer-external-display" /usr/local/bin/aidycos-prefer-external-display
+
+# Title-bar buttons: compile hyprbars here (not via Jugoo). Needs network +
+# hyprland-dev from backports; without this the test laptop has no min/close.
+if ! bash "${ROOT}/packaging/hyprland/setup-hyprbars.sh"; then
+  echo "ERROR: no se pudieron instalar los botones de título (hyprbars)." >&2
+  echo "Sin ~/.local/lib/jugoo/hyprbars.so las ventanas no muestran minimizar/cerrar." >&2
+  echo "Revisa red, hyprland-dev (trixie-backports) y vuelve a aplicar el perfil." >&2
+fi
 if [[ ! -e "${HYPR_AIDYCOS_CONF}" ]]; then
   cat >"${HYPR_AIDYCOS_CONF}" <<'EOF'
 # AidyCOS keyboard and Jugoo defaults.
