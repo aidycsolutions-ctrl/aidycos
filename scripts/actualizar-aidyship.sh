@@ -34,6 +34,10 @@ if [[ "${USER_MODE}" == 1 ]]; then
   install -d -m 0755 "${APP_DIR}/aidyship" "${BIN}" "${SHARE}/applications"
   install -m 0644 "$ROOT/packaging/aidyship/aidyship/"*.py "${APP_DIR}/aidyship/"
   install -m 0644 "$ROOT/packaging/aidyship/README.md" "${APP_DIR}/README.md"
+  if [[ -f "$ROOT/packaging/aidyship/aidyship.png" ]]; then
+    install -D -m 0644 "$ROOT/packaging/aidyship/aidyship.png" "${APP_DIR}/aidyship.png"
+    install -D -m 0644 "$ROOT/packaging/aidyship/aidyship.png" "${SHARE}/pixmaps/aidyship.png"
+  fi
   cat >"${BIN}/aidyship" <<EOF
 #!/bin/sh
 set -eu
@@ -45,9 +49,6 @@ EOF
   sed "s|/usr/local/bin/aidyship|${BIN}/aidyship|g" \
     "$ROOT/packaging/aidyship/aidyship.desktop" >"${SHARE}/applications/aidyship.desktop"
   install_icons "${SHARE}"
-  if [[ -f "$ROOT/packaging/aidyship/aidyship.png" ]]; then
-    install -D -m 0644 "$ROOT/packaging/aidyship/aidyship.png" "${SHARE}/pixmaps/aidyship.png"
-  fi
   if command -v gtk-update-icon-cache >/dev/null 2>&1; then
     gtk-update-icon-cache -f "${SHARE}/icons/hicolor" >/dev/null 2>&1 || true
   fi
@@ -59,6 +60,9 @@ fi
 sudo install -d -m 0755 /opt/aidyc/aidyship/aidyship
 sudo install -m 0644 "$ROOT/packaging/aidyship/aidyship/"*.py /opt/aidyc/aidyship/aidyship/
 sudo install -m 0644 "$ROOT/packaging/aidyship/README.md" /opt/aidyc/aidyship/README.md
+if [[ -f "$ROOT/packaging/aidyship/aidyship.png" ]]; then
+  sudo install -D -m 0644 "$ROOT/packaging/aidyship/aidyship.png" /opt/aidyc/aidyship/aidyship.png
+fi
 sudo install -m 0755 "$ROOT/packaging/aidyship/aidyship-wrapper" /usr/local/bin/aidyship
 sudo install -m 0644 "$ROOT/packaging/aidyship/aidyship.desktop" /usr/share/applications/aidyship.desktop
 install -d "${HOME}/.local/share/applications"

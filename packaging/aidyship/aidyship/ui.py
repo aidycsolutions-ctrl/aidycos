@@ -10,7 +10,7 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk, Pango  # noqa: E402
 
-from .branding import apply_aidyship_branding
+from .branding import apply_aidyship_branding, load_logo_pixbuf
 from .config import ShipConfig, add_favorite, load_config, remove_favorite, save_config
 from .gitops import (
     ChangedFile,
@@ -85,10 +85,16 @@ class ShipWindow(Gtk.Window):
         header.get_style_context().add_class("ship-header")
         root.pack_start(header, False, False, 0)
 
+        brand_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        logo_pixbuf = load_logo_pixbuf(32)
+        if logo_pixbuf is not None:
+            logo = Gtk.Image.new_from_pixbuf(logo_pixbuf)
+            brand_box.pack_start(logo, False, False, 0)
         brand = Gtk.Label(label="AidyShip")
         brand.set_xalign(0)
         brand.set_markup("<span size='large'><b>AidyShip</b></span>")
-        header.pack_start(brand, True, True, 0)
+        brand_box.pack_start(brand, False, False, 0)
+        header.pack_start(brand_box, True, True, 0)
 
         self.auth_label = Gtk.Label(label="Comprobando GitHub…")
         self.auth_label.set_xalign(1)
@@ -247,10 +253,22 @@ class ShipWindow(Gtk.Window):
 
     def refresh_auth(self) -> None:
         def work() -> None:
-            session = auth_status()
+            try:
+                session = auth_status()
+            except Exception as exc:  # noqa: BLE001 — show any auth probe failure in UI
+                session = GitHubSession(logged_in=False, detail=str(exc))
             GLib.idle_add(self._apply_auth, session)
 
         threading.Thread(target=work, daemon=True).start()
+        # Don't leave "Comprobando…" forever if gh hangs.
+        GLib.timeout_add_seconds(8, self._auth_timeout)
+
+    def _auth_timeout(self) -> bool:
+        if self.auth_label.get_text() == "Comprobando GitHub…":
+            self.auth_label.set_text("Sin respuesta de gh")
+            self.btn_login.show()
+            self.btn_logout.hide()
+        return False
 
     def _apply_auth(self, session: GitHubSession) -> bool:
         self.session = session

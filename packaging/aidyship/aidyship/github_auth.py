@@ -20,7 +20,7 @@ def gh_bin() -> str | None:
     return shutil.which("gh")
 
 
-def _run_gh(args: list[str], *, timeout: float = 45.0) -> subprocess.CompletedProcess[str]:
+def _run_gh(args: list[str], *, timeout: float = 20.0) -> subprocess.CompletedProcess[str]:
     binary = gh_bin()
     if not binary:
         return subprocess.CompletedProcess(
@@ -32,6 +32,7 @@ def _run_gh(args: list[str], *, timeout: float = 45.0) -> subprocess.CompletedPr
     env = os.environ.copy()
     env.setdefault("GH_PROMPT_DISABLED", "1")
     env.setdefault("GH_NO_UPDATE_NOTIFIER", "1")
+    env.setdefault("CI", "1")
     return subprocess.run(
         [binary, *args],
         check=False,
@@ -45,8 +46,17 @@ def _run_gh(args: list[str], *, timeout: float = 45.0) -> subprocess.CompletedPr
 def auth_status() -> GitHubSession:
     if not gh_bin():
         return GitHubSession(logged_in=False, detail="Falta el paquete gh (GitHub CLI).")
+    # Prefer a cheap token probe; falls back to `auth status` text.
     try:
-        result = _run_gh(["auth", "status", "-h", "github.com"])
+        who = _run_gh(["api", "user", "--jq", ".login"], timeout=12.0)
+    except subprocess.TimeoutExpired:
+        who = None
+    if who is not None and who.returncode == 0:
+        login = (who.stdout or "").strip()
+        if login:
+            return GitHubSession(logged_in=True, login=login, detail=f"api user={login}")
+    try:
+        result = _run_gh(["auth", "status", "-h", "github.com"], timeout=12.0)
     except subprocess.TimeoutExpired:
         return GitHubSession(logged_in=False, detail="gh auth status tardó demasiado.")
     text = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()

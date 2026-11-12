@@ -638,6 +638,10 @@ install_aidyship() {
   sudo install -d -m 0755 "${aidyship_dir}/aidyship" /usr/local/bin /usr/share/applications
   sudo install -m 0644 "${ROOT}/packaging/aidyship/aidyship/"*.py "${aidyship_dir}/aidyship/"
   sudo install -m 0644 "${ROOT}/packaging/aidyship/README.md" "${aidyship_dir}/README.md"
+  if [[ -f "${ROOT}/packaging/aidyship/aidyship.png" ]]; then
+    sudo install -D -m 0644 "${ROOT}/packaging/aidyship/aidyship.png" "${aidyship_dir}/aidyship.png"
+    sudo install -D -m 0644 "${ROOT}/packaging/aidyship/aidyship.png" /usr/share/pixmaps/aidyship.png
+  fi
   sudo install -m 0755 "${ROOT}/packaging/aidyship/aidyship-wrapper" /usr/local/bin/aidyship
   sudo install -m 0644 "${desktop_entry}" /usr/share/applications/aidyship.desktop
   for icon_size in 16 24 32 48 64 128 256 512; do
@@ -647,9 +651,6 @@ install_aidyship() {
         "/usr/share/icons/hicolor/${icon_size}x${icon_size}/apps/aidyship.png"
     fi
   done
-  if [[ -f "${ROOT}/packaging/aidyship/aidyship.png" ]]; then
-    sudo install -D -m 0644 "${ROOT}/packaging/aidyship/aidyship.png" /usr/share/pixmaps/aidyship.png
-  fi
   install -d "${desktop_dir}" "${HOME}/.local/share/icons/hicolor"
   install -m 0644 "${desktop_entry}" "${desktop_dir}/aidyship.desktop"
   for icon_size in 16 24 32 48 64 128 256 512; do
