@@ -323,6 +323,61 @@ class PrintersOverlayTests(unittest.TestCase):
                 }
             )
 
+    def test_link_local_uri_not_directly_shareable(self) -> None:
+        service = _load_service()
+        link_local = "ipp://[fe80::664e:d7ff:fe94:640e%25wlo1]:631/ipp/print"
+        portable = "ipp://HP644ED794640E.local:631/ipp/print"
+        self.assertTrue(service.is_link_local_uri(link_local))
+        self.assertFalse(service.is_directly_shareable_uri(link_local))
+        self.assertTrue(service.is_directly_shareable_uri(portable))
+
+        snapshot = service.PrintersSnapshot(
+            printers=(
+                service.PrinterInfo(
+                    name="HP_Smart_Tank_WiFi",
+                    enabled=True,
+                    accepting=True,
+                    is_default=True,
+                    state_text="idle",
+                    device_uri=link_local,
+                ),
+            ),
+            default_name="HP_Smart_Tank_WiFi",
+        )
+        original_discover = service.discover_catalog_candidates
+        try:
+            service.discover_catalog_candidates = lambda: ()
+            self.assertEqual(service.shareable_entries(snapshot), ())
+
+            with tempfile.TemporaryDirectory() as temp:
+                catalog_path = Path(temp) / "shared-printers.json"
+                catalog_path.write_text(
+                    json.dumps(
+                        {
+                            "version": 1,
+                            "source_host": "AidyCSO.local",
+                            "exported_at": "2026-11-12T00:00:00+00:00",
+                            "printers": [
+                                {
+                                    "name": "HP_Smart_Tank_WiFi",
+                                    "device_uri": portable,
+                                    "is_default": True,
+                                    "share_kind": "network",
+                                }
+                            ],
+                        },
+                        indent=2,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                service.discover_catalog_candidates = lambda: (catalog_path,)
+                entries = service.shareable_entries(snapshot)
+        finally:
+            service.discover_catalog_candidates = original_discover
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].device_uri, portable)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -46,6 +46,11 @@ _LOOPBACK_URI_RE = re.compile(
     r"^(?:ipp|ipps|http|https)://(?:localhost|127\.0\.0\.1|::1)(?::|/|$)",
     re.IGNORECASE,
 )
+_LINK_LOCAL_URI_RE = re.compile(
+    r"^(?:ipp|ipps|http|https|socket)://.*"
+    r"(?:%25|\[fe80:|fe80:|169\.254\.)",
+    re.IGNORECASE,
+)
 _HP_NET_URI_RE = re.compile(r"^hp:/net/", re.IGNORECASE)
 
 CATALOG_VERSION = 1
@@ -268,6 +273,12 @@ def is_loopback_uri(uri: str) -> bool:
     return bool(text) and _LOOPBACK_URI_RE.match(text) is not None
 
 
+def is_link_local_uri(uri: str) -> bool:
+    """True for fe80:: / 169.254 URIs that only work on this host/NIC."""
+    text = str(uri or "").strip()
+    return bool(text) and _LINK_LOCAL_URI_RE.match(text) is not None
+
+
 def is_local_uri(uri: str) -> bool:
     text = str(uri or "").strip()
     if not text:
@@ -282,7 +293,11 @@ def is_local_uri(uri: str) -> bool:
 def is_directly_shareable_uri(uri: str) -> bool:
     """True when other LAN PCs can use this URI without this host as a bridge."""
     text = str(uri or "").strip()
-    return is_network_uri(text) and not is_loopback_uri(text)
+    return (
+        is_network_uri(text)
+        and not is_loopback_uri(text)
+        and not is_link_local_uri(text)
+    )
 
 
 def shareable_entries(
@@ -292,21 +307,27 @@ def shareable_entries(
 ) -> tuple[SharedPrinterEntry, ...]:
     """Build entries other AidyCOS PCs can import.
 
-    LAN/network URIs are included as-is. USB/localhost queues are only included
-    when ``include_local_via_cups`` is true (after enabling CUPS sharing).
+    LAN/network URIs are included as-is. Link-local IPv6/APIPA queues reuse a
+    previously published portable URI when available. USB/localhost queues are
+    only included when ``include_local_via_cups`` is true (after enabling CUPS
+    sharing).
     """
     snap = snapshot or list_printers()
     if snap.error:
         raise PrintersError(snap.error)
     host = lan_hostname()
+    catalog_uris = _catalog_portable_uris()
     entries: list[SharedPrinterEntry] = []
     for printer in snap.printers:
         uri = (printer.device_uri or "").strip()
-        if is_directly_shareable_uri(uri):
+        share_uri = uri
+        if is_link_local_uri(uri):
+            share_uri = catalog_uris.get(printer.name, "")
+        if is_directly_shareable_uri(share_uri):
             entries.append(
                 SharedPrinterEntry(
                     name=printer.name,
-                    device_uri=uri,
+                    device_uri=share_uri,
                     is_default=printer.is_default,
                     share_kind="network",
                 )
@@ -322,6 +343,24 @@ def shareable_entries(
                 )
             )
     return tuple(entries)
+
+
+def _catalog_portable_uris() -> dict[str, str]:
+    """Map printer name → portable URI from an existing AidyCOS catalog."""
+    found: dict[str, str] = {}
+    for candidate in discover_catalog_candidates():
+        if not candidate.is_file():
+            continue
+        try:
+            catalog = load_share_catalog(candidate)
+        except PrintersError:
+            continue
+        for item in catalog.printers:
+            if item.name in found:
+                continue
+            if is_directly_shareable_uri(item.device_uri):
+                found[item.name] = item.device_uri
+    return found
 
 
 def build_share_catalog(

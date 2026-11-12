@@ -389,6 +389,17 @@ if getent group lpadmin >/dev/null 2>&1; then
     echo "Usuario ${USER} añadido al grupo lpadmin (cierra sesión para aplicarlo)."
   fi
 fi
+# Seed the shared HP Wi‑Fi catalog so a test PC can «Aplicar catálogo».
+printer_catalog_src="${ROOT}/packaging/printers/shared-printers.json"
+printer_catalog_dst="${HOME}/.local/share/aidycos/shared-printers.json"
+if [[ -f "${printer_catalog_src}" ]]; then
+  install -D -m 0644 "${printer_catalog_src}" "${printer_catalog_dst}"
+  docs_dir="$(xdg-user-dir DOCUMENTS 2>/dev/null || true)"
+  if [[ -n "${docs_dir}" && -d "${docs_dir}" ]]; then
+    install -D -m 0644 "${printer_catalog_src}" "${docs_dir}/shared-printers.json"
+  fi
+  echo "Catálogo de impresoras AidyCOS listo en ${printer_catalog_dst}"
+fi
 # Keep Synaptic/Flatpak available on older profiles that predate the module list.
 if ! command -v synaptic >/dev/null 2>&1; then
   sudo apt-get install -y --no-install-recommends synaptic pkexec polkitd

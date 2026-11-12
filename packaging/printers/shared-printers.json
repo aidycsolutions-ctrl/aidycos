@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "source_host": "AidyCSO.local",
+  "exported_at": "2026-11-12T03:20:00+00:00",
+  "printers": [
+    {
+      "name": "HP_Smart_Tank_WiFi",
+      "device_uri": "ipp://HP644ED794640E.local:631/ipp/print",
+      "is_default": true,
+      "share_kind": "network"
+    }
+  ]
+}
