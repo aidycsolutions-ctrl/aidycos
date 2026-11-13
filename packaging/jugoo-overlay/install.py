@@ -663,6 +663,130 @@ def build_system_volume_state_from_wpctl(output: str) -> SystemVolumeState | Non
 
 
 
+def install_keyboard_cat(root: Path) -> None:
+    """Ship the typing/dancing keyboard cat (assets + listener + bar widget)."""
+    overlay = Path(__file__).parent / "shell"
+    for relative in (
+        Path("servicios/teclado/__init__.py"),
+        Path("servicios/teclado/actividad.py"),
+        Path("widgets/barra/keyboard_cat.py"),
+    ):
+        install_overlay_file(overlay / relative, root / "shell" / relative)
+
+    assets_src = overlay / "assets" / "cat" / "keyboard"
+    assets_dst = root / "shell" / "assets" / "cat" / "keyboard"
+    assets_dst.mkdir(parents=True, exist_ok=True)
+    for svg in assets_src.glob("*.svg"):
+        install_overlay_file(svg, assets_dst / svg.name)
+
+    config = root / "shell/config.py"
+    config_text = config.read_text(encoding="utf-8")
+    if not re.search(r"^\s*KEYBOARD_CAT_VERTICAL_INSET\s*=", config_text, re.MULTILINE):
+        config_text = config_text.rstrip() + (
+            "\n\n# AidyCOS: keyboard cat sizing relative to the bar.\n"
+            "KEYBOARD_CAT_VERTICAL_INSET = 0\n"
+        )
+        backup = config.with_suffix(config.suffix + ".aidycos-backup")
+        if not backup.exists():
+            shutil.copy2(config, backup)
+        config.write_text(config_text, encoding="utf-8")
+
+    style = root / "shell/style.css"
+    style_text = style.read_text(encoding="utf-8")
+    if "keyboard-cat-widget" not in style_text:
+        css = """
+
+/* AidyCOS: free-floating keyboard cat on the bar floor. */
+window#shell box#shell-left > box.keyboard-cat-widget,
+box.keyboard-cat-widget {
+    background-color: transparent;
+    border-radius: 0;
+    padding: 0;
+    margin: 0 4px 0 6px;
+    min-height: 0;
+    box-shadow: none;
+}
+
+image.keyboard-cat-image {
+    min-width: 0;
+    min-height: 0;
+    background-color: transparent;
+}
+"""
+        backup = style.with_suffix(style.suffix + ".aidycos-backup")
+        if not backup.exists():
+            shutil.copy2(style, backup)
+        style.write_text(style_text.rstrip() + "\n" + css, encoding="utf-8")
+
+    app = root / "shell/app.py"
+    app_text = app.read_text(encoding="utf-8")
+    if "KeyboardCatWidget" in app_text and "KeyboardActivityService" in app_text:
+        # Keep the overlay widget/assets even when the checkout already wires them.
+        return
+
+    try_replace_once(
+        app,
+        "from .servicios.tareas.tasks import TasksService\n",
+        "from .servicios.tareas.tasks import TasksService\n"
+        "from .servicios.teclado.actividad import KeyboardActivityService\n",
+        "importar listener del gato teclado",
+    )
+    try_replace_once(
+        app,
+        "from .widgets.barra.pinned_apps import PinnedAppsWidget\n",
+        "from .widgets.barra.keyboard_cat import KeyboardCatWidget\n"
+        "from .widgets.barra.pinned_apps import PinnedAppsWidget\n",
+        "importar widget del gato teclado",
+    )
+    try_replace_once(
+        app,
+        "        self.media_service = MediaService(self.event_bus)\n",
+        "        self.media_service = MediaService(self.event_bus)\n"
+        "        self.keyboard_activity = KeyboardActivityService(self.event_bus)\n",
+        "crear servicio de actividad de teclado",
+    )
+    try_replace_once(
+        app,
+        "        self.pinned_apps_widget = PinnedAppsWidget(self.event_bus, self)\n"
+        "        self.layout.left.add(self.pinned_apps_widget)\n",
+        "        self.pinned_apps_widget = PinnedAppsWidget(self.event_bus, self)\n"
+        "        self.layout.left.add(self.pinned_apps_widget)\n"
+        "        self.keyboard_cat_widget = KeyboardCatWidget(self.event_bus, self._bar_host)\n"
+        "        self.layout.left.add(self.keyboard_cat_widget)\n",
+        "mostrar gato teclado junto al dock",
+    )
+    # Prefer deferred start when the checkout already uses GLib.idle_add batches.
+    if "self.keyboard_activity.start()" not in app.read_text(encoding="utf-8"):
+        if "self.keyboard_activity.start" not in app.read_text(encoding="utf-8"):
+            try_replace_once(
+                app,
+                "        self.show_all()\n",
+                "        self.keyboard_activity.start()\n"
+                "        self.show_all()\n",
+                "arrancar listener del gato teclado",
+            )
+    if "self.keyboard_activity.close()" not in app.read_text(encoding="utf-8"):
+        try_replace_once(
+            app,
+            "        self.event_bus.clear()\n",
+            "        self.keyboard_activity.close()\n"
+            "        self.event_bus.clear()\n",
+            "cerrar listener del gato teclado",
+        )
+
+    layout = root / "shell/settings/layout_model.py"
+    if layout.is_file():
+        layout_text = layout.read_text(encoding="utf-8")
+        if "keyboard_cat" not in layout_text:
+            try_replace_once(
+                layout,
+                '    ModuleSlot("pinned_apps", "left", 2),\n',
+                '    ModuleSlot("pinned_apps", "left", 2),\n'
+                '    ModuleSlot("keyboard_cat", "left", 3),\n',
+                "añadir keyboard_cat al layout por defecto",
+            )
+
+
 def install_battery(root: Path) -> None:
     """Backport the UPower/sysfs battery indicator on older Jugoo checkouts."""
     overlay = Path(__file__).parent / "shell"
@@ -1658,6 +1782,7 @@ def main() -> None:
 
     install_desktop_icons(root)
     install_applications_menu(root)
+    install_keyboard_cat(root)
     install_bar_position(root)
     # Keep the Jugoo bar visible: do not retract under maximized floating windows.
     config = root / "shell/config.py"
