@@ -9,6 +9,7 @@ from . import __version__
 from .config import add_favorite, load_config
 from .gitops import find_git_root, repo_status
 from .github_auth import auth_status, logout, setup_git_credentials, start_login_flow
+from .publish import deploy_only, detect_deploy_profile, publish_repo
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -27,6 +28,12 @@ def main(argv: list[str] | None = None) -> int:
     p_repo.add_argument("path", nargs="?", default=".", help="Ruta del repo")
     p_add = sub.add_parser("add-favorite", help="Añadir un repo a favoritos")
     p_add.add_argument("path", help="Ruta del repo")
+    p_pub = sub.add_parser("publish", help="Publicar (commit+push); --deploy también despliega")
+    p_pub.add_argument("path", nargs="?", default=".", help="Ruta del repo")
+    p_pub.add_argument("-m", "--message", default="", help="Mensaje de commit")
+    p_pub.add_argument("--deploy", action="store_true", help="Tras el push, deploy remoto")
+    p_dep = sub.add_parser("deploy", help="Solo deploy remoto (AidyC-web / PythonAnywhere)")
+    p_dep.add_argument("path", nargs="?", default=".", help="Ruta del repo")
 
     args = parser.parse_args(argv)
 
@@ -77,6 +84,32 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Favorito: {root}")
         print(f"Total: {len(cfg.favorites)}")
         return 0
+
+    if args.cmd == "publish":
+        root = find_git_root(args.path)
+        if root is None:
+            print("No es un repositorio git.", file=sys.stderr)
+            return 1
+        profile = detect_deploy_profile(root)
+        result = publish_repo(
+            root,
+            args.message,
+            deploy=bool(args.deploy),
+            profile=profile,
+        )
+        print(result.detail)
+        if args.deploy:
+            return 0 if result.pushed and result.deployed else 1
+        return 0 if result.pushed else 1
+
+    if args.cmd == "deploy":
+        root = find_git_root(args.path)
+        if root is None:
+            print("No es un repositorio git.", file=sys.stderr)
+            return 1
+        ok, detail = deploy_only(root)
+        print(detail)
+        return 0 if ok else 1
 
     parser.error(f"comando desconocido: {args.cmd}")
     return 2

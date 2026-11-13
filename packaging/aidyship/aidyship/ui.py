@@ -30,6 +30,7 @@ from .github_auth import (
     setup_git_credentials,
     start_login_flow,
 )
+from .publish import DeployProfile, deploy_only, detect_deploy_profile, publish_repo
 
 TEAL = "#0B3D4A"
 MINT = "#3DDC97"
@@ -51,6 +52,7 @@ def _install_style() -> None:
         .ship-status-bad {{ color: #a33; font-weight: bold; }}
         .ship-primary {{ background: {TEAL}; color: white; padding: 8px 12px; border-radius: 4px; }}
         .ship-accent {{ background: {MINT}; color: {TEAL}; padding: 8px 12px; border-radius: 4px; }}
+        .ship-deploy {{ background: #c45c26; color: white; padding: 8px 12px; border-radius: 4px; }}
         .ship-diff {{ font-family: monospace; font-size: 11px; }}
         """.encode("utf-8")
     )
@@ -73,6 +75,7 @@ class ShipWindow(Gtk.Window):
         self.cfg: ShipConfig = load_config()
         self.session = GitHubSession(logged_in=False)
         self.repo: Path | None = None
+        self.deploy_profile: DeployProfile | None = None
         self.status = RepoStatus(root=Path("."))
         self._file_checks: dict[str, Gtk.CheckButton] = {}
         self._busy = False
@@ -210,6 +213,21 @@ class ShipWindow(Gtk.Window):
         self.btn_commit_push.connect("clicked", lambda *_: self._run_commit(push_after=True))
         actions.pack_start(self.btn_commit_push, False, False, 0)
 
+        self.btn_publish = Gtk.Button(label="Publicar")
+        self.btn_publish.set_tooltip_text("Commit (si hay cambios) + push a GitHub, como en AidyCAI")
+        self.btn_publish.connect("clicked", lambda *_: self._run_publish(deploy=False))
+        actions.pack_start(self.btn_publish, False, False, 0)
+        self.btn_publish_deploy = Gtk.Button(label="Publicar + Deploy")
+        self.btn_publish_deploy.get_style_context().add_class("ship-deploy")
+        self.btn_publish_deploy.set_tooltip_text("Publicar y desplegar en PythonAnywhere (AidyC-web)")
+        self.btn_publish_deploy.connect("clicked", lambda *_: self._run_publish(deploy=True))
+        actions.pack_start(self.btn_publish_deploy, False, False, 0)
+        self.btn_deploy = Gtk.Button(label="Deploy")
+        self.btn_deploy.set_tooltip_text("Solo deploy remoto (sin commit nuevo)")
+        self.btn_deploy.connect("clicked", self._on_deploy_only)
+        actions.pack_start(self.btn_deploy, False, False, 0)
+        self._set_deploy_buttons_visible(False)
+
         self.notice = Gtk.Label(label="")
         self.notice.set_xalign(0)
         self.notice.set_line_wrap(True)
@@ -246,10 +264,20 @@ class ShipWindow(Gtk.Window):
             self.btn_pull,
             self.btn_commit,
             self.btn_commit_push,
+            self.btn_publish,
+            self.btn_publish_deploy,
+            self.btn_deploy,
             self.btn_select_all,
             self.btn_select_none,
         ):
             widget.set_sensitive(not busy)
+
+    def _set_deploy_buttons_visible(self, visible: bool) -> None:
+        for widget in (self.btn_publish, self.btn_publish_deploy, self.btn_deploy):
+            if visible:
+                widget.show()
+            else:
+                widget.hide()
 
     def refresh_auth(self) -> None:
         def work() -> None:
@@ -377,6 +405,8 @@ class ShipWindow(Gtk.Window):
         self._rebuild_favorites()
         if self.repo and str(self.repo) == path:
             self.repo = None
+            self.deploy_profile = None
+            self._set_deploy_buttons_visible(False)
             self.repo_meta.set_text("Elige o añade un repositorio")
             self._clear_files()
         self._set_notice("Favorito eliminado.")
@@ -387,6 +417,8 @@ class ShipWindow(Gtk.Window):
             self._set_notice(f"No es un repo git: {path}", ok=False)
             return
         self.repo = root
+        self.deploy_profile = detect_deploy_profile(root)
+        self._set_deploy_buttons_visible(bool(self.deploy_profile and self.deploy_profile.can_deploy))
         self.cfg.last_repo = str(root)
         if str(root) not in self.cfg.favorites:
             self.cfg = add_favorite(self.cfg, root)
@@ -418,6 +450,8 @@ class ShipWindow(Gtk.Window):
         if status.upstream:
             bits.append(f"↑{status.ahead} ↓{status.behind} · {status.upstream}")
         bits.append(f"{len(status.files)} cambio(s)")
+        if self.deploy_profile and self.deploy_profile.can_deploy:
+            bits.append(f"deploy {self.deploy_profile.deploy_host}")
         self.repo_meta.set_text("  ·  ".join(bits))
         self._render_files(status.files)
         self._set_notice("Estado actualizado.", ok=True)
@@ -521,6 +555,52 @@ class ShipWindow(Gtk.Window):
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _run_publish(self, *, deploy: bool) -> None:
+        if self._busy or self.repo is None:
+            return
+        if not self.session.logged_in:
+            self._set_notice("Conecta GitHub antes de publicar.", ok=False)
+            return
+        if deploy and not (self.deploy_profile and self.deploy_profile.can_deploy):
+            self._set_notice("Este repo no tiene deploy (AidyC-web).", ok=False)
+            return
+        message = self.message.get_text()
+        paths = self._selected_paths()
+        repo = self.repo
+        profile = self.deploy_profile
+        self._set_busy(True)
+        self._set_notice("Publicando + deploy…" if deploy else "Publicando…")
+
+        def work() -> None:
+            result = publish_repo(
+                repo,
+                message,
+                paths=paths,
+                deploy=deploy,
+                profile=profile,
+            )
+            ok = result.pushed and (result.deployed if deploy else True)
+            GLib.idle_add(self._finish_op, ok, result.detail, result.committed)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_deploy_only(self, *_args) -> None:
+        if self._busy or self.repo is None:
+            return
+        if not (self.deploy_profile and self.deploy_profile.can_deploy):
+            self._set_notice("Este repo no tiene deploy (AidyC-web).", ok=False)
+            return
+        repo = self.repo
+        profile = self.deploy_profile
+        self._set_busy(True)
+        self._set_notice("Desplegando en PythonAnywhere…")
+
+        def work() -> None:
+            ok, detail = deploy_only(repo, profile=profile)
+            GLib.idle_add(self._finish_op, ok, detail, False)
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _finish_op(self, ok: bool, detail: str, clear_message: bool = False) -> bool:
         self._set_busy(False)
         self._set_notice(detail, ok=ok)
@@ -558,5 +638,6 @@ def run_ui() -> int:
     # Hide logout until we know auth state.
     if not win.session.logged_in:
         win.btn_logout.hide()
+    win._set_deploy_buttons_visible(bool(win.deploy_profile and win.deploy_profile.can_deploy))
     Gtk.main()
     return 0

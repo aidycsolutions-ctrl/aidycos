@@ -11,6 +11,8 @@ aidyship login       # abrir login en terminal + navegador
 aidyship logout
 aidyship repo .      # estado git
 aidyship add-favorite /ruta/al/repo
+aidyship publish -m "mensaje" [--deploy] [ruta]
+aidyship deploy [ruta]   # solo PythonAnywhere (AidyC-web)
 ```
 
 Atajo: `Super+G` (tras aplicar el perfil AidyCOS).
@@ -21,6 +23,7 @@ Atajo: `Super+G` (tras aplicar el perfil AidyCOS).
 2. Completar `gh auth login` en la terminal/navegador
 3. Añadir repos favoritos
 4. Marcar cambios → mensaje → **Commit** o **Commit + Push**
+5. En **AidyC-web**: también **Publicar**, **Publicar + Deploy** y **Deploy** (mismo flujo que AidyCAI → SSH PythonAnywhere)
 
 ## Layout
 
