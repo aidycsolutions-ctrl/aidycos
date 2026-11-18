@@ -1,0 +1,10 @@
+prefix=/usr
+includedir=/usr/include
+libdir=/usr/lib/x86_64-linux-gnu
+
+Name: hyprutils
+URL: https://github.com/hyprwm/hyprutils
+Description: Hyprland utilities library used across the ecosystem 
+Version: 0.13.1
+Cflags: -I${includedir}
+Libs: -L${libdir} -lhyprutils

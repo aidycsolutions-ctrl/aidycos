@@ -74,7 +74,7 @@ if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]] && command -v hyprctl >/dev/null 
   echo "• plugins:"
   hyprctl plugin list || true
   if ! hyprctl plugin list 2>/dev/null | grep -qi '^Plugin hyprbars'; then
-    echo "ERROR: hyprbars sigue sin cargar. Revisa hyprland-dev y vuelve a intentar." >&2
+    echo "ERROR: hyprbars sigue sin cargar. Revisa hyprland-dev / libhyprutils-dev y vuelve a intentar." >&2
     exit 1
   fi
   runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
