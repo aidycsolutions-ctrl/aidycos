@@ -8,6 +8,7 @@
 # apply time (flaky SSL on some laptops was leaving windows without buttons).
 #
 #   bash packaging/hyprland/setup-hyprbars.sh
+#   HYPRBARS_FORCE=1 bash packaging/hyprland/setup-hyprbars.sh   # rebuild even if stamp matches
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -18,6 +19,7 @@ PLUGIN_DIR="$HOME/.local/lib/jugoo"
 PLUGIN="$PLUGIN_DIR/hyprbars.so"
 STAMP="$PLUGIN_DIR/hyprbars.hyprland-version"
 CONF="$HYPR_HOME/config/jugoo_hyprbars.conf"
+SOURCE_LINE='source = ~/.config/hypr/config/jugoo_hyprbars.conf'
 PACKAGES=(hyprland-dev pkgconf libpango1.0-dev libpixman-1-dev libudev-dev g++)
 
 if [[ ! -f "$PACKAGING/jugoo_hyprbars.conf.in" ]]; then
@@ -47,23 +49,89 @@ write_conf() {
     fi
 }
 
-# Prefer an already-built plugin when it matches this Hyprland version.
-# Still refresh the conf so button commands point at the current ventanas path.
-if [[ -f "$PLUGIN" && -f "$STAMP" && "$(cat "$STAMP")" == "$running" ]]; then
+# Hyprland only loads the plugin when this line is sourced. Older failed installs
+# left a .so without ever wiring hyprland.conf / aidycos.conf.
+ensure_source() {
+    local aidycos="$HYPR_HOME/aidycos.conf"
+    local hypr="$HYPR_HOME/hyprland.conf"
+    mkdir -p "$HYPR_HOME"
+    if [[ -f "$aidycos" ]] && grep -qF "$SOURCE_LINE" "$aidycos"; then
+        return 0
+    fi
+    if [[ -f "$hypr" ]] && grep -qF "$SOURCE_LINE" "$hypr"; then
+        return 0
+    fi
+    if [[ -f "$aidycos" ]]; then
+        printf '\n%s\n' "$SOURCE_LINE" >>"$aidycos"
+        echo "  → source añadido en $aidycos"
+        return 0
+    fi
+    if [[ -f "$hypr" ]]; then
+        printf '\n%s\n' "$SOURCE_LINE" >>"$hypr"
+        echo "  → source añadido en $hypr"
+        return 0
+    fi
+    printf '%s\n' "$SOURCE_LINE" >"$aidycos"
+    echo "  → creado $aidycos con source de hyprbars"
+}
+
+plugin_loaded() {
+    [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]] || return 1
+    command -v hyprctl >/dev/null 2>&1 || return 1
+    hyprctl plugin list 2>/dev/null | grep -qi '^Plugin hyprbars'
+}
+
+reload_and_check() {
+    if [[ -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]] || ! command -v hyprctl >/dev/null 2>&1; then
+        return 0
+    fi
+    hyprctl reload >/dev/null 2>&1 || true
+    sleep 1
+    if plugin_loaded; then
+        echo "  → plugin hyprbars cargado en la sesión"
+        hyprctl plugin list 2>/dev/null | grep -i hyprbars || true
+        return 0
+    fi
+    echo "aviso: hyprbars.so instalado pero Hyprland no lo cargó (mira hyprctl plugin list)" >&2
+    hyprctl plugin list 2>/dev/null || true
+    return 1
+}
+
+needs_build=0
+if [[ "${HYPRBARS_FORCE:-0}" == "1" ]]; then
+    needs_build=1
+    echo "• HYPRBARS_FORCE=1 → recompilar hyprbars"
+elif [[ ! -f "$PLUGIN" ]]; then
+    needs_build=1
+elif [[ -f "$STAMP" && "$(cat "$STAMP")" == "$running" ]]; then
     write_conf
+    ensure_source
     echo "• hyprbars ya compilado para hyprland ${running}"
     echo "  → $PLUGIN"
     echo "  → $CONF"
-    exit 0
-fi
-# Legacy installs (plugin without stamp): keep the .so, record the version, refresh conf.
-if [[ -f "$PLUGIN" && ! -f "$STAMP" ]]; then
+    if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
+        if reload_and_check; then
+            exit 0
+        fi
+        echo "• recompilando porque el plugin no carga en esta sesión…"
+        needs_build=1
+    else
+        exit 0
+    fi
+elif [[ -f "$PLUGIN" && ! -f "$STAMP" ]]; then
+    # Legacy installs (plugin without stamp): keep the .so, record the version, refresh conf.
     printf '%s\n' "$running" >"$STAMP"
     write_conf
+    ensure_source
     echo "• hyprbars existente; se registró versión ${running}"
     echo "  → $PLUGIN"
     echo "  → $CONF"
+    if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
+        reload_and_check || true
+    fi
     exit 0
+else
+    needs_build=1
 fi
 
 missing=()
@@ -97,12 +165,9 @@ g++ -shared -fPIC -O2 -std=c++2b -Wno-c++11-narrowing --no-gnu-unique \
 install -Dm644 hyprbars.so "$PLUGIN"
 printf '%s\n' "$running" >"$STAMP"
 write_conf
+ensure_source
 echo "  → $PLUGIN"
 echo "  → $CONF"
 
-if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]] && command -v hyprctl >/dev/null 2>&1; then
-    hyprctl reload >/dev/null || true
-    sleep 1
-    hyprctl plugin list || true
-fi
+reload_and_check || true
 echo "Listo: barras de título con minimizar, maximizar y cerrar."

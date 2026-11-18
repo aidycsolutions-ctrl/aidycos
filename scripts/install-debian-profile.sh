@@ -475,6 +475,10 @@ for pkg in librsvg2-common gvfs-fuse python3-gi-cairo; do
     sudo apt-get install -y --no-install-recommends "${pkg}"
   fi
 done
+# Wallpaper UI (Configuración → Tema → Escritorio) needs swaybg on Wayland.
+if ! command -v swaybg >/dev/null 2>&1; then
+  sudo apt-get install -y --no-install-recommends swaybg
+fi
 if command -v flatpak >/dev/null 2>&1; then
   sudo flatpak remote-add --if-not-exists flathub \
     https://dl.flathub.org/repo/flathub.flatpakrepo >/dev/null 2>&1 || true
@@ -709,15 +713,25 @@ sudo install -m 0755 "${ROOT}/packaging/hyprland/aidycos-numlock" /usr/local/bin
 # Title-bar buttons: compile hyprbars here (not via Jugoo). Sources are vendored
 # so flaky GitHub/SSL on test laptops cannot leave windows without min/close.
 # hyprland-dev still comes from backports; failure must abort the profile.
+# HYPRBARS_FORCE=1 rebuilds even when the version stamp matches (repair path).
 if ! bash "${ROOT}/packaging/hyprland/setup-hyprbars.sh"; then
   echo "ERROR: no se pudieron instalar los botones de título (hyprbars)." >&2
   echo "Sin ~/.local/lib/jugoo/hyprbars.so las ventanas no muestran minimizar/cerrar." >&2
   echo "Revisa hyprland-dev (trixie-backports) y vuelve a aplicar el perfil." >&2
+  echo "Reparación manual: HYPRBARS_FORCE=1 bash packaging/hyprland/setup-hyprbars.sh" >&2
   exit 1
 fi
 if [[ ! -f "${HOME}/.local/lib/jugoo/hyprbars.so" || ! -f "${HYPR_HYPERBARS_CONF}" ]]; then
   echo "ERROR: hyprbars no quedó instalado tras setup-hyprbars.sh." >&2
   exit 1
+fi
+if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]] && command -v hyprctl >/dev/null 2>&1; then
+  if ! hyprctl plugin list 2>/dev/null | grep -qi '^Plugin hyprbars'; then
+    echo "ERROR: hyprbars.so existe pero Hyprland no cargó el plugin." >&2
+    echo "Prueba: HYPRBARS_FORCE=1 bash ${ROOT}/packaging/hyprland/setup-hyprbars.sh && hyprctl reload" >&2
+    hyprctl plugin list 2>/dev/null || true
+    exit 1
+  fi
 fi
 if [[ ! -e "${HYPR_AIDYCOS_CONF}" ]]; then
   cat >"${HYPR_AIDYCOS_CONF}" <<'EOF'
@@ -732,8 +746,7 @@ bind = SUPER, E, exec, /usr/bin/env GDK_BACKEND=wayland /usr/bin/thunar
 bind = SUPER, G, exec, aidyship ui
 bind = , Print, exec, ~/.local/bin/captura.sh
 bind = ALT, F4, exec, jugoo action session
-bind = SUPER, LEFT, workspace, -1
-bind = SUPER, RIGHT, workspace, +1
+# Super+Left/Right snap is owned by jugoo_ventanas.conf (Windows-like).
 bind = SUPER, Y, workspace, +1
 bind = SUPER SHIFT, U, exec, aidycos-update --check
 exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE DISPLAY
@@ -768,8 +781,11 @@ else
      && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*ALT,[[:space:]]*F4,[[:space:]]*exec,[[:space:]]*jugoo action session' "${HYPR_CONF}"; }; then
     missing=1
   fi
-  grep -qF 'bind = SUPER, LEFT, workspace, -1' "${HYPR_AIDYCOS_CONF}" || grep -qF 'bind = SUPER, LEFT, workspace, -1' "${HYPR_CONF}" 2>/dev/null || missing=1
-  grep -qF 'bind = SUPER, RIGHT, workspace, +1' "${HYPR_AIDYCOS_CONF}" || grep -qF 'bind = SUPER, RIGHT, workspace, +1' "${HYPR_CONF}" 2>/dev/null || missing=1
+  # Legacy: Super+Left/Right used to switch desktops; now they snap (ventanas).
+  if grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*(LEFT|RIGHT),[[:space:]]*workspace,' "${HYPR_AIDYCOS_CONF}" 2>/dev/null \
+     || grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*(LEFT|RIGHT),[[:space:]]*workspace,' "${HYPR_CONF}" 2>/dev/null; then
+    missing=1
+  fi
   grep -qF 'bind = SUPER, Y, workspace, +1' "${HYPR_AIDYCOS_CONF}" || grep -qF 'bind = SUPER, Y, workspace, +1' "${HYPR_CONF}" 2>/dev/null || missing=1
   # Super+C is reserved for Cursor (hyprland.conf); strip any old AidyChat bind.
   if grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*C,[[:space:]]*exec,[[:space:]]*aidylink ui' "${HYPR_AIDYCOS_CONF}"; then
@@ -827,14 +843,13 @@ EOF
        && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*ALT,[[:space:]]*F4,[[:space:]]*exec,[[:space:]]*jugoo action session' "${HYPR_CONF}"; }; then
       printf 'bind = ALT, F4, exec, jugoo action session\n' >>"${HYPR_AIDYCOS_CONF}"
     fi
-    if ! grep -qF 'bind = SUPER, LEFT, workspace, -1' "${HYPR_AIDYCOS_CONF}" \
-       && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qF 'bind = SUPER, LEFT, workspace, -1' "${HYPR_CONF}"; }; then
-      printf 'bind = SUPER, LEFT, workspace, -1\n' >>"${HYPR_AIDYCOS_CONF}"
-    fi
-    if ! grep -qF 'bind = SUPER, RIGHT, workspace, +1' "${HYPR_AIDYCOS_CONF}" \
-       && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qF 'bind = SUPER, RIGHT, workspace, +1' "${HYPR_CONF}"; }; then
-      printf 'bind = SUPER, RIGHT, workspace, +1\n' >>"${HYPR_AIDYCOS_CONF}"
-    fi
+    # Drop Super+Left/Right workspace binds so jugoo_ventanas.conf can snap.
+    for hypr_file in "${HYPR_AIDYCOS_CONF}" "${HYPR_CONF}"; do
+      if [[ -f "${hypr_file}" ]] && grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*(LEFT|RIGHT),[[:space:]]*workspace,' "${hypr_file}"; then
+        sed -i -E '/^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*(LEFT|RIGHT),[[:space:]]*workspace,/d' "${hypr_file}"
+        echo "Super+Left/Right ya no cambian de escritorio en ${hypr_file} (ahora dividen ventana)."
+      fi
+    done
     if ! grep -qF 'bind = SUPER, Y, workspace, +1' "${HYPR_AIDYCOS_CONF}" \
        && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qF 'bind = SUPER, Y, workspace, +1' "${HYPR_CONF}"; }; then
       printf 'bind = SUPER, Y, workspace, +1\n' >>"${HYPR_AIDYCOS_CONF}"
@@ -904,6 +919,16 @@ for hypr_file in "${HYPR_CONF}" "${HYPR_AIDYCOS_CONF}"; do
       printf '\n# Alt+Tab is owned by jugoo_ventanas.conf (current-desktop cycle via ventanas).\n' >>"${hypr_file}"
     fi
     echo "Alt+Tab duplicado eliminado de ${hypr_file} (queda solo jugoo_ventanas.conf)."
+  fi
+done
+
+# Super+Left/Right must snap (jugoo_ventanas.conf), not switch desktops. Strip the
+# old workspace binds from any Hyprland file so they cannot fight the snap binds.
+for hypr_file in "${HYPR_CONF}" "${HYPR_AIDYCOS_CONF}"; do
+  if [[ -f "${hypr_file}" ]] && grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*(LEFT|RIGHT),[[:space:]]*workspace,' "${hypr_file}"; then
+    cp -a "${hypr_file}" "${hypr_file}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
+    sed -i -E '/^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*(LEFT|RIGHT),[[:space:]]*workspace,/d' "${hypr_file}"
+    echo "Super+Left/Right de escritorio eliminado de ${hypr_file} (ahora dividen como Windows)."
   fi
 done
 
