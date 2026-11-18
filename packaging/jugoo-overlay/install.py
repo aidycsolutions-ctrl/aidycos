@@ -1249,159 +1249,19 @@ def install_printers(root: Path) -> None:
 
 
 def install_session_menu_keyboard_focus(root: Path) -> None:
-    """Keep Alt+F4 / ``jugoo action session`` menu usable without the pointer.
+    """Session menu: Cancel + Esc, short Alt+F4 grace, dismiss on focus loss.
 
-    PopupOutsideDismiss closes after ~0.5s when the pointer is not over the
-    power button (keyboard open). Sticky-until-enter keeps the menu until the
-    user moves onto it or clicks outside / Esc.
+    An earlier sticky-until-enter patch left the menu stuck until Alt+F4 again.
+    Ship full overlay copies so both fresh and sticky-broken installs recover.
     """
-    popup = root / "shell/popup_handle.py"
-    power = root / "shell/widgets/barra/power.py"
-    if not popup.is_file() or not power.is_file():
-        print("Aviso: no se pudo endurecer el menú de sesión (faltan fuentes Jugoo).", flush=True)
+    overlay = Path(__file__).parent / "shell"
+    popup_src = overlay / "popup_handle.py"
+    power_src = overlay / "widgets/barra/power.py"
+    if not popup_src.is_file() or not power_src.is_file():
+        print("Aviso: faltan overlays del menú de sesión.", flush=True)
         return
-
-    try_replace_once(
-        popup,
-        "        self._extra_leave_ids: list[int] = []\n"
-        "        self._suspended = False\n",
-        "        self._extra_leave_ids: list[int] = []\n"
-        "        self._suspended = False\n"
-        "        self._sticky_until_enter = False\n",
-        "PopupOutsideDismiss: flag sticky hasta enter",
-    )
-    try_replace_once(
-        popup,
-        "        self._extra_leave_ids = []\n"
-        "        self._install_grace_until = 0\n"
-        "        self._event_bus = None\n"
-        "        self._active_window_handler = None\n"
-        "        self._suspended = False\n",
-        "        self._extra_leave_ids = []\n"
-        "        self._install_grace_until = 0\n"
-        "        self._event_bus = None\n"
-        "        self._active_window_handler = None\n"
-        "        self._suspended = False\n"
-        "        self._sticky_until_enter = False\n",
-        "PopupOutsideDismiss.uninstall: reset sticky",
-    )
-    try_replace_once(
-        popup,
-        "    def suspend(self) -> None:\n"
-        "        \"\"\"Keep the popup open while a drag crosses its surface.\"\"\"\n"
-        "        self._suspended = True\n"
-        "        self._cancel_deferred_dismiss()\n",
-        "    def stick_until_pointer_enter(self) -> None:\n"
-        "        \"\"\"Ignore focus-out dismiss until the pointer enters (keyboard open).\"\"\"\n"
-        "        self._sticky_until_enter = True\n"
-        "        self._cancel_deferred_dismiss()\n"
-        "        # Long backup grace so a late leave-notify during map cannot race.\n"
-        "        self._install_grace_until = GLib.get_monotonic_time() + 60_000_000\n"
-        "\n"
-        "    def suspend(self) -> None:\n"
-        "        \"\"\"Keep the popup open while a drag crosses its surface.\"\"\"\n"
-        "        self._suspended = True\n"
-        "        self._cancel_deferred_dismiss()\n",
-        "PopupOutsideDismiss.stick_until_pointer_enter",
-    )
-    try_replace_once(
-        popup,
-        "    def _on_pointer_enter(self, _widget: Gtk.Widget, event: Gdk.EventCrossing | None) -> bool:\n"
-        "        if _is_grab_crossing(event):\n"
-        "            return False\n"
-        "        self._cancel_deferred_dismiss()\n"
-        "        return False\n",
-        "    def _on_pointer_enter(self, _widget: Gtk.Widget, event: Gdk.EventCrossing | None) -> bool:\n"
-        "        if _is_grab_crossing(event):\n"
-        "            return False\n"
-        "        self._sticky_until_enter = False\n"
-        "        self._cancel_deferred_dismiss()\n"
-        "        return False\n",
-        "PopupOutsideDismiss: clear sticky on enter",
-    )
-    try_replace_once(
-        popup,
-        "    def _on_pointer_leave(self, _widget: Gtk.Widget, event: Gdk.EventCrossing | None) -> bool:\n"
-        "        if not is_pointer_leaving_surface(event):\n"
-        "            return False\n"
-        "        if GLib.get_monotonic_time() < self._install_grace_until:\n"
-        "            return False\n"
-        "        if self._pointer_over_popup_or_anchor():\n"
-        "            return False\n"
-        "        self._schedule_deferred_dismiss(restart=False)\n"
-        "        return False\n",
-        "    def _on_pointer_leave(self, _widget: Gtk.Widget, event: Gdk.EventCrossing | None) -> bool:\n"
-        "        if not is_pointer_leaving_surface(event):\n"
-        "            return False\n"
-        "        if self._sticky_until_enter:\n"
-        "            return False\n"
-        "        if GLib.get_monotonic_time() < self._install_grace_until:\n"
-        "            return False\n"
-        "        if self._pointer_over_popup_or_anchor():\n"
-        "            return False\n"
-        "        self._schedule_deferred_dismiss(restart=False)\n"
-        "        return False\n",
-        "PopupOutsideDismiss: sticky ignores leave",
-    )
-    try_replace_once(
-        popup,
-        "    def _on_focus_out(self, _widget: Gtk.Widget, _event: Gdk.EventFocus) -> bool:\n"
-        "        if GLib.get_monotonic_time() < self._install_grace_until:\n"
-        "            return False\n"
-        "        if self._pointer_over_popup_or_anchor():\n"
-        "            return False\n"
-        "        self._schedule_deferred_dismiss(restart=False)\n"
-        "        return False\n",
-        "    def _on_focus_out(self, _widget: Gtk.Widget, _event: Gdk.EventFocus) -> bool:\n"
-        "        if self._sticky_until_enter:\n"
-        "            return False\n"
-        "        if GLib.get_monotonic_time() < self._install_grace_until:\n"
-        "            return False\n"
-        "        if self._pointer_over_popup_or_anchor():\n"
-        "            return False\n"
-        "        self._schedule_deferred_dismiss(restart=False)\n"
-        "        return False\n",
-        "PopupOutsideDismiss: sticky ignores focus-out",
-    )
-    try_replace_once(
-        popup,
-        "    def _on_active_window_changed(self, active_window: ActiveWindow) -> None:\n"
-        "        if GLib.get_monotonic_time() < self._install_grace_until:\n"
-        "            return\n"
-        "        if self._any_window_has_focus():\n"
-        "            return\n"
-        "        if self._pointer_over_popup_or_anchor():\n"
-        "            return\n"
-        "        self._schedule_deferred_dismiss(restart=False)\n",
-        "    def _on_active_window_changed(self, active_window: ActiveWindow) -> None:\n"
-        "        if self._sticky_until_enter:\n"
-        "            return\n"
-        "        if GLib.get_monotonic_time() < self._install_grace_until:\n"
-        "            return\n"
-        "        if self._any_window_has_focus():\n"
-        "            return\n"
-        "        if self._pointer_over_popup_or_anchor():\n"
-        "            return\n"
-        "        self._schedule_deferred_dismiss(restart=False)\n",
-        "PopupOutsideDismiss: sticky ignores active-window",
-    )
-    try_replace_once(
-        power,
-        "    def toggle_menu(self) -> None:\n"
-        "        \"\"\"External/CLI entry: same behavior as left-clicking the power button.\"\"\"\n"
-        "        self._toggle_power_menu()\n",
-        "    def toggle_menu(self) -> None:\n"
-        "        \"\"\"Alt+F4 / CLI: open session menu and keep it until pointer enters.\"\"\"\n"
-        "        if self._menu.is_visible():\n"
-        "            self.close_menu()\n"
-        "            return\n"
-        "        self._toggle_power_menu()\n"
-        "        if self._menu.is_visible():\n"
-        "            stick = getattr(self._outside_click, \"stick_until_pointer_enter\", None)\n"
-        "            if callable(stick):\n"
-        "                stick()\n",
-        "PowerWidget.toggle_menu sticky for Alt+F4",
-    )
+    install_overlay_file(popup_src, root / "shell/popup_handle.py")
+    install_overlay_file(power_src, root / "shell/widgets/barra/power.py")
 
 
 def install_native_window_focus(root: Path) -> None:

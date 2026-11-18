@@ -324,6 +324,15 @@ install_jugoo() {
   install -d "${HOME}/.local/share/aidycos/patches"
   install -m 0644 "${ROOT}/packaging/jugoo-overlay/shell/icons.py" \
     "${HOME}/.local/share/aidycos/patches/icons.py"
+  # Session menu (Cancel/Esc + short Alt+F4 grace) loads via boot without rewriting /opt.
+  if [[ -f "${ROOT}/packaging/jugoo-overlay/shell/popup_handle.py" ]]; then
+    install -m 0644 "${ROOT}/packaging/jugoo-overlay/shell/popup_handle.py" \
+      "${HOME}/.local/share/aidycos/patches/popup_handle.py"
+  fi
+  if [[ -f "${ROOT}/packaging/jugoo-overlay/shell/widgets/barra/power.py" ]]; then
+    install -m 0644 "${ROOT}/packaging/jugoo-overlay/shell/widgets/barra/power.py" \
+      "${HOME}/.local/share/aidycos/patches/power.py"
+  fi
   if [[ -f "${ROOT}/packaging/jugoo-overlay/patches/jugoo_aidycos_boot.py" ]]; then
     install -m 0644 "${ROOT}/packaging/jugoo-overlay/patches/jugoo_aidycos_boot.py" \
       "${HOME}/.local/share/aidycos/patches/jugoo_aidycos_boot.py"
@@ -717,7 +726,7 @@ sudo install -m 0755 "${ROOT}/packaging/hyprland/aidycos-numlock" /usr/local/bin
 if ! bash "${ROOT}/packaging/hyprland/setup-hyprbars.sh"; then
   echo "ERROR: no se pudieron instalar los botones de título (hyprbars)." >&2
   echo "Sin ~/.local/lib/jugoo/hyprbars.so las ventanas no muestran minimizar/cerrar." >&2
-  echo "Revisa hyprland-dev (trixie-backports) y vuelve a aplicar el perfil." >&2
+  echo "Revisa hyprland-dev (trixie-backports) y libhyprutils-dev (debe coincidir con version.h)." >&2
   echo "Reparación manual: HYPRBARS_FORCE=1 bash packaging/hyprland/setup-hyprbars.sh" >&2
   exit 1
 fi
