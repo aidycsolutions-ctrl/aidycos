@@ -373,6 +373,7 @@ remove_system_binaries() {
     /usr/local/bin/aidycos-onlyoffice \
     /usr/local/bin/aidycos-download-dir \
     /usr/local/bin/aidycos-prefer-external-display \
+    /usr/local/bin/aidycos-numlock \
     /usr/local/bin/aidycos-boot-gfxmode \
     /usr/local/bin/aidycos-grub-background \
     /usr/local/bin/aidycos-uninstall \

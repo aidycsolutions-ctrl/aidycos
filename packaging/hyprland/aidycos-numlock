@@ -1,0 +1,60 @@
+#!/bin/sh
+# Asegura NumLock tras el arranque de Hyprland.
+# numlock_by_default a veces no aplica si el teclado llega tarde (USB/2.4G)
+# o si la sesión hereda estado de SDDM; reaplicar con hyprctl lo corrige.
+set -eu
+
+i=0
+while [ "$i" -lt 50 ]; do
+  if hyprctl getoption input:numlock_by_default >/dev/null 2>&1; then
+    break
+  fi
+  i=$((i + 1))
+  sleep 0.1
+done
+
+# Varios intentos: teclados inalámbricos a veces aparecen después del compositor.
+n=0
+while [ "$n" -lt 8 ]; do
+  hyprctl keyword input:numlock_by_default true >/dev/null 2>&1 || true
+  # Si el pad sigue apagado en el teclado principal, pulsa NumLock una vez.
+  python3 - <<'PY' || true
+import json
+import subprocess
+import sys
+
+try:
+    devices = json.loads(
+        subprocess.check_output(["hyprctl", "-j", "devices"], text=True, timeout=3)
+    )
+except (OSError, subprocess.SubprocessError, json.JSONDecodeError, ValueError):
+    sys.exit(0)
+
+keyboards = devices.get("keyboards") or []
+mains = [k for k in keyboards if k.get("main")]
+targets = mains or keyboards
+if not targets:
+    sys.exit(0)
+if all(k.get("numLock") is True for k in targets):
+    sys.exit(0)
+# Solo con wtype (Wayland); no uses numlockx (X11).
+try:
+    subprocess.run(["wtype", "-k", "Num_Lock"], check=False, timeout=2)
+except (OSError, subprocess.SubprocessError):
+    pass
+sys.exit(0)
+PY
+  if hyprctl -j devices 2>/dev/null | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+ks=d.get("keyboards") or []
+mains=[k for k in ks if k.get("main")] or ks
+sys.exit(0 if mains and all(k.get("numLock") is True for k in mains) else 1)
+' 2>/dev/null; then
+    exit 0
+  fi
+  n=$((n + 1))
+  sleep 0.5
+done
+
+exit 0

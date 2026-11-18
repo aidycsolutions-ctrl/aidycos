@@ -48,7 +48,7 @@ Vista previa del perfil AidyCOS para Debian 13:
   * Preferir la resolución del monitor externo detectado para GRUB/Plymouth cuando exista.
   * Desactivar drop-ins legados de AidyC que vuelvan a mostrar texto de arranque.
   * Seleccionar SDDM y habilitar el arranque gráfico; logo y formulario de acceso en todas las pantallas.
-  * Activar NumLock en la pantalla de acceso y en Hyprland.
+  * Activar NumLock en la pantalla de acceso y en Hyprland (con refuerzo al entrar).
   * Crear configuración inicial de Hyprland si no existe.
   * Ocultar GRUB y los mensajes de arranque; mostrar el logo en Plymouth y SDDM.
   * Retrasar cups-browsed hasta el entorno gráfico.
@@ -704,6 +704,7 @@ if [[ -e "${HYPR_WINDOWS_CONF}" ]] && ! cmp -s "${ROOT}/packaging/hyprland/confi
 fi
 install -m 0644 "${ROOT}/packaging/hyprland/config/jugoo_ventanas.conf" "${HYPR_WINDOWS_CONF}"
 sudo install -m 0755 "${ROOT}/packaging/hyprland/aidycos-prefer-external-display" /usr/local/bin/aidycos-prefer-external-display
+sudo install -m 0755 "${ROOT}/packaging/hyprland/aidycos-numlock" /usr/local/bin/aidycos-numlock
 
 # Title-bar buttons: compile hyprbars here (not via Jugoo). Sources are vendored
 # so flaky GitHub/SSL on test laptops cannot leave windows without min/close.
@@ -737,6 +738,7 @@ bind = SUPER, Y, workspace, +1
 bind = SUPER SHIFT, U, exec, aidycos-update --check
 exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE DISPLAY
 exec-once = /usr/local/bin/aidycos-prefer-external-display
+exec-once = /usr/local/bin/aidycos-numlock
 exec-once = /usr/bin/thunar --daemon
 exec-once = /usr/local/bin/aidycos-download-dir ensure
 exec-once = /usr/local/bin/aidycos-download-dir watch
@@ -774,6 +776,7 @@ else
     missing=1
   fi
   grep -qF 'exec-once = /usr/local/bin/aidycos-prefer-external-display' "${HYPR_AIDYCOS_CONF}" || missing=1
+  grep -qF 'exec-once = /usr/local/bin/aidycos-numlock' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*(hyprpolkitagent|polkit-mate-authentication-agent-1)' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qF 'bind = SUPER SHIFT, U, exec, aidycos-update --check' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qF 'bind = SUPER, G, exec, aidyship ui' "${HYPR_AIDYCOS_CONF}" || missing=1
@@ -797,6 +800,11 @@ input {
     numlock_by_default = true
 }
 EOF
+    fi
+    # Canonical path is /usr/local/bin; drop temporary ~/.local/bin copies.
+    if ! grep -qF 'exec-once = /usr/local/bin/aidycos-numlock' "${HYPR_AIDYCOS_CONF}"; then
+      sed -i -E '\|^[[:space:]]*exec-once[[:space:]]*=.*aidycos-numlock|d' "${HYPR_AIDYCOS_CONF}"
+      printf 'exec-once = /usr/local/bin/aidycos-numlock\n' >>"${HYPR_AIDYCOS_CONF}"
     fi
     if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*SPACE,[[:space:]]*exec,[[:space:]]*jugoo action launcher' "${HYPR_AIDYCOS_CONF}"; then
       printf '\nbind = SUPER, SPACE, exec, jugoo action launcher\n' >>"${HYPR_AIDYCOS_CONF}"
@@ -934,6 +942,7 @@ env = XDG_CURRENT_DESKTOP,Hyprland
 env = XDG_SESSION_TYPE,wayland
 input {
     kb_layout = latam
+    numlock_by_default = true
 }
 general {
     border_size = 2
@@ -958,6 +967,9 @@ else
   if ! grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*jugoo' "${HYPR_CONF}"; then
     changed=1
   fi
+  if ! grep -qE '^[[:space:]]*numlock_by_default[[:space:]]*=[[:space:]]*true' "${HYPR_CONF}"; then
+    changed=1
+  fi
   if [[ "${changed}" == 1 ]]; then
     backup="${HYPR_CONF}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
     cp -a "${HYPR_CONF}" "${backup}"
@@ -970,6 +982,37 @@ else
 # AidyCOS: iniciar Jugoo al entrar en Hyprland.
 exec-once = /usr/local/bin/jugoo
 EOF
+    fi
+    # Si hyprland.conf tiene input{} propio y no carga aidycos.conf a tiempo,
+    # NumLock queda apagado tras el login. Inyectar en el bloque input principal.
+    if ! grep -qE '^[[:space:]]*numlock_by_default[[:space:]]*=[[:space:]]*true' "${HYPR_CONF}"; then
+      if grep -qE '^[[:space:]]*input[[:space:]]*\{' "${HYPR_CONF}"; then
+        python3 - "${HYPR_CONF}" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+if re.search(r"(?m)^\s*numlock_by_default\s*=\s*true\s*$", text):
+    raise SystemExit(0)
+pattern = re.compile(r"(?m)^(?P<indent>\s*)input\s*\{")
+match = pattern.search(text)
+if not match:
+    raise SystemExit(0)
+indent = match.group("indent")
+insert_at = match.end()
+insertion = f"\n{indent}    numlock_by_default = true"
+path.write_text(text[:insert_at] + insertion + text[insert_at:])
+PY
+      else
+        cat >>"${HYPR_CONF}" <<'EOF'
+
+input {
+    numlock_by_default = true
+}
+EOF
+      fi
     fi
     echo "Se agregaron los ajustes AidyCOS; respaldo previo: ${backup}"
   fi
