@@ -5,6 +5,7 @@ from __future__ import annotations
 import mimetypes
 import hashlib
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -26,6 +27,8 @@ from .config import LinkConfig, load_config, save_config
 from .native_auth import start_google_login
 from .branding import apply_aidychat_branding
 from .paths import data_dir
+
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 
 
 GREEN = "#075e54"
@@ -431,24 +434,43 @@ class AidyChatWindow(Gtk.Window):
         kind = str(msg.get("message_type") or "text")
         content = str(msg.get("content") or "")
         media_url = str(msg.get("media_url") or "")
-        if kind == "text" or content:
+        if kind == "text" or (content and kind not in ("image", "video", "audio", "document", "file")):
             label = Gtk.Label(label=content, xalign=0)
             label.set_line_wrap(True)
             label.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
             label.set_max_width_chars(48)
+            label.set_selectable(True)
+            label.connect(
+                "button-press-event",
+                lambda _w, event, text=content: self._on_message_press(event, text),
+            )
             bubble.pack_start(label, False, False, 0)
         if media_url:
-            if kind == "image":
+            filename = content.strip() or Path(media_url.split("?", 1)[0]).name or "archivo"
+            if self._is_image_message(kind, media_url, filename):
                 preview = Gtk.Label(label="Cargando imagen…", xalign=0)
                 bubble.pack_start(preview, False, False, 0)
-                self._load_image(media_url, preview, bubble)
+                self._load_image(media_url, preview, bubble, filename)
             else:
-                label = {"video": "▶ Video", "audio": "▶ Reproducir audio", "document": "📎 Abrir archivo"}.get(kind, "📎 Archivo")
-                button = Gtk.Button(label=label) if kind == "audio" else Gtk.LinkButton(uri=self.bridge._url(media_url), label=label)
-                if kind == "audio":
-                    button.connect("clicked", lambda *_args, url=media_url: self._play_audio(url))
+                label_text = {
+                    "video": "▶ Video",
+                    "audio": "▶ Reproducir audio",
+                    "document": "📎 Abrir archivo",
+                    "file": "📎 Abrir archivo",
+                }.get(kind, f"📎 {filename}")
+                button = Gtk.Button(label=label_text)
                 button.set_halign(Gtk.Align.START)
+                button.connect(
+                    "clicked",
+                    lambda *_args, url=media_url, name=filename: self._download_and_open(url, name),
+                )
                 bubble.pack_start(button, False, False, 0)
+                bubble.pack_start(
+                    self._media_action_row(media_url, filename),
+                    False,
+                    False,
+                    0,
+                )
         created = str(msg.get("created_at") or "")
         stamp = created[11:16] if len(created) >= 16 else ""
         if stamp:
@@ -459,62 +481,204 @@ class AidyChatWindow(Gtk.Window):
         self.message_box.pack_start(align, False, False, 0)
         align.show_all()
 
-    def _load_image(self, media_url: str, label: Gtk.Label, bubble: Gtk.Box) -> None:
-        suffix = Path(media_url.split("?", 1)[0]).suffix[:12] or ".img"
-        cache = data_dir() / "media" / f"{hashlib.sha256(media_url.encode()).hexdigest()}{suffix}"
+    def _on_message_press(self, event: Gdk.EventButton, text: str) -> bool:
+        if event.type != Gdk.EventType.BUTTON_PRESS or event.button != 3:
+            return False
+        menu = Gtk.Menu()
+        copy_item = Gtk.MenuItem(label="Copiar mensaje")
+        copy_item.connect("activate", lambda *_: self._copy_text(text))
+        menu.append(copy_item)
+        menu.show_all()
+        menu.popup_at_pointer(event)
+        return True
+
+    def _copy_text(self, text: str) -> None:
+        clip = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+        value = (text or "").strip()
+        if not value:
+            self.sidebar_status.set_text("Nada que copiar")
+            return
+        clip.set_text(value, -1)
+        self.sidebar_status.set_text("Mensaje copiado")
+
+    @staticmethod
+    def _is_image_message(kind: str, media_url: str, filename: str) -> bool:
+        if kind == "image":
+            return True
+        tip = Path((filename or media_url).split("?", 1)[0]).suffix.lower()
+        return tip in _IMAGE_SUFFIXES
+
+    def _media_cache_path(self, media_url: str, filename: str = "") -> Path:
+        tip = Path((filename or media_url).split("?", 1)[0]).suffix.lower()
+        if tip not in _IMAGE_SUFFIXES and tip not in {
+            ".mp4",
+            ".webm",
+            ".mkv",
+            ".mp3",
+            ".ogg",
+            ".wav",
+            ".m4a",
+            ".pdf",
+            ".doc",
+            ".docx",
+            ".xls",
+            ".xlsx",
+            ".zip",
+            ".txt",
+        }:
+            tip = Path(media_url.split("?", 1)[0]).suffix[:12] or ".bin"
+        digest = hashlib.sha256(media_url.encode()).hexdigest()
+        folder = data_dir() / "media"
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder / f"{digest}{tip}"
+
+    def _media_action_row(self, media_url: str, filename: str, *, local: Path | None = None) -> Gtk.Box:
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        row.set_halign(Gtk.Align.START)
+        open_btn = Gtk.Button(label="Abrir")
+        save_btn = Gtk.Button(label="Guardar…")
+        open_btn.set_relief(Gtk.ReliefStyle.NONE)
+        save_btn.set_relief(Gtk.ReliefStyle.NONE)
+        if local is not None:
+            open_btn.connect("clicked", lambda *_: self._open_local(local))
+            save_btn.connect("clicked", lambda *_: self._save_local_as(local, filename))
+        else:
+            open_btn.connect(
+                "clicked",
+                lambda *_args, url=media_url, name=filename: self._download_and_open(url, name),
+            )
+            save_btn.connect(
+                "clicked",
+                lambda *_args, url=media_url, name=filename: self._download_and_save(url, name),
+            )
+        row.pack_start(open_btn, False, False, 0)
+        row.pack_start(save_btn, False, False, 0)
+        return row
+
+    def _load_image(self, media_url: str, label: Gtk.Label, bubble: Gtk.Box, filename: str = "") -> None:
+        cache = self._media_cache_path(media_url, filename)
 
         def work() -> None:
             try:
-                local = cache if cache.is_file() else self.bridge.download_media(media_url, cache)
-                GLib.idle_add(self._show_image, local, label, bubble)
+                local = cache if cache.is_file() and cache.stat().st_size > 0 else self.bridge.download_media(media_url, cache)
+                GLib.idle_add(self._show_image, local, label, bubble, filename or cache.name)
             except Exception as exc:
                 GLib.idle_add(label.set_text, f"No se pudo cargar la imagen: {exc}")
 
         threading.Thread(target=work, daemon=True, name="aidylink-image-download").start()
 
-    def _show_image(self, path: Path, label: Gtk.Label, bubble: Gtk.Box) -> bool:
+    def _show_image(self, path: Path, label: Gtk.Label, bubble: Gtk.Box, filename: str = "") -> bool:
         try:
             from gi.repository import GdkPixbuf
 
-            image = GdkPixbuf.Pixbuf.new_from_file(str(path))
-            width, height = image.get_width(), image.get_height()
+            pixbuf = GdkPixbuf.Pixbuf.new_from_file(str(path))
+            width, height = pixbuf.get_width(), pixbuf.get_height()
             ratio = min(1.0, 360 / max(width, 1), 260 / max(height, 1))
             if ratio < 1.0:
-                image = image.scale_simple(max(1, int(width * ratio)), max(1, int(height * ratio)), GdkPixbuf.InterpType.BILINEAR)
-            widget = Gtk.Image.new_from_pixbuf(image)
-            widget.set_tooltip_text("Doble clic para abrir en tamaño completo")
-            widget.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
-            widget.connect(
+                pixbuf = pixbuf.scale_simple(
+                    max(1, int(width * ratio)),
+                    max(1, int(height * ratio)),
+                    GdkPixbuf.InterpType.BILINEAR,
+                )
+            widget = Gtk.Image.new_from_pixbuf(pixbuf)
+            # Gtk.Image does not receive clicks reliably — wrap in EventBox.
+            hit = Gtk.EventBox()
+            hit.add(widget)
+            hit.set_visible_window(False)
+            hit.set_tooltip_text("Clic para abrir · usa Guardar… para copiarla")
+            hit.connect(
                 "button-press-event",
-                lambda _widget, event: self._open_local(path)
-                if event.type == Gdk.EventType.DOUBLE_BUTTON_PRESS
-                else False,
+                lambda _w, event, p=path: (
+                    self._open_local(p) or True
+                    if event.type in (Gdk.EventType.BUTTON_PRESS, Gdk.EventType.DOUBLE_BUTTON_PRESS)
+                    and event.button == 1
+                    else False
+                ),
             )
             bubble.remove(label)
-            bubble.pack_start(widget, False, False, 0)
-            widget.show()
+            bubble.pack_start(hit, False, False, 0)
+            bubble.pack_start(self._media_action_row("", filename, local=path), False, False, 0)
+            bubble.show_all()
         except Exception as exc:
             label.set_text(f"No se pudo mostrar la imagen: {exc}")
+            actions = self._media_action_row("", filename or path.name, local=path)
+            bubble.pack_start(actions, False, False, 0)
+            actions.show_all()
         return GLib.SOURCE_REMOVE
 
-    def _play_audio(self, media_url: str) -> None:
-        suffix = Path(media_url.split("?", 1)[0]).suffix[:12] or ".audio"
-        cache = data_dir() / "media" / f"{hashlib.sha256(media_url.encode()).hexdigest()}{suffix}"
+    def _download_and_open(self, media_url: str, filename: str = "") -> None:
+        cache = self._media_cache_path(media_url, filename)
 
         def work() -> None:
             try:
-                local = cache if cache.is_file() else self.bridge.download_media(media_url, cache)
+                local = cache if cache.is_file() and cache.stat().st_size > 0 else self.bridge.download_media(media_url, cache)
                 GLib.idle_add(self._open_local, local)
             except Exception as exc:
-                GLib.idle_add(self.sidebar_status.set_text, f"No se pudo descargar el audio: {exc}")
+                GLib.idle_add(self.sidebar_status.set_text, f"No se pudo abrir: {exc}")
 
-        threading.Thread(target=work, daemon=True, name="aidylink-audio-download").start()
+        threading.Thread(target=work, daemon=True, name="aidylink-media-open").start()
 
-    @staticmethod
-    def _open_local(path: Path) -> bool:
-        opener = shutil_which("xdg-open")
-        if opener:
-            subprocess.Popen([opener, str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    def _download_and_save(self, media_url: str, filename: str = "") -> None:
+        cache = self._media_cache_path(media_url, filename)
+
+        def work() -> None:
+            try:
+                local = cache if cache.is_file() and cache.stat().st_size > 0 else self.bridge.download_media(media_url, cache)
+                GLib.idle_add(self._save_local_as, local, filename or local.name)
+            except Exception as exc:
+                GLib.idle_add(self.sidebar_status.set_text, f"No se pudo descargar: {exc}")
+
+        threading.Thread(target=work, daemon=True, name="aidylink-media-save").start()
+
+    def _save_local_as(self, path: Path, filename: str = "") -> bool:
+        dialog = Gtk.FileChooserDialog(
+            title="Guardar archivo",
+            parent=self,
+            action=Gtk.FileChooserAction.SAVE,
+        )
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL,
+            Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_SAVE,
+            Gtk.ResponseType.OK,
+        )
+        dialog.set_do_overwrite_confirmation(True)
+        suggested = filename or path.name or "archivo"
+        downloads = Path.home() / "Downloads"
+        if downloads.is_dir():
+            dialog.set_current_folder(str(downloads))
+        dialog.set_current_name(suggested)
+        response = dialog.run()
+        dest = dialog.get_filename() if response == Gtk.ResponseType.OK else None
+        dialog.destroy()
+        if not dest:
+            return GLib.SOURCE_REMOVE
+        try:
+            shutil.copy2(path, dest)
+            self.sidebar_status.set_text(f"Guardado en {dest}")
+        except OSError as exc:
+            self.sidebar_status.set_text(f"No se pudo guardar: {exc}")
+        return GLib.SOURCE_REMOVE
+
+    def _open_local(self, path: Path) -> bool:
+        target = Path(path)
+        if not target.is_file():
+            self.sidebar_status.set_text(f"Archivo no encontrado: {target}")
+            return GLib.SOURCE_REMOVE
+        opener = shutil_which("xdg-open") or shutil.which("xdg-open")
+        if not opener:
+            self.sidebar_status.set_text(f"Archivo en {target} (sin xdg-open)")
+            return GLib.SOURCE_REMOVE
+        try:
+            subprocess.Popen(
+                [opener, str(target)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            self.sidebar_status.set_text(f"Abriendo {target.name}")
+        except OSError as exc:
+            self.sidebar_status.set_text(f"No se pudo abrir: {exc}")
         return GLib.SOURCE_REMOVE
 
     def _scroll_to_end(self) -> bool:
@@ -990,12 +1154,27 @@ def shutil_which(program: str) -> str | None:
     return None
 
 
-def run_cloud_chat() -> int:
+def run_cloud_chat(*, raise_server: object | None = None) -> int:
+    from .notify import claim_ui_instance
+
     cfg = load_config()
     if not cfg or not cfg.cloud.enabled:
         return 2
+    server = raise_server
+    if server is None:
+        server = claim_ui_instance()
+        if server is None:
+            return 0
     apply_aidychat_branding()
     win = AidyChatWindow(cfg)
+    attach = getattr(server, "attach", None)
+    if callable(attach):
+        attach(win)
+    close = getattr(server, "close", None)
+    if callable(close):
+        win.connect("destroy", lambda *_: close())
     win.show_all()
     Gtk.main()
+    if callable(close):
+        close()
     return 0

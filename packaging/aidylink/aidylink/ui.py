@@ -1045,12 +1045,34 @@ class AidylinkWindow(Gtk.Window):
                     raise ValueError("thumbnail too small")
                 pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(media_path, 240, 240, True)
                 image = Gtk.Image.new_from_pixbuf(pb)
-                image.set_halign(Gtk.Align.START)
-                bubble_box.pack_start(image, False, False, 0)
+                hit = Gtk.EventBox()
+                hit.set_visible_window(False)
+                hit.set_halign(Gtk.Align.START)
+                hit.set_tooltip_text("Clic para abrir")
+                hit.add(image)
+                hit.connect(
+                    "button-press-event",
+                    lambda _w, event, p=media_path: (
+                        self._open_path(p) or True
+                        if event.type == Gdk.EventType.BUTTON_PRESS and event.button == 1
+                        else False
+                    ),
+                )
+                bubble_box.pack_start(hit, False, False, 0)
             except Exception:
                 btn = Gtk.Button(label=f"🖼 {filename or 'Imagen'}")
                 btn.connect("clicked", lambda *_a, p=media_path: self._open_path(p))
                 bubble_box.pack_start(btn, False, False, 0)
+            actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            open_btn = Gtk.Button(label="Abrir")
+            save_btn = Gtk.Button(label="Guardar…")
+            open_btn.set_relief(Gtk.ReliefStyle.NONE)
+            save_btn.set_relief(Gtk.ReliefStyle.NONE)
+            open_btn.connect("clicked", lambda *_a, p=media_path: self._open_path(p))
+            save_btn.connect("clicked", lambda *_a, m=msg: self.save_attachment(m))
+            actions.pack_start(open_btn, False, False, 0)
+            actions.pack_start(save_btn, False, False, 0)
+            bubble_box.pack_start(actions, False, False, 0)
         elif kind in ("image", "file") and (media_path or filename):
             label = filename or ("Imagen" if kind == "image" else "Archivo")
             btn = Gtk.Button(label=f"📎 {label}")
@@ -1058,6 +1080,17 @@ class AidylinkWindow(Gtk.Window):
             if media_path and Path(media_path).is_file():
                 btn.connect("clicked", lambda *_a, p=media_path: self._open_path(p))
             bubble_box.pack_start(btn, False, False, 0)
+            if media_path and Path(media_path).is_file():
+                actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+                open_btn = Gtk.Button(label="Abrir")
+                save_btn = Gtk.Button(label="Guardar…")
+                open_btn.set_relief(Gtk.ReliefStyle.NONE)
+                save_btn.set_relief(Gtk.ReliefStyle.NONE)
+                open_btn.connect("clicked", lambda *_a, p=media_path: self._open_path(p))
+                save_btn.connect("clicked", lambda *_a, m=msg: self.save_attachment(m))
+                actions.pack_start(open_btn, False, False, 0)
+                actions.pack_start(save_btn, False, False, 0)
+                bubble_box.pack_start(actions, False, False, 0)
 
         try:
             stamp = datetime.fromtimestamp(float(msg.get("ts") or 0)).strftime("%H:%M")
@@ -1193,6 +1226,7 @@ class AidylinkWindow(Gtk.Window):
     def save_attachment(self, msg: dict[str, Any]) -> None:
         media_path = str(msg.get("media_path") or "")
         if not media_path or not Path(media_path).is_file():
+            self._append_notice("⚠ No hay archivo local para guardar")
             return
         dialog = Gtk.FileChooserDialog(
             title="Guardar archivo",
@@ -1203,6 +1237,10 @@ class AidylinkWindow(Gtk.Window):
             Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
             "Guardar", Gtk.ResponseType.OK,
         )
+        dialog.set_do_overwrite_confirmation(True)
+        downloads = Path.home() / "Downloads"
+        if downloads.is_dir():
+            dialog.set_current_folder(str(downloads))
         dialog.set_current_name(str(msg.get("filename") or Path(media_path).name))
         response = dialog.run()
         dest = dialog.get_filename() if response == Gtk.ResponseType.OK else None
@@ -2034,10 +2072,17 @@ class AidylinkWindow(Gtk.Window):
 
 
 def run_ui() -> int:
+    from .notify import claim_ui_instance
+
     if not _first_run_setup():
         return 1
 
+    raise_server = claim_ui_instance()
+    if raise_server is None:
+        return 0
+
     if not ensure_daemon_running():
+        raise_server.close()
         dialog = Gtk.MessageDialog(
             message_type=Gtk.MessageType.ERROR,
             buttons=Gtk.ButtonsType.OK,
@@ -2058,11 +2103,14 @@ def run_ui() -> int:
         # a linked account opens the richer native conversation interface.
         from .chat_window import run_cloud_chat
 
-        return run_cloud_chat()
+        return run_cloud_chat(raise_server=raise_server)
 
     win = AidylinkWindow()
+    raise_server.attach(win)
+    win.connect("destroy", lambda *_: raise_server.close())
     win.show_all()
     Gtk.main()
+    raise_server.close()
     cfg = load_config()
     if cfg is not None and cfg.cloud.enabled:
         from .chat_window import run_cloud_chat

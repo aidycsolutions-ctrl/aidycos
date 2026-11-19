@@ -38,26 +38,21 @@ def _load_keyboard_cat_helpers():
     end = source.index("class KeyboardCatWidget")
     ns: dict[str, object] = {"KEYBOARD_CAT_VERTICAL_INSET": 0}
     # Provide the max-size constant used by the helper defaults.
-    preamble = "_MAX_PIXEL_SIZE = 96\n_DANCE_FLIP_EVERY = 2\n"
+    preamble = "_MAX_PIXEL_SIZE = 96\n"
     exec(preamble + source[start:end], ns)
     return ns
 
 
 class KeyboardCatOverlayTests(unittest.TestCase):
-    def test_dance_step_alternates_frames_and_mirrors(self) -> None:
+    def test_burst_frames_alternate_calmly(self) -> None:
         helpers = _load_keyboard_cat_helpers()
-        next_dance_step = helpers["next_dance_step"]
-        # With flip_every=2: wag two frame-cycles facing right, then flip.
-        step, frame, mirrored = next_dance_step(0, 2, flip_every=2)
-        self.assertEqual((step, frame, mirrored), (1, 1, False))
-        step, frame, mirrored = next_dance_step(step, 2, flip_every=2)
-        self.assertEqual((step, frame, mirrored), (2, 0, False))
-        step, frame, mirrored = next_dance_step(step, 2, flip_every=2)
-        self.assertEqual((step, frame, mirrored), (3, 1, False))
-        step, frame, mirrored = next_dance_step(step, 2, flip_every=2)
-        self.assertEqual((step, frame, mirrored), (4, 0, True))
-        step, frame, mirrored = next_dance_step(step, 2, flip_every=2)
-        self.assertEqual((step, frame, mirrored), (5, 1, True))
+        next_burst_frame = helpers["next_burst_frame"]
+        step, frame = next_burst_frame(0, 2)
+        self.assertEqual((step, frame), (1, 1))
+        step, frame = next_burst_frame(step, 2)
+        self.assertEqual((step, frame), (2, 0))
+        step, frame = next_burst_frame(step, 2)
+        self.assertEqual((step, frame), (3, 1))
 
     def test_pixel_size_tracks_bar(self) -> None:
         helpers = _load_keyboard_cat_helpers()

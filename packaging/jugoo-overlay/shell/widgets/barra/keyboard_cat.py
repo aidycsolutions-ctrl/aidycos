@@ -1,11 +1,10 @@
-"""Animated keyboard cat that types, wags, and dances on the bar.
+"""Animated keyboard cat that types and calmly wags on the bar.
 
 Not a ShellModule: sits free on the bar (no capsule), normally to the right of
 pinned apps, bottom-aligned with the bar edge.
 
-Typing swaps paw frames on every physical key-down. While idle the cat dances:
-it cycles the typing frames and periodically mirrors left/right so the tail
-keeps moving.
+Typing swaps paw frames on every physical key-down. While idle the cat mostly
+rests on the standy pose and only does short, infrequent wag bursts.
 """
 
 from __future__ import annotations
@@ -42,12 +41,12 @@ _PROVISIONAL_SIZE = 22
 # Safety ceiling only (SVG blow-up guard). Real size tracks the bar height.
 _MAX_PIXEL_SIZE = 96
 
-# Idle dance: swap frames often enough to read as a wag/bounce.
-_DANCE_INTERVAL_MS = 320
-# Wait after the last key-up before resuming the idle dance.
-_DANCE_RESUME_MS = 700
-# Flip horizontally every N dance steps so it faces left/right while dancing.
-_DANCE_FLIP_EVERY = 2
+# Calm idle motion: short wag bursts, long still rests (low CPU).
+_DANCE_FRAME_MS = 720
+_DANCE_BURST_FRAMES = 3
+_DANCE_REST_MS = 9_000
+# Wait after the last key-up before the first calm burst.
+_DANCE_RESUME_MS = 2_500
 
 
 def keyboard_cat_assets_dir() -> Path:
@@ -66,20 +65,11 @@ def pixel_size_for_bar_height(
     return max(1, min(size, max_size, height))
 
 
-def next_dance_step(step: int, frame_count: int, *, flip_every: int = _DANCE_FLIP_EVERY) -> tuple[int, int, bool]:
-    """Advance idle dance: (next_step, frame_index, mirrored).
-
-    Cycles through typing frames, then mirrors after ``flip_every`` full
-    passes so the cat faces left/right while the tail keeps wagging.
-    """
+def next_burst_frame(step: int, frame_count: int) -> tuple[int, int]:
+    """Advance one calm wag inside a burst: (next_step, frame_index)."""
     count = max(1, int(frame_count))
-    every = max(1, int(flip_every))
-    period = count * every * 2
-    nxt = (int(step) + 1) % period
-    frame_index = nxt % count
-    cycle = nxt // count
-    mirrored = (cycle // every) % 2 == 1
-    return nxt, frame_index, mirrored
+    nxt = int(step) + 1
+    return nxt, nxt % count
 
 
 class KeyboardCatWidget(Gtk.Box):
@@ -106,7 +96,7 @@ class KeyboardCatWidget(Gtk.Box):
         self._dance_id = 0
         self._dance_resume_id = 0
         self._dance_step = 0
-        self._mirrored = False
+        self._burst_left = 0
 
         self._image = Gtk.Image()
         self._image.get_style_context().add_class("keyboard-cat-image")
@@ -128,14 +118,15 @@ class KeyboardCatWidget(Gtk.Box):
         self._event_bus.subscribe(VOICE_LISTEN_STATUS, self._on_voice_status)
         self.connect("destroy", self._on_destroy)
         GLib.idle_add(self._fit_to_bar)
-        self._start_dance()
+        # First calm burst after a rest, not immediately on startup.
+        self._schedule_rest(_DANCE_REST_MS)
 
     def _on_destroy(self, *_args) -> None:
         self._event_bus.unsubscribe(KEYBOARD_ACTIVITY, self._on_keyboard_activity)
         self._event_bus.unsubscribe(KEYBOARD_LISTENER_STATUS, self._on_listener_status)
         self._event_bus.unsubscribe(VOICE_LISTEN_STATUS, self._on_voice_status)
-        self._stop_dance()
-        self._cancel_dance_resume()
+        self._stop_burst()
+        self._cancel_idle_timer()
         if self._bar_allocate_id:
             self._bar_host.disconnect(self._bar_allocate_id)
             self._bar_allocate_id = 0
@@ -181,10 +172,8 @@ class KeyboardCatWidget(Gtk.Box):
             return
         self._pixel_size = size
         self._reload_pixbufs(size)
-        if self._pressed_codes:
-            self._show_frame(self._frame_index, mirrored=False)
-        elif self._dance_id:
-            self._show_frame(self._frame_index, mirrored=self._mirrored)
+        if self._pressed_codes or self._burst_left > 0:
+            self._show_frame(self._frame_index)
         else:
             self._show_standy()
 
@@ -242,15 +231,14 @@ class KeyboardCatWidget(Gtk.Box):
         if code < 0 or code in self._pressed_codes:
             return
         self._pressed_codes.add(code)
-        self._cancel_dance_resume()
-        self._stop_dance()
+        self._cancel_idle_timer()
+        self._stop_burst()
         if not self._frames:
             return
         # Every new physical press alternates paws (fast typing included).
         self._frame_index = self._next_frame % len(self._frames)
         self._next_frame = (self._next_frame + 1) % len(self._frames)
-        self._mirrored = False
-        self._show_frame(self._frame_index, mirrored=False)
+        self._show_frame(self._frame_index)
 
     def _on_key_release(self, code: int) -> None:
         if code < 0:
@@ -258,55 +246,57 @@ class KeyboardCatWidget(Gtk.Box):
         self._pressed_codes.discard(code)
         if not self._pressed_codes:
             self._show_standy()
-            self._schedule_dance_resume()
+            self._schedule_rest(_DANCE_RESUME_MS)
 
-    def _schedule_dance_resume(self) -> None:
-        self._cancel_dance_resume()
-        self._dance_resume_id = GLib.timeout_add(_DANCE_RESUME_MS, self._resume_dance)
+    def _schedule_rest(self, delay_ms: int) -> None:
+        self._cancel_idle_timer()
+        self._dance_resume_id = GLib.timeout_add(max(1, int(delay_ms)), self._begin_burst)
 
-    def _cancel_dance_resume(self) -> None:
+    def _cancel_idle_timer(self) -> None:
         if self._dance_resume_id:
             GLib.source_remove(self._dance_resume_id)
             self._dance_resume_id = 0
 
-    def _resume_dance(self) -> bool:
+    def _begin_burst(self) -> bool:
         self._dance_resume_id = 0
-        if not self._pressed_codes:
-            self._start_dance()
+        if self._pressed_codes or not self._frames:
+            return False
+        self._stop_burst()
+        self._burst_left = _DANCE_BURST_FRAMES
+        self._dance_step = 0
+        self._dance_id = GLib.timeout_add(_DANCE_FRAME_MS, self._on_burst_tick)
         return False
 
-    def _start_dance(self) -> None:
-        if self._dance_id or not self._frames:
-            return
-        self._dance_id = GLib.timeout_add(_DANCE_INTERVAL_MS, self._on_dance_tick)
-        # Kick immediately so idle never looks frozen.
-        self._on_dance_tick()
-
-    def _stop_dance(self) -> None:
+    def _stop_burst(self) -> None:
+        self._burst_left = 0
         if self._dance_id:
             GLib.source_remove(self._dance_id)
             self._dance_id = 0
 
-    def _on_dance_tick(self) -> bool:
+    def _on_burst_tick(self) -> bool:
         if self._pressed_codes or not self._frames:
-            return True
-        self._dance_step, self._frame_index, self._mirrored = next_dance_step(
+            self._dance_id = 0
+            return False
+        if self._burst_left <= 0:
+            self._dance_id = 0
+            self._show_standy()
+            self._schedule_rest(_DANCE_REST_MS)
+            return False
+        self._burst_left -= 1
+        self._dance_step, self._frame_index = next_burst_frame(
             self._dance_step,
             len(self._frames),
         )
-        self._show_frame(self._frame_index, mirrored=self._mirrored)
+        self._show_frame(self._frame_index)
         return True
 
     def _show_standy(self) -> None:
-        self._mirrored = False
         if self._standy is not None:
             self._image.set_from_pixbuf(self._standy)
 
-    def _show_frame(self, index: int, *, mirrored: bool = False) -> None:
+    def _show_frame(self, index: int) -> None:
         if not self._frames:
             self._show_standy()
             return
         pixbuf = self._frames[index % len(self._frames)]
-        if mirrored:
-            pixbuf = pixbuf.flip(True)
         self._image.set_from_pixbuf(pixbuf)

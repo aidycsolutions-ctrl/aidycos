@@ -33,6 +33,7 @@ class AidyChatBridge:
         self.on_message = on_message
         self._seen_message_ids: set[int] = set()
         self._self_user_id: int | None = cfg.cloud.peer_user_ids.get("self")
+        self._last_poll_fingerprint = ""
 
     @property
     def enabled(self) -> bool:
@@ -194,13 +195,25 @@ class AidyChatBridge:
         return data
 
     def download_media(self, media_url: str, destination: Path) -> Path:
+        raw = str(media_url or "").strip()
+        if not raw:
+            raise ValueError("URL de archivo vacía")
         base = self.cfg.cloud.base_url.rstrip("/") + "/"
-        url = urljoin(base, str(media_url))
-        if (
-            urlparse(url).netloc != urlparse(base).netloc
-            or urlparse(url).scheme != urlparse(base).scheme
-            or urlparse(url).scheme not in ("https", "http")
-        ):
+        parsed_raw = urlparse(raw)
+        if parsed_raw.scheme in ("https", "http"):
+            url = raw
+        elif raw.startswith("/"):
+            url = urljoin(base, raw)
+        else:
+            # Relative upload paths from the API → keep under /aidychat/.
+            url = self._url("/" + raw.lstrip("/"))
+        base_parts = urlparse(base)
+        url_parts = urlparse(url)
+        if url_parts.scheme not in ("https", "http"):
+            raise ValueError("La URL del archivo no pertenece al servidor AidyChat configurado")
+        base_host = (base_parts.hostname or "").lower().removeprefix("www.")
+        url_host = (url_parts.hostname or "").lower().removeprefix("www.")
+        if url_host != base_host:
             raise ValueError("La URL del archivo no pertenece al servidor AidyChat configurado")
         req = urllib.request.Request(
             url,
@@ -211,14 +224,20 @@ class AidyChatBridge:
         )
         target = Path(destination)
         target.parent.mkdir(parents=True, exist_ok=True)
+        total = 0
+        ctype = ""
         try:
             with urllib.request.urlopen(req, timeout=45) as response, target.open("wb") as out:
-                total = 0
+                ctype = (response.headers.get_content_type() or "").lower()
                 while chunk := response.read(64 * 1024):
                     total += len(chunk)
                     if total > 50 * 1024 * 1024:
                         raise ValueError("El archivo supera el límite de 50 MB")
                     out.write(chunk)
+            if total <= 0:
+                raise ValueError("El servidor devolvió un archivo vacío")
+            if ctype.startswith("text/html"):
+                raise ValueError("El servidor pidió inicio de sesión al descargar el archivo")
         except Exception:
             target.unlink(missing_ok=True)
             raise
@@ -358,6 +377,18 @@ class AidyChatBridge:
         last = status.get("last_message") or {}
         preview = str(last.get("preview") or "")
         sender = str(last.get("sender") or "AidyChat")
+        fingerprint = "|".join(
+            [
+                str(last.get("id") or ""),
+                str(last.get("chat_id") or ""),
+                sender,
+                preview,
+            ]
+        )
+        # has_new can stay true across polls — only surface each payload once.
+        if fingerprint and fingerprint == getattr(self, "_last_poll_fingerprint", ""):
+            return []
+        self._last_poll_fingerprint = fingerprint
         msg = LinkMessage.create(
             from_id=f"cloud:{last.get('chat_id') or 'unknown'}",
             from_name=sender,

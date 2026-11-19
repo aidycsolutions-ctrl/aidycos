@@ -52,10 +52,15 @@ class AidylinkDaemon:
         self._media_dir = data_dir() / "media"
         self._media_dir.mkdir(parents=True, exist_ok=True)
         self._mobile_fanout_task: asyncio.Task | None = None
+        self._last_cloud_notify_key = ""
 
     async def _on_pair_ask(self, body: dict[str, Any], peer_host: str) -> dict[str, Any]:
         name = str(body.get("display_name") or peer_host or "PC")
-        notify("AidyChat", f"{name} quiere conectarse. Ábrelo para aprobar.")
+        notify(
+            "AidyChat",
+            f"{name} quiere conectarse. Ábrelo para aprobar.",
+            kind="important",
+        )
         return await self.pairing.wait_ask(body, peer_host)
 
     def _apply_pair_result(self, result: dict[str, Any]) -> dict[str, Any]:
@@ -74,6 +79,7 @@ class AidylinkDaemon:
             notify(
                 "AidyChat",
                 f"Emparejado con {result.get('host_name') or 'otro PC'}",
+                kind="important",
             )
         return result
 
@@ -81,15 +87,37 @@ class AidylinkDaemon:
         self._materialize_media(message)
         self._persist(message)
         preview = message.display_text() or message.filename or "Mensaje"
-        notify(message.from_name or "AidyChat", preview)
+        # Skip echoes / own outbound so the host does not notify itself.
+        if message.from_id != self.cfg.node_id:
+            notify(message.from_name or "AidyChat", preview, kind="message")
         LOGGER.info("lan msg from %s: %s", message.from_name, preview[:80])
         self._schedule_mobile_fanout(message)
 
     def _on_cloud_batch(self, batch: list[LinkMessage]) -> None:
+        fresh: list[LinkMessage] = []
         for message in batch:
             self._persist(message)
-            notify(f"{message.from_name} (cloud)", message.display_text() or "Mensaje")
+            key = f"{message.from_id}|{message.display_text() or ''}"
+            if key and key == getattr(self, "_last_cloud_notify_key", ""):
+                continue
+            self._last_cloud_notify_key = key
+            fresh.append(message)
             self._schedule_mobile_fanout(message)
+        if not fresh:
+            return
+        if len(fresh) == 1:
+            message = fresh[0]
+            notify(
+                f"{message.from_name} (cloud)",
+                message.display_text() or "Mensaje",
+                kind="message",
+            )
+            return
+        notify(
+            "AidyChat",
+            f"{len(fresh)} mensajes nuevos en la nube",
+            kind="message",
+        )
 
     def _mobile_peer_list(self) -> list[dict[str, Any]]:
         return [
@@ -191,7 +219,7 @@ class AidylinkDaemon:
         self._materialize_media(message)
         self._persist(message)
         await self.mobile.broadcast_message(message)
-        notify(message.from_name, message.display_text() or filename or "Archivo")
+        # Phone already showed the send — do not ping the desktop again.
         return {
             "ok": True,
             "route": route,
@@ -283,7 +311,11 @@ class AidylinkDaemon:
             self.cfg.team_id,
             self.discovery.lan_ip,
         )
-        notify("AidyLink", f"En línea como {self.cfg.display_name}")
+        notify(
+            "AidyLink",
+            f"En línea como {self.cfg.display_name}",
+            kind="status",
+        )
 
     async def stop(self) -> None:
         if self._control_server:
