@@ -15,49 +15,78 @@ from ...config import (
 )
 from ...popup_handle import pointer_inside_widget, present_popup, hide_popup
 from ...popup_spawn import publish_popup_spawn
+from ...servicios.bluetooth.service import BluetoothService
 from ...servicios.red.network import NetworkService, wifi_scan_allowed
 from ...ui.starfield import install_starfield, resolve_event_bus
 from ...window_identity import (
     TITLE_CONTROL_CENTER,
     TITLE_NETWORK_PANEL,
-    TITLE_PHONE_PANEL,
     configure_interactive_popup,
     configure_toplevel,
     position_popup_below_anchor,
     register_shell_popup,
     schedule_popup_position,
 )
-from ...servicios.movil.kdeconnect import PhoneService
-from ...servicios.movil.remoto.servidor import RemoteControlService
+from .bluetooth_section import ControlCenterBluetoothSection
 from .network_section import ControlCenterNetworkSection
-from .phone_section import ControlCenterPhoneSection
 from .placeholder_section import ControlCenterPlaceholderSection
-from .remote_section import ControlCenterRemoteSection
 from .views import ControlCenterView
+
+try:
+    from ...window_identity import TITLE_PHONE_PANEL
+except ImportError:  # pragma: no cover
+    TITLE_PHONE_PANEL = "Teléfono"
+
+try:
+    from ...servicios.movil.kdeconnect import PhoneService
+except Exception:  # pragma: no cover — older Jugoo without movil
+    PhoneService = None  # type: ignore[misc, assignment]
+
+try:
+    from ...servicios.movil.remoto.servidor import RemoteControlService
+except Exception:  # pragma: no cover
+    RemoteControlService = None  # type: ignore[misc, assignment]
+
+try:
+    from .phone_section import ControlCenterPhoneSection
+except Exception:  # pragma: no cover
+    ControlCenterPhoneSection = None  # type: ignore[misc, assignment]
+
+try:
+    from .remote_section import ControlCenterRemoteSection
+except Exception:  # pragma: no cover
+    ControlCenterRemoteSection = None  # type: ignore[misc, assignment]
+
+TITLE_BLUETOOTH_PANEL = "Bluetooth"
+_PHONE_VIEW = getattr(ControlCenterView, "PHONE", None)
+_BLUETOOTH_VIEW = getattr(ControlCenterView, "BLUETOOTH", None)
 
 _VIEW_WINDOW_NAMES = {
     ControlCenterView.FULL: "shell-control-center",
     ControlCenterView.NETWORK: "shell-network-panel",
     ControlCenterView.AUDIO: "shell-audio-panel",
     ControlCenterView.MEDIA: "shell-media-panel",
-    ControlCenterView.PHONE: "shell-phone-panel",
 }
-
 _VIEW_TITLES = {
     ControlCenterView.FULL: TITLE_CONTROL_CENTER,
     ControlCenterView.NETWORK: TITLE_NETWORK_PANEL,
     ControlCenterView.AUDIO: TITLE_CONTROL_CENTER,
     ControlCenterView.MEDIA: TITLE_CONTROL_CENTER,
-    ControlCenterView.PHONE: TITLE_PHONE_PANEL,
 }
-
 _VIEW_HEADINGS = {
     ControlCenterView.FULL: "Centro de control",
     ControlCenterView.NETWORK: "Red",
     ControlCenterView.AUDIO: "Audio",
     ControlCenterView.MEDIA: "Media",
-    ControlCenterView.PHONE: "Teléfono",
 }
+if _BLUETOOTH_VIEW is not None:
+    _VIEW_WINDOW_NAMES[_BLUETOOTH_VIEW] = "shell-bluetooth-panel"
+    _VIEW_TITLES[_BLUETOOTH_VIEW] = TITLE_BLUETOOTH_PANEL
+    _VIEW_HEADINGS[_BLUETOOTH_VIEW] = "Bluetooth"
+if _PHONE_VIEW is not None:
+    _VIEW_WINDOW_NAMES[_PHONE_VIEW] = "shell-phone-panel"
+    _VIEW_TITLES[_PHONE_VIEW] = TITLE_PHONE_PANEL
+    _VIEW_HEADINGS[_PHONE_VIEW] = "Teléfono"
 
 
 class ControlCenterPopup(Gtk.Window):
@@ -69,8 +98,9 @@ class ControlCenterPopup(Gtk.Window):
         network_service: NetworkService,
         *,
         view: ControlCenterView = ControlCenterView.FULL,
-        phone_service: PhoneService | None = None,
-        remote_service: RemoteControlService | None = None,
+        phone_service=None,
+        remote_service=None,
+        bluetooth_service: BluetoothService | None = None,
     ) -> None:
         super().__init__(type=Gtk.WindowType.TOPLEVEL)
 
@@ -78,16 +108,18 @@ class ControlCenterPopup(Gtk.Window):
         self._service = network_service
         self._phone_service = phone_service
         self._remote_service = remote_service
-        self._remote_section: ControlCenterRemoteSection | None = None
+        self._bluetooth_service = bluetooth_service
+        self._remote_section = None
         self._view = view
         self._anchor_button: Gtk.Widget | None = None
         self._fixed_popup_top: int | None = None
         self._network_section: ControlCenterNetworkSection | None = None
-        self._phone_section: ControlCenterPhoneSection | None = None
+        self._bluetooth_section: ControlCenterBluetoothSection | None = None
+        self._phone_section = None
 
-        self.set_name(_VIEW_WINDOW_NAMES[view])
+        self.set_name(_VIEW_WINDOW_NAMES.get(view, "shell-control-center"))
         register_shell_popup(self, shell_window)
-        configure_toplevel(self, title=_VIEW_TITLES[view])
+        configure_toplevel(self, title=_VIEW_TITLES.get(view, TITLE_CONTROL_CENTER))
         configure_interactive_popup(self)
         self.set_default_size(CONTROL_CENTER_POPUP_WIDTH, -1)
 
@@ -102,7 +134,7 @@ class ControlCenterPopup(Gtk.Window):
 
         header = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         header.get_style_context().add_class("control-center-popup-header")
-        title = Gtk.Label(label=_VIEW_HEADINGS[view], xalign=0)
+        title = Gtk.Label(label=_VIEW_HEADINGS.get(view, "Centro de control"), xalign=0)
         title.get_style_context().add_class("control-center-popup-title")
         header.pack_start(title, False, False, 0)
         outer.pack_start(header, False, False, 0)
@@ -135,21 +167,43 @@ class ControlCenterPopup(Gtk.Window):
                     )
                 ),
                 on_apply_hotspot=network_service.apply_hotspot_config,
-                on_forget_wifi=network_service.forget_wifi,
-                on_request_wifi_credentials=network_service.request_active_wifi_credentials,
+                on_forget_wifi=getattr(network_service, "forget_wifi", None),
+                on_request_wifi_credentials=getattr(
+                    network_service,
+                    "request_active_wifi_credentials",
+                    None,
+                ),
             )
             body.pack_start(self._network_section, False, False, 0)
 
-        if phone_service is not None and view in (
-            ControlCenterView.FULL,
-            ControlCenterView.PHONE,
+        bluetooth_views = {ControlCenterView.FULL, ControlCenterView.NETWORK}
+        if _BLUETOOTH_VIEW is not None:
+            bluetooth_views.add(_BLUETOOTH_VIEW)
+        if bluetooth_service is not None and view in bluetooth_views:
+            self._bluetooth_section = ControlCenterBluetoothSection(
+                on_toggle_powered=bluetooth_service.set_powered,
+                on_request_discovery=bluetooth_service.request_discovery,
+                on_connect=bluetooth_service.connect_device,
+                on_disconnect=bluetooth_service.disconnect_device,
+                on_forget=bluetooth_service.forget_device,
+            )
+            body.pack_start(self._bluetooth_section, False, False, 0)
+
+        phone_views = {ControlCenterView.FULL}
+        if _PHONE_VIEW is not None:
+            phone_views.add(_PHONE_VIEW)
+        if (
+            phone_service is not None
+            and ControlCenterPhoneSection is not None
+            and view in phone_views
         ):
             self._phone_section = ControlCenterPhoneSection(phone_service)
             body.pack_start(self._phone_section, False, False, 0)
 
-        if remote_service is not None and view in (
-            ControlCenterView.FULL,
-            ControlCenterView.PHONE,
+        if (
+            remote_service is not None
+            and ControlCenterRemoteSection is not None
+            and view in phone_views
         ):
             self._remote_section = ControlCenterRemoteSection(remote_service)
             body.pack_start(self._remote_section, False, False, 0)
@@ -191,17 +245,25 @@ class ControlCenterPopup(Gtk.Window):
         self._anchor_button = anchor_button
         self._fixed_popup_top = None
         if self._remote_section is not None and self._remote_service is not None:
-            self._remote_service.refresh_address()
+            refresh = getattr(self._remote_service, "refresh_address", None)
+            if callable(refresh):
+                refresh()
         self.refresh()
         if (
             self._network_section is not None
             and wifi_scan_allowed(self._service.snapshot)
         ):
             self._service.request_wifi_scan()
+        if (
+            self._bluetooth_section is not None
+            and self._bluetooth_service is not None
+            and self._bluetooth_service.snapshot.powered
+        ):
+            self._bluetooth_service.request_discovery()
         publish_popup_spawn(
             self,
             anchor_button,
-            title=_VIEW_TITLES[self._view],
+            title=_VIEW_TITLES.get(self._view, TITLE_CONTROL_CENTER),
             offset=CONTROL_CENTER_POPUP_OFFSET,
         )
         present_popup(self)
@@ -218,6 +280,8 @@ class ControlCenterPopup(Gtk.Window):
     def refresh(self) -> None:
         if self._network_section is not None:
             self._network_section.refresh(self._service.snapshot)
+        if self._bluetooth_section is not None and self._bluetooth_service is not None:
+            self._bluetooth_section.refresh(self._bluetooth_service.snapshot)
         if self._phone_section is not None and self._phone_service is not None:
             self._phone_section.refresh(self._phone_service.snapshot)
         if self._remote_section is not None and self._remote_service is not None:
@@ -229,7 +293,7 @@ class ControlCenterPopup(Gtk.Window):
         self._fixed_popup_top = position_popup_below_anchor(
             self,
             self._anchor_button,
-            title=_VIEW_TITLES[self._view],
+            title=_VIEW_TITLES.get(self._view, TITLE_CONTROL_CENTER),
             offset=CONTROL_CENTER_POPUP_OFFSET,
             fixed_top=self._fixed_popup_top,
         )

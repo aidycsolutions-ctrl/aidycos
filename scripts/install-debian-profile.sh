@@ -34,7 +34,7 @@ Vista previa del perfil AidyCOS para Debian 13:
   * Quitar la versión anterior del paquete AidyC si está instalada (conservar sus datos).
   * Instalar AidyChat nativo, icono/acceso de escritorio y daemon de usuario para notificaciones.
   * Instalar AidyShip (commit/push GitHub con gh por usuario), icono de menú y atajo Super+G.
-  * Habilitar NetworkManager y UPower para los indicadores de Wi-Fi y batería de Jugoo.
+  * Habilitar NetworkManager, UPower y BlueZ para Wi-Fi, batería y Bluetooth de Jugoo.
   * Migrar Wi-Fi de ifupdown (instalador Debian) a NetworkManager para que Jugoo no lo vea como LAN.
   * Instalar librsvg2-common para que los iconos symbolic SVG de Adwaita no salgan como rectángulos.
   * Instalar los ajustes de Jugoo para volumen, fondo de escritorio, iconos y atajos.
@@ -532,6 +532,23 @@ fi
 # Migrate Debian-installer ifupdown Wi-Fi into NM so the bar does not show "LAN".
 bash "${ROOT}/packaging/network/apply-aidycos-network.sh"
 sudo systemctl enable --now upower.service
+
+# Bluetooth panel in Jugoo uses BlueZ (bluetoothd). Keep the daemon enabled so
+# the control-center toggle / device list works without a separate Blueman UI.
+if ! dpkg-query -W -f='${db:Status-Status}' bluez 2>/dev/null | grep -qx installed; then
+  sudo apt-get install -y --no-install-recommends bluez rfkill
+fi
+sudo systemctl enable --now bluetooth.service >/dev/null 2>&1 || true
+if command -v rfkill >/dev/null 2>&1; then
+  rfkill unblock bluetooth >/dev/null 2>&1 || true
+fi
+# Seat access for non-root bluetoothctl / BlueZ agent operations.
+if getent group bluetooth >/dev/null 2>&1; then
+  if ! id -nG "${USER}" | tr ' ' '\n' | grep -qx bluetooth; then
+    sudo usermod -aG bluetooth "${USER}" || true
+    echo "Usuario ${USER} añadido al grupo bluetooth (hace falta cerrar sesión)."
+  fi
+fi
 
 # Jugoo volume reads prefer pactl (pipewire-pulse). Without it, the bar can still
 # change volume via wpctl but used to show a permanent mute "x". Keep the Pulse

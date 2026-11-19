@@ -1076,6 +1076,135 @@ def install_network_wifi(root: Path) -> None:
         style.write_text(style_text.rstrip() + "".join(css_parts), encoding="utf-8")
 
 
+def install_bluetooth(root: Path) -> None:
+    """Install BlueZ-backed Bluetooth panel + bar indicator (Wi-Fi-like UX)."""
+    overlay = Path(__file__).parent / "shell"
+    for relative in (
+        Path("servicios/bluetooth/__init__.py"),
+        Path("servicios/bluetooth/service.py"),
+        Path("widgets/centro_control/bluetooth_section.py"),
+        Path("widgets/centro_control/views.py"),
+        Path("widgets/centro_control/popup.py"),
+        Path("widgets/barra/bluetooth.py"),
+        Path("controllers/control_center.py"),
+    ):
+        source = overlay / relative
+        if source.is_file():
+            install_overlay_file(source, root / "shell" / relative)
+
+    models = root / "shell/models.py"
+    models_text = models.read_text(encoding="utf-8")
+    if "class BluetoothSnapshot:" not in models_text:
+        spec = importlib.util.spec_from_file_location(
+            "aidycos_bluetooth_models",
+            overlay / "bluetooth_models.py",
+        )
+        if spec is None or spec.loader is None:
+            raise SystemExit(f"No se pudo cargar el parche Bluetooth: {overlay / 'bluetooth_models.py'}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        block = module.BLUETOOTH_MODELS_SNIPPET.strip("\n") + "\n"
+        if "class NetworkInterfaceSnapshot:" in models_text:
+            replace_once(
+                models,
+                "@dataclass(frozen=True)\nclass NetworkInterfaceSnapshot:\n",
+                block + "\n\n@dataclass(frozen=True)\nclass NetworkInterfaceSnapshot:\n",
+                "añadir modelos Bluetooth",
+            )
+        else:
+            backup = models.with_suffix(models.suffix + ".aidycos-backup")
+            if not backup.exists():
+                shutil.copy2(models, backup)
+            models.write_text(models_text.rstrip() + "\n\n" + block, encoding="utf-8")
+
+    app = root / "shell/app.py"
+    app_text = app.read_text(encoding="utf-8")
+    if "self.bluetooth_service = BluetoothService(" not in app_text:
+        try_replace_once(
+            app,
+            "from .servicios.red.network import NetworkService\n",
+            "from .servicios.red.network import NetworkService\n"
+            "from .servicios.bluetooth.service import BluetoothService\n",
+            "importar servicio Bluetooth",
+        )
+        try_replace_once(
+            app,
+            "from .widgets.barra.ethernet import EthernetWidget\n",
+            "from .widgets.barra.ethernet import EthernetWidget\n"
+            "from .widgets.barra.bluetooth import BluetoothWidget\n",
+            "importar indicador Bluetooth",
+        )
+        try_replace_once(
+            app,
+            "        self.network_service = NetworkService(self.event_bus)\n",
+            "        self.network_service = NetworkService(self.event_bus)\n"
+            "        self.bluetooth_service = BluetoothService(self.event_bus)\n",
+            "crear servicio Bluetooth",
+        )
+        try_replace_once(
+            app,
+            "        self.ethernet_widget = EthernetWidget(self.event_bus, self.network_service)\n",
+            "        self.ethernet_widget = EthernetWidget(self.event_bus, self.network_service)\n"
+            "        self.bluetooth_widget = BluetoothWidget(self.event_bus, self.bluetooth_service)\n",
+            "crear indicador Bluetooth",
+        )
+        try_replace_once(
+            app,
+            "        self.layout.right.add(self.ethernet_widget)\n",
+            "        self.layout.right.add(self.ethernet_widget)\n"
+            "        self.layout.right.add(self.bluetooth_widget)\n",
+            "mostrar indicador Bluetooth",
+        )
+        try_replace_once(
+            app,
+            "        self.hyprland.start()\n",
+            "        self.hyprland.start()\n        self.bluetooth_service.start()\n",
+            "iniciar monitoreo Bluetooth",
+        )
+        try_replace_once(
+            app,
+            "        self.network_service.close()\n",
+            "        self.network_service.close()\n        self.bluetooth_service.close()\n",
+            "cerrar monitoreo Bluetooth",
+        )
+        # Prefer passing bluetooth into the control-center controller when possible.
+        try_replace_once(
+            app,
+            "        self.control_center_controller = ControlCenterController(\n"
+            "            self.event_bus,\n"
+            "            self.network_service,\n"
+            "            self.ethernet_widget,\n"
+            "            self.power_widget,\n"
+            "            self,\n"
+            "        )\n",
+            "        self.control_center_controller = ControlCenterController(\n"
+            "            self.event_bus,\n"
+            "            self.network_service,\n"
+            "            self.ethernet_widget,\n"
+            "            self.power_widget,\n"
+            "            self,\n"
+            "            bluetooth_service=self.bluetooth_service,\n"
+            "            bluetooth_widget=self.bluetooth_widget,\n"
+            "        )\n",
+            "conectar Bluetooth al centro de control",
+        )
+
+    style = root / "shell/style.css"
+    style_text = style.read_text(encoding="utf-8")
+    if "box.bluetooth-widget" not in style_text:
+        css = (
+            "\nbox.bluetooth-widget { margin: 0 2px; }\n"
+            "box.bluetooth-widget button.bluetooth-button {\n"
+            "    padding: 0; min-width: 0; min-height: 0; background: transparent;\n"
+            "    border: none; box-shadow: none; color: @shell_text_primary;\n"
+            "}\n"
+        )
+        backup = style.with_suffix(style.suffix + ".aidycos-backup")
+        if not backup.exists():
+            shutil.copy2(style, backup)
+        style.write_text(style_text.rstrip() + css, encoding="utf-8")
+
+
 def install_printers(root: Path) -> None:
     """Add Configuraciones → Impresoras (CUPS list + system-config-printer)."""
     overlay = Path(__file__).parent / "shell"
@@ -1824,6 +1953,7 @@ def main() -> None:
         )
     install_battery(root)
     install_network_wifi(root)
+    install_bluetooth(root)
     install_printers(root)
     install_native_workspace_dispatch(root)
     install_native_window_focus(root)
