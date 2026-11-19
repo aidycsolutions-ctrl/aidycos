@@ -39,28 +39,43 @@ SIDE = "#E8EEF0"
 
 
 def _install_style() -> None:
+    # Dark desktop themes leave light fg on our light panels unless we pin ink.
     css = Gtk.CssProvider()
     css.load_from_data(
         f"""
+        window.aidyship, window.aidyship * {{
+            color: #102027;
+        }}
         window.aidyship {{ background: {BG}; }}
-        .ship-header {{ background: {TEAL}; color: white; padding: 12px 14px; }}
-        .ship-header label {{ color: white; }}
-        .ship-side {{ background: {SIDE}; }}
-        .ship-card {{ padding: 10px; }}
+        .ship-header {{ background: {TEAL}; color: #ffffff; padding: 12px 14px; }}
+        .ship-header label {{ color: #ffffff; }}
+        .ship-header button {{ color: #ffffff; }}
+        .ship-side {{ background: {SIDE}; color: #102027; }}
+        .ship-side label {{ color: #102027; }}
+        .ship-card {{ padding: 10px; color: #102027; }}
         .ship-muted {{ color: #5b6b73; font-size: 11px; }}
         .ship-status-ok {{ color: {TEAL}; font-weight: bold; }}
         .ship-status-bad {{ color: #a33; font-weight: bold; }}
-        .ship-primary {{ background: {TEAL}; color: white; padding: 8px 12px; border-radius: 4px; }}
+        .ship-primary {{ background: {TEAL}; color: #ffffff; padding: 8px 12px; border-radius: 4px; }}
+        .ship-primary label {{ color: #ffffff; }}
         .ship-accent {{ background: {MINT}; color: {TEAL}; padding: 8px 12px; border-radius: 4px; }}
-        .ship-deploy {{ background: #c45c26; color: white; padding: 8px 12px; border-radius: 4px; }}
-        .ship-diff {{ font-family: monospace; font-size: 11px; }}
+        .ship-accent label {{ color: {TEAL}; }}
+        .ship-deploy {{ background: #c45c26; color: #ffffff; padding: 8px 12px; border-radius: 4px; }}
+        .ship-deploy label {{ color: #ffffff; }}
+        .ship-diff {{ font-family: monospace; font-size: 11px; color: #102027; }}
+        window.aidyship entry, window.aidyship textview, window.aidyship textview text {{
+            background: #ffffff;
+            color: #102027;
+            caret-color: #102027;
+        }}
+        window.aidyship button {{ color: #102027; }}
         """.encode("utf-8")
     )
     screen = Gtk.Window().get_screen()
     Gtk.StyleContext.add_provider_for_screen(
         screen,
         css,
-        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        Gtk.STYLE_PROVIDER_PRIORITY_USER,
     )
 
 

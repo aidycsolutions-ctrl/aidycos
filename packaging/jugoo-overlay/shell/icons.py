@@ -104,16 +104,19 @@ class DesktopIconResolver:
         if direct:
             return direct
         # Qualified ids (org.foo.Bar). Require 3+ chars so "tk" does not hit
-        # "xdg-desktop-portal-gtk".
-        return next(
-            (
-                info
-                for name, info in index.items()
-                if min(len(name), len(app_class)) >= 3
-                and (name in app_class or app_class in name)
-            ),
-            None,
-        )
+        # "xdg-desktop-portal-gtk". Prefer the longest key and reject prefix
+        # collisions like "aidyc" ⊂ "aidychat" (same icon / dock button).
+        candidates: list[tuple[int, ApplicationInfo]] = []
+        for name, info in index.items():
+            if min(len(name), len(app_class)) < 3:
+                continue
+            if not _wm_class_matches(app_class, name):
+                continue
+            candidates.append((len(name), info))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1]
 
     def _desktop_index(self) -> Dict[str, ApplicationInfo]:
         if self._index is not None:
@@ -182,6 +185,24 @@ def find_desktop_icon(app: str) -> str:
     return _resolver.describe(app).icon
 
 
+def _wm_class_matches(app_class: str, name: str) -> bool:
+    """True when desktop WM class / id reasonably matches a Hyprland class."""
+    if app_class == name:
+        return True
+    if name in app_class:
+        shorter, longer = name, app_class
+    elif app_class in name:
+        shorter, longer = app_class, name
+    else:
+        return False
+    # "aidyc" must not claim "aidychat" / "aidycai".
+    if longer.startswith(shorter):
+        rest = longer[len(shorter) :]
+        if rest and rest[0].isalnum():
+            return False
+    return True
+
+
 def _friendly_application_name(app_class: str) -> str:
     normalized = app_class.casefold().strip()
     if normalized in KNOWN_APPLICATION_NAMES:
@@ -200,6 +221,9 @@ def _aidyc_application(window: Window) -> ApplicationInfo | None:
 
 def _is_aidyc_window(window: Window) -> bool:
     app_class = (window.app_class or "").casefold().strip()
+    # Never treat AidyChat / AIDYCAI as the AidyC IDE.
+    if app_class.startswith("aidychat") or app_class.startswith("aidycai") or app_class.startswith("aidyship"):
+        return False
     if app_class in {"aidyc", "com.aidyc.aidyc"}:
         return True
     if _exe_is_aidyc(getattr(window, "pid", None)):

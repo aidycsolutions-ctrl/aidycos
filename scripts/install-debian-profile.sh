@@ -958,6 +958,33 @@ for hypr_file in "${HYPR_CONF}" "${HYPR_AIDYCOS_CONF}"; do
   fi
 done
 
+# Super+Space launcher must fire once. hyprland.conf (Space) + aidycos.conf (SPACE)
+# both register → toggle opens then closes instantly (looks broken).
+_launcher_bind_re='^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*[Ss][Pp][Aa][Cc][Ee],[[:space:]]*exec,[[:space:]]*jugoo action launcher'
+if [[ -f "${HYPR_AIDYCOS_CONF}" ]] && grep -qE "${_launcher_bind_re}" "${HYPR_AIDYCOS_CONF}"; then
+  if [[ -f "${HYPR_CONF}" ]] && grep -qE "${_launcher_bind_re}" "${HYPR_CONF}"; then
+    cp -a "${HYPR_CONF}" "${HYPR_CONF}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
+    sed -i -E "/${_launcher_bind_re}/d" "${HYPR_CONF}"
+    echo "Super+Space launcher duplicado eliminado de ${HYPR_CONF} (queda solo aidycos.conf)."
+  fi
+elif [[ -f "${HYPR_CONF}" ]] && grep -qE "${_launcher_bind_re}" "${HYPR_CONF}"; then
+  # Migrate the only copy into aidycos.conf so future updates own one place.
+  if [[ ! -f "${HYPR_AIDYCOS_CONF}" ]]; then
+    printf '# AidyCOS keyboard and Jugoo defaults.\n' >"${HYPR_AIDYCOS_CONF}"
+  fi
+  cp -a "${HYPR_CONF}" "${HYPR_CONF}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
+  printf '\nbind = SUPER, SPACE, exec, jugoo action launcher\n' >>"${HYPR_AIDYCOS_CONF}"
+  sed -i -E "/${_launcher_bind_re}/d" "${HYPR_CONF}"
+  echo "Super+Space launcher movido de hyprland.conf a aidycos.conf."
+fi
+# GNOME/IBus default Super+Space for input-source switch; free it for the launcher.
+if command -v gsettings >/dev/null 2>&1; then
+  gsettings set org.gnome.desktop.wm.keybindings switch-input-source "['XF86Keyboard']" >/dev/null 2>&1 || true
+  gsettings set org.gnome.desktop.wm.keybindings switch-input-source-backward "['<Shift>XF86Keyboard']" >/dev/null 2>&1 || true
+  gsettings set org.freedesktop.ibus.general.hotkey triggers "[]" >/dev/null 2>&1 || true
+fi
+unset _launcher_bind_re
+
 # Hot-apply window manager bits so a normal aidycos-update does not need a
 # manual hyprctl reload / daemon restart (or logout) for Alt+Tab and snaps.
 reload_hypr_windows() {

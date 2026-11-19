@@ -222,8 +222,9 @@ def _install_chat_style() -> None:
     provider.load_from_data(CHAT_CSS)
     screen = Gdk.Screen.get_default()
     if screen is not None:
+        # USER beats the dark Jugoo/GTK theme that otherwise washes out text.
         Gtk.StyleContext.add_provider_for_screen(
-            screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+            screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_USER
         )
 
 

@@ -83,6 +83,9 @@ class JugooDeploymentTests(unittest.TestCase):
         self.assertIn("aidycos-download-dir", installer)
         self.assertIn("exec-once = /usr/local/bin/aidycos-download-dir ensure", installer)
         self.assertIn("exec-once = /usr/local/bin/aidycos-download-dir watch", installer)
+        # Duplicate Super+Space (hyprland.conf + aidycos.conf) toggles twice → no-op.
+        self.assertIn("Super+Space launcher duplicado eliminado", installer)
+        self.assertIn("org.freedesktop.ibus.general.hotkey triggers", installer)
         self.assertNotIn("bind = CTRL, SPACE, exec, jugoo action launcher", installer)
         self.assertNotIn("bind = CTRL, E, exec, /usr/bin/env GDK_BACKEND=wayland /usr/bin/thunar", installer)
         self.assertIn("aidycos-impresoras.desktop", installer)

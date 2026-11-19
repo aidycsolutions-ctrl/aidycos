@@ -37,24 +37,43 @@ BACKGROUND = "#efeae2"
 
 
 def _install_style() -> None:
+    # Force dark ink on light panels. Without explicit colors, a dark GTK/Jugoo
+    # theme keeps light fg → washed-out text on WhatsApp-style backgrounds.
     css = Gtk.CssProvider()
     css.load_from_data(f"""
+        window.aidylink, window.aidylink * {{
+            color: #111b21;
+        }}
         window.aidylink {{ background: {BACKGROUND}; }}
-        .link-sidebar {{ background: #f0f2f5; }}
-        .link-brand {{ background: {GREEN}; color: white; padding: 12px; font-size: 16px; font-weight: bold; }}
-        .link-contact {{ padding: 12px; border-bottom: 1px solid #e7e8ea; }}
-        .link-contact:selected {{ background: #d9fdd3; }}
-        .link-chat-header {{ background: #f0f2f5; padding: 10px; }}
+        .link-sidebar {{ background: #f0f2f5; color: #111b21; }}
+        .link-sidebar label {{ color: #111b21; }}
+        .link-brand {{ background: {GREEN}; color: #ffffff; padding: 12px; font-size: 16px; font-weight: bold; }}
+        .link-brand label {{ color: #ffffff; }}
+        .link-brand button {{ color: #ffffff; background: transparent; border: none; box-shadow: none; }}
+        .link-brand button:hover {{ background: rgba(255,255,255,0.14); border-radius: 16px; }}
+        .link-contact {{ padding: 12px; border-bottom: 1px solid #e7e8ea; background: #f0f2f5; color: #111b21; }}
+        .link-contact label {{ color: #111b21; }}
+        .link-contact:selected, row:selected .link-contact {{ background: #d9fdd3; }}
+        .link-chat-header {{ background: #f0f2f5; color: #111b21; padding: 10px; }}
+        .link-chat-header label {{ color: #111b21; }}
         .link-message-area {{ background: {BACKGROUND}; }}
-        .link-message-in {{ background: white; border-radius: 10px; padding: 8px 11px; }}
-        .link-message-out {{ background: {PALE_GREEN}; border-radius: 10px; padding: 8px 11px; }}
+        .link-message-in {{ background: #ffffff; color: #111b21; border-radius: 10px; padding: 8px 11px; }}
+        .link-message-in label {{ color: #111b21; }}
+        .link-message-out {{ background: {PALE_GREEN}; color: #111b21; border-radius: 10px; padding: 8px 11px; }}
+        .link-message-out label {{ color: #111b21; }}
         .link-muted {{ color: #667781; font-size: 10px; }}
-        .link-composer {{ background: #f0f2f5; padding: 10px; }}
-        .link-send {{ background: {GREEN}; color: white; }}
+        .link-composer {{ background: #f0f2f5; color: #111b21; padding: 10px; }}
+        .link-composer entry {{ background: #ffffff; color: #111b21; caret-color: #111b21; }}
+        .link-composer button {{ color: #111b21; }}
+        .link-send {{ background: {GREEN}; color: #ffffff; }}
+        .link-send label {{ color: #ffffff; }}
         .link-status {{ color: #667781; padding: 8px; }}
+        .link-sidebar entry {{ background: #ffffff; color: #111b21; caret-color: #111b21; }}
     """.encode())
     Gtk.StyleContext.add_provider_for_screen(
-        Gdk.Screen.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        Gdk.Screen.get_default(),
+        css,
+        Gtk.STYLE_PROVIDER_PRIORITY_USER,
     )
 
 
