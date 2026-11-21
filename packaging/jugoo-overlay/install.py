@@ -1479,7 +1479,7 @@ def install_native_workspace_dispatch(root: Path) -> None:
     """Use Hyprland's built-in workspace dispatcher for strip clicks."""
     service = root / "shell/servicios/escritorio/hyprland.py"
     text = service.read_text(encoding="utf-8")
-    marker = "# AidyCOS: standard Hyprland workspace dispatch."
+    marker = "# AidyCOS: standard Hyprland workspace dispatch (+ minimizados → restore)."
     if marker in text:
         return
     pattern = re.compile(
@@ -1522,6 +1522,26 @@ def install_native_workspace_dispatch(root: Path) -> None:
 
         if is_special:
             special_name = (workspace_name or "").partition(":")[2]
+            if special_name == "minimizados" or str(workspace_name or "").endswith(
+                "minimizados"
+            ):
+                ventanas = Path.home() / ".config/hypr/scripts/ventanas"
+                if ventanas.is_file():
+                    try:
+                        subprocess.run(
+                            [str(ventanas), "restore-all"],
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                            timeout=3.0,
+                        )
+                        return
+                    except (
+                        OSError,
+                        subprocess.CalledProcessError,
+                        subprocess.TimeoutExpired,
+                    ):
+                        pass
             dispatch("togglespecialworkspace", special_name if special_name not in ("", "special") else None)
             return
 

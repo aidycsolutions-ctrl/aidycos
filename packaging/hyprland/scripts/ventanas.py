@@ -3,9 +3,9 @@
 
 Every window floats; this script arranges them like a classic desktop:
 
-  minimize [ADDR]        send to special:minimizados (remembers origin)
-  restore [ADDR]         bring back the last (or given) minimized window
-  restore-all            bring back every minimized window
+  minimize [ADDR]        send to special:minimizados
+  restore [ADDR]         bring back onto the active desktop
+  restore-all            bring every minimized window onto the active desktop
   focus ADDR             taskbar click: restore / minimize / focus
   alt-tab [prev]         cycle windows on the current desktop (raise + focus)
   close [ADDR]           close the window
@@ -722,9 +722,29 @@ def _close_minimized_overlay() -> list[str]:
     return []
 
 
-def _restore_commands(address: str, origin: str | None, fallback: str) -> tuple[list[str], str]:
-    target = workspace_target(origin) or fallback
-    return [f"movetoworkspacesilent {target},address:{address}"], target
+def active_desktop_target() -> str:
+    """Normal desktop under the focused monitor (even if Minimizados overlay is open)."""
+    try:
+        monitors = query("monitors")
+    except HyprError:
+        monitors = []
+    if isinstance(monitors, list):
+        focused = next((m for m in monitors if m.get("focused")), None)
+        for monitor in ((focused,) if focused else ()) + tuple(monitors):
+            if not isinstance(monitor, dict):
+                continue
+            ws = monitor.get("activeWorkspace") or {}
+            target = workspace_target(ws.get("name"))
+            if target:
+                return target
+            wid = ws.get("id")
+            if isinstance(wid, int) and wid > 0:
+                return str(wid)
+    return workspace_target(query("activeworkspace").get("name")) or "1"
+
+
+def _restore_commands(address: str, target: str) -> list[str]:
+    return [f"movetoworkspacesilent {target},address:{address}"]
 
 
 def cmd_restore(address: str | None = None) -> None:
@@ -734,7 +754,7 @@ def cmd_restore(address: str | None = None) -> None:
     }
     state = load_state()
     tracked = list(state["minimized"])
-    fallback = workspace_target(query("activeworkspace").get("name")) or "1"
+    target = active_desktop_target()
     if address:
         address = normalize_address(address)
     else:
@@ -747,14 +767,6 @@ def cmd_restore(address: str | None = None) -> None:
         if not address:
             return
 
-    origin = next(
-        (
-            e.get("workspace")
-            for e in tracked
-            if normalize_address(str(e.get("address") or "")) == address
-        ),
-        None,
-    )
     # Always clear tracking so the dock/minimized strip cannot keep a ghost entry.
     state["minimized"] = [
         e
@@ -770,9 +782,8 @@ def cmd_restore(address: str | None = None) -> None:
             focus_and_raise(address)
         return
 
-    commands, target = _restore_commands(address, origin, fallback)
     dispatch(
-        *commands,
+        *_restore_commands(address, target),
         *_close_minimized_overlay(),
         *goto_workspace(target),
         f"focuswindow address:{address}",
@@ -786,14 +797,17 @@ def cmd_restore_all() -> None:
     if not minimized:
         return
     state = load_state()
-    origins = {e.get("address"): e.get("workspace") for e in state["minimized"]}
-    fallback = workspace_target(query("activeworkspace").get("name")) or "1"
+    target = active_desktop_target()
     commands: list[str] = []
     for address in minimized:
-        commands += _restore_commands(address, origins.get(address), fallback)[0]
+        commands += _restore_commands(address, target)
     state["minimized"] = []
     save_state(state)
-    dispatch(*commands, *_close_minimized_overlay())
+    dispatch(
+        *commands,
+        *_close_minimized_overlay(),
+        *goto_workspace(target),
+    )
 
 
 def focus_and_raise(address: str) -> None:
@@ -1205,39 +1219,60 @@ def clamp_title_visible(window: dict[str, Any]) -> None:
 
 
 def covers_shell_bar(window: dict[str, Any]) -> bool:
-    """True when a floating window sits under / over the Jugoo top bar."""
+    """True when a floating window paints over the Jugoo top bar strip.
+
+    Work-area maximize (Hyprland mode 1, or a flush snap under the exclusive
+    zone) must NOT count — treating it as “covered” re-triggered fit/maximize
+    on every fullscreen/movewindow event and locked Chrome/Firefox in a loop.
+    """
     if not window.get("floating") or is_true_fullscreen(window):
+        return False
+    # Mode 1 = maximize respecting exclusive zone; leave it alone.
+    if int(window.get("fullscreen") or 0) == 1:
         return False
     monitor = monitor_by_id(int(window.get("monitor") or 0))
     _mx, my, _mw, mh = monitor_bounds(monitor)
-    ax, ay, aw, ah = work_area(monitor)
-    x, y, width, height = geometry(window)
+    ax, ay, _aw, _ah = work_area(monitor)
+    _x, y, _width, height = geometry(window)
     bar = window_bar_height(window)
-    # Native Hyprland maximize often starts at the monitor top and ignores
-    # a healthy exclusive zone after bar-retract collapses it.
-    if y <= my + 4 and height >= mh - 24:
+    # Truly over the shell: starts above the work area (into the bar strip).
+    if y < ay - 2:
         return True
-    if y < ay + bar:
+    # Full-monitor geometry that ignores the exclusive zone entirely.
+    if y <= my + 2 and height >= mh - 8:
         return True
-    if y <= ay + 4 and height >= ah - 24:
+    # Title bar / client shoved under the shell by a few pixels.
+    if bar > 0 and y < ay + bar - 2 and height >= (mh - ay) * 0.85:
         return True
     return False
 
 
+_fit_cooldown_lock = threading.Lock()
+_fit_cooldown_until: dict[str, float] = {}
+
+
 def fit_to_work_area(window: dict[str, Any]) -> None:
-    """Maximize into the work area under Jugoo (never F11 / mode 2–3)."""
+    """Snap into the work area under Jugoo (pixel snap only — never fullscreenstate).
+
+    Do not use ``fullscreenstate 1`` here: it emits fullscreen/movewindow events
+    that used to re-enter this path and spin Chrome/Firefox forever.
+    """
     if window is None or is_minimized(window):
         return
     if is_true_fullscreen(window):
         return
-    address = window["address"]
-    # CSD apps (Chrome, Cursor, …): use compositor maximize (fullscreenstate 1).
-    # That keeps the xdg “maximized” bit in sync so □ is restore, and Chrome
-    # does not keep re-sending set_maximized on every click after a pixel-snap.
-    if _draws_title_buttons(window):
-        if int(window.get("fullscreen") or 0) == 1 and not covers_shell_bar(window):
+    if int(window.get("fullscreen") or 0) == 1:
+        return
+    address = normalize_address(window["address"])
+    now = time.monotonic()
+    with _fit_cooldown_lock:
+        until = _fit_cooldown_until.get(address, 0.0)
+        if now < until:
             return
-        dispatch(f"focuswindow address:{address}", "fullscreenstate 1 1")
+        _fit_cooldown_until[address] = now + 1.0
+    area = window_area(window)
+    bar = window_bar_height(window)
+    if fills_work_area(geometry(window), area, bar):
         return
     cmd_snap("max", address)
 
@@ -1252,7 +1287,7 @@ def _schedule_auto_max(address: str) -> None:
             return
         if not _AUTO_MAX_CLASS.match(str(window.get("class") or "")):
             return
-        if int(window.get("fullscreen") or 0) == 1 and not covers_shell_bar(window):
+        if int(window.get("fullscreen") or 0) == 1:
             return
         area = window_area(window)
         bar = window_bar_height(window)
@@ -1307,6 +1342,11 @@ def reveal_covered_windows() -> None:
                 continue
             if fs == 1 or covers_shell_bar(window):
                 present_aidyc_window(window)
+            continue
+        # Browsers/CSD: never chase native maximize — that caused infinite
+        # fullscreen ↔ fit loops. Only pull windows that truly cover the bar.
+        fs = int(window.get("fullscreen") or 0)
+        if fs == 1:
             continue
         if covers_shell_bar(window):
             fit_to_work_area(window)
@@ -1489,13 +1529,16 @@ def daemon() -> int:
                         window = find_window(normalize_address(address))
                         if window is not None and is_aidyc_window(window):
                             _safe(on_aidyc_hint, address)
-                        else:
-                            # Maximize must stay under Jugoo; only true fullscreen covers it.
-                            _safe(reveal_covered_windows)
+                        # Non-AidyC: ignore fullscreen events. Chasing Chrome/Firefox
+                        # maximize here caused an infinite fit/maximize loop.
                     elif event in ("movewindow", "movewindowv2", "changefloatingmode"):
-                        # reveal_covered_windows upgrades AidyC (post-login maximize)
-                        # instead of snapping it under Jugoo.
-                        _safe(reveal_covered_windows)
+                        # Only AidyC needs live upgrades; browsers maximize natively.
+                        address = data.split(",", 1)[0] if data else ""
+                        window = find_window(normalize_address(address)) if address else None
+                        if window is not None and is_aidyc_window(window):
+                            _safe(on_aidyc_hint, address)
+                        elif window is None:
+                            _safe(reveal_covered_windows)
     finally:
         cleanup()
 

@@ -394,5 +394,32 @@ class ZoneRectTests(unittest.TestCase):
         self.assertTrue(ventanas._AUTO_MAX_CLASS.match("firefox"))
 
 
+class CoversShellBarTests(unittest.TestCase):
+    def test_mode1_maximize_is_not_covering(self) -> None:
+        window = {
+            "floating": True,
+            "fullscreen": 1,
+            "monitor": 0,
+            "at": [0, 57],
+            "size": [1920, 1023],
+            "class": "google-chrome",
+        }
+        with mock.patch.object(ventanas, "monitor_by_id", return_value={"x": 0, "y": 0, "width": 1920, "height": 1080, "reserved": [0, 57, 0, 0]}):
+            self.assertFalse(ventanas.covers_shell_bar(window))
+
+    def test_full_monitor_float_is_covering(self) -> None:
+        window = {
+            "floating": True,
+            "fullscreen": 0,
+            "monitor": 0,
+            "at": [0, 0],
+            "size": [1920, 1080],
+            "class": "xfce4-terminal",
+        }
+        with mock.patch.object(ventanas, "monitor_by_id", return_value={"x": 0, "y": 0, "width": 1920, "height": 1080, "reserved": [0, 57, 0, 0]}):
+            with mock.patch.object(ventanas, "window_bar_height", return_value=28):
+                self.assertTrue(ventanas.covers_shell_bar(window))
+
+
 if __name__ == "__main__":
     unittest.main()
