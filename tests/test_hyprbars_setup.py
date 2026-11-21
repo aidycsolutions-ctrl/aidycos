@@ -88,6 +88,29 @@ class HyprbarsTreeTests(unittest.TestCase):
         self.assertIn("@VENTANAS@ minimize", text)
         self.assertIn("plugin = @PLUGIN@", text)
 
+    def test_button_exec_appends_window_address(self) -> None:
+        text = (SRC / "barDeco.cpp").read_text(encoding="utf-8")
+        self.assertIn('std::format("{} 0x{:x}", b.cmd, (uintptr_t)window.get())', text)
+        self.assertIn('std::format("{} 0x{:x}", ON_DOUBLE_CLICK, (uintptr_t)PWINDOW.get())', text)
+
+    def test_csd_minimize_packaging_wired(self) -> None:
+        csd_src = ROOT / "packaging" / "hyprland" / "csd-minimize-src" / "main.cpp"
+        setup = ROOT / "packaging" / "hyprland" / "setup-csd-minimize.sh"
+        conf_in = ROOT / "packaging" / "hyprland" / "jugoo_csd_minimize.conf.in"
+        self.assertTrue(csd_src.is_file())
+        self.assertTrue(setup.is_file())
+        self.assertTrue(setup.stat().st_mode & stat.S_IXUSR)
+        self.assertTrue(conf_in.is_file())
+        text = csd_src.read_text(encoding="utf-8")
+        self.assertIn("PLUGIN_INIT", text)
+        self.assertIn("0x{:x}", text)
+        conf = conf_in.read_text(encoding="utf-8")
+        self.assertIn("@VENTANAS@ minimize", conf)
+        self.assertIn("@VENTANAS@ max", conf)
+        installer = INSTALLER.read_text(encoding="utf-8")
+        self.assertIn("setup-csd-minimize.sh", installer)
+        self.assertIn("jugoo_csd_minimize.conf", installer)
+
 
 class HyprbarsSetupLogicTests(unittest.TestCase):
     """Exercise setup helpers without requiring a full apt install."""

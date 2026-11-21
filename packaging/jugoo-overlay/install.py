@@ -1398,14 +1398,17 @@ def install_native_window_focus(root: Path) -> None:
 
     Upstream Jugoo sometimes dispatches a Lua ``hl.dsp.focus`` expression that
     Hyprland ignores; even a plain ``focuswindow`` can leave another float on
-    top. Always use ``focuswindow`` + ``alterzorder top``.
+    top. Always use sequential ``focuswindow`` → ``bringactivetotop`` →
+    ``alterzorder top`` (never batch the raise with focus).
     """
     service = root / "shell/servicios/escritorio/hyprland.py"
     if not service.is_file():
         return
     text = service.read_text(encoding="utf-8")
     marker = "# AidyCOS: native focuswindow + alterzorder for dock clicks."
-    if marker in text:
+    raise_marker = "# AidyCOS: sequential bringactivetotop after focus."
+    ventanas_marker = "# AidyCOS: dock clicks go through ventanas focus (restore minimized)."
+    if ventanas_marker in text:
         return
     pattern = re.compile(
         r"    def _focus_window\(self, address: str\) -> None:\n"
@@ -1421,6 +1424,24 @@ def install_native_window_focus(root: Path) -> None:
         return
     replacement = f'''    def _focus_window(self, address: str) -> None:
         {marker}
+        {raise_marker}
+        {ventanas_marker}
+        # Prefer ventanas: restores special:minimizados, toggles minimize when
+        # already focused, and raises floats. Fall back to hyprctl if missing.
+        ventanas = Path.home() / ".config/hypr/scripts/ventanas"
+        if ventanas.is_file():
+            try:
+                subprocess.run(
+                    [str(ventanas), "focus", address],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=3.0,
+                )
+                return
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                pass
+
         def dispatch(dispatcher: str, argument: str | None = None) -> None:
             command = ["hyprctl", "dispatch", dispatcher]
             if argument:
@@ -1441,9 +1462,13 @@ def install_native_window_focus(root: Path) -> None:
                 raise HyprlandError(f"could not execute Hyprland dispatch{{detail}}") from error
 
         dispatch("focuswindow", f"address:{{address}}")
+        dispatch("bringactivetotop")
         dispatch("alterzorder", f"top,address:{{address}}")
 
 '''
+    # Path is used by the replacement; ensure the module imports it.
+    if "from pathlib import Path" not in text and "import pathlib" not in text:
+        text = text.replace("import subprocess\n", "import subprocess\nfrom pathlib import Path\n", 1)
     backup = service.with_suffix(service.suffix + ".aidycos-backup")
     if not backup.exists():
         shutil.copy2(service, backup)

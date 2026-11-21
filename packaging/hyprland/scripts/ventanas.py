@@ -10,7 +10,8 @@ Every window floats; this script arranges them like a classic desktop:
   alt-tab [prev]         cycle windows on the current desktop (raise + focus)
   close [ADDR]           close the window
   max [ADDR]             toggle maximized (snap-to-work-area) / restore size
-  up [ADDR]              maximize
+  up [ADDR]              maximize (ensure work-area snap; idempotent)
+  unmax [ADDR]           restore size only if currently maximized (CSD □)
   down [ADDR]            restore a snapped window, otherwise minimize
   left | right | top-left | top-right | bottom-left | bottom-right [ADDR]
   split2 | split4 | grid | cascade [ADDR]
@@ -33,6 +34,8 @@ import signal
 import socket
 import stat
 import sys
+import threading
+import time
 from typing import Any
 
 from decoraciones import classes_in_rules, client_draws_title_buttons, updated_rules
@@ -44,15 +47,40 @@ PIDFILE = RUNTIME / "jugoo-ventanas.pid"
 STATE_FILE = RUNTIME / "jugoo-ventanas.json"
 
 MINIMIZED_WS = "special:minimizados"
+# Spacing between adjacent snaps only (halves / quarters / grid). Outer edges
 GAP = 8
 # Keep maximized/snapped windows clear of the Jugoo top bar even if the
 # compositor reports a collapsed exclusive zone (bar-retract edge cases).
 SHELL_TOP_MIN = 57
 # Apps that should open snapped to the work area under the Jugoo bar.
 _AUTO_MAX_CLASS = re.compile(
-    r"^(firefox(?:-esr)?|org\.mozilla\.firefox)$",
+    r"^(firefox(?:-esr)?|org\.mozilla\.firefox|google-chrome(?:-[\w-]+)?|"
+    r"chromium(?:-browser)?|thunar|org\.xfce\.thunar)$",
     re.IGNORECASE,
 )
+# AidyC alone: true fullscreen so it covers (and hides) the Jugoo bar.
+_AIDYC_CLASS = re.compile(r"^(aidyc|com\.aidyc\.aidyc)$", re.IGNORECASE)
+# "AidyC", "AidyC 33.4 …", "AidyC Login/Bienvenido …" — never "AidyC Solution …".
+_AIDYC_TITLE = re.compile(
+    r"^aidyc(?:$|\s+\d|\s+(?:login|bienvenido|welcome)\b)",
+    re.IGNORECASE,
+)
+_AIDYC_LOGIN_TITLE = re.compile(
+    r"(login|log[\s-]?in|iniciar|sesi[oó]n|sign[\s-]?in|password|contrase|"
+    r"bienvenido|welcome)",
+    re.IGNORECASE,
+)
+_AIDYC_BROWSER_CLASS = re.compile(
+    r"^(google-?chrome|chromium|firefox|firefox-esr|org\.mozilla\.firefox|"
+    r"brave-browser|microsoft-edge|chrome-)",
+    re.IGNORECASE,
+)
+_AIDYC_EXE_NAMES = frozenset({"aidyc", "AidyC"})
+_AIDYC_EXE_PREFIXES = ("/opt/aidyc/AidyC", "/usr/lib/aidyc", "/usr/bin/aidyc")
+# Keep retrying presentation while login → main session settles.
+_AIDYC_FOLLOWUP_SEC = 12.0
+_aidyc_followups: dict[str, float] = {}
+_aidyc_followup_lock = threading.Lock()
 # Cursor distance from a screen edge that snaps on release (Windows-style).
 SNAP_MARGIN = 36
 # Both edges count as a corner only this close to the actual corner.
@@ -219,7 +247,8 @@ _own_titlebar_classes: set[str] = set()
 
 def window_bar_height(window: dict[str, Any]) -> int:
     """0 when this window already draws its own caption buttons."""
-    if str(window.get("class") or "") in _own_titlebar_classes:
+    class_name = str(window.get("class") or "")
+    if class_name in _own_titlebar_classes or _draws_title_buttons(window):
         return 0
     return bar_height()
 
@@ -268,14 +297,15 @@ def sync_titlebars() -> None:
 
 
 def zone_rect(zone: str, area: Rect) -> Rect:
+    """Snap zones flush to the work-area outer edges; GAP only between tiles."""
     x, y, width, height = area
-    x, y, width, height = x + GAP, y + GAP, width - 2 * GAP, height - 2 * GAP
+    if zone == "max":
+        return (x, y, width, height)
     half_w = (width - GAP) // 2
     half_h = (height - GAP) // 2
     right_x = x + half_w + GAP
     bottom_y = y + half_h + GAP
     return {
-        "max": (x, y, width, height),
         "left": (x, y, half_w, height),
         "right": (right_x, y, width - half_w - GAP, height),
         "top-left": (x, y, half_w, half_h),
@@ -290,18 +320,21 @@ def grid_rects(count: int, area: Rect, columns: int | None = None) -> list[Rect]
     if count <= 0:
         return []
     x, y, width, height = area
-    x, y, width, height = x + GAP, y + GAP, width - 2 * GAP, height - 2 * GAP
     columns = columns or math.ceil(math.sqrt(count))
     rows = math.ceil(count / columns)
-    tile_h = (height - GAP * (rows - 1)) // rows
+    usable_h = height - GAP * (rows - 1)
+    tile_h = usable_h // rows
     rects: list[Rect] = []
     for row in range(rows):
         in_row = min(columns, count - row * columns)
-        tile_w = (width - GAP * (in_row - 1)) // in_row
+        usable_w = width - GAP * (in_row - 1)
+        tile_w = usable_w // in_row
+        top = y + row * (tile_h + GAP)
+        row_h = height - (top - y) if row == rows - 1 else tile_h
         for column in range(in_row):
-            rects.append(
-                (x + column * (tile_w + GAP), y + row * (tile_h + GAP), tile_w, tile_h)
-            )
+            left = x + column * (tile_w + GAP)
+            col_w = width - (left - x) if column == in_row - 1 else tile_w
+            rects.append((left, top, col_w, row_h))
     return rects
 
 
@@ -373,13 +406,55 @@ def most_recent_managed(*, allow_minimized: bool = False) -> dict[str, Any] | No
     return min(windows, key=_focus_history_id)
 
 
+def window_under_titlebar_cursor() -> dict[str, Any] | None:
+    """Window whose hyprbars strip currently contains the pointer.
+
+    Caption-button ``exec`` is asynchronous: by the time ventanas runs,
+    ``activewindow`` is often empty or another client. The pointer is still
+    over the title-bar button that was clicked, so that hit-test is reliable.
+    """
+    try:
+        cursor = query("cursorpos")
+        x, y = int(cursor["x"]), int(cursor["y"])
+    except (HyprError, TypeError, ValueError, KeyError):
+        return None
+    hit: dict[str, Any] | None = None
+    best_z = -1
+    for window in query("clients"):
+        if not is_managed(window) or is_minimized(window) or not window.get("floating"):
+            continue
+        bar = window_bar_height(window)
+        if bar <= 0:
+            continue
+        wx, wy, ww, wh = geometry(window)
+        # hyprbars is drawn above the client surface.
+        top = wy - bar
+        if wx <= x < wx + ww and top <= y < wy:
+            z = int(window.get("focusHistoryID") or 10**9)
+            # Lower focusHistoryID = more recently focused / typically on top.
+            score = 10**9 - z
+            if score > best_z:
+                best_z = score
+                hit = window
+    return hit
+
+
 def find_window(address: str | None) -> dict[str, Any] | None:
     if not address:
+        # Prefer the window under the hyprbars click — fixes minimize/max/close
+        # when exec races ahead of focus. Keyboard binds fall through because
+        # the pointer is rarely sitting on a title-bar strip.
+        under = window_under_titlebar_cursor()
+        if under is not None:
+            return under
         active = query("activewindow")
-        if isinstance(active, dict) and active.get("address"):
+        if (
+            isinstance(active, dict)
+            and active.get("address")
+            and is_managed(active)
+            and not is_minimized(active)
+        ):
             return active
-        # hyprbars / taskbar clicks often clear activewindow (layer-shell steal)
-        # before the minimize command runs; fall back to focus history.
         return most_recent_managed()
     wanted = normalize_address(address)
     for window in query("clients"):
@@ -447,7 +522,8 @@ def place_commands(window: dict[str, Any], rect: Rect) -> list[str]:
     commands: list[str] = []
     fullscreen = int(window.get("fullscreen") or 0)
     if fullscreen:
-        commands += [f"focuswindow address:{address}", f"fullscreen {1 if fullscreen == 1 else 0}"]
+        # Clear maximize/fullscreen (incl. mode 3) before placing a snap rect.
+        commands += [f"focuswindow address:{address}", "fullscreenstate 0 0"]
     if not window.get("floating"):
         commands.append(f"setfloating address:{address}")
     commands += [
@@ -533,15 +609,33 @@ def cmd_max(address: str | None = None) -> None:
         entry and entry.get("zone") == "max" and near_rect(entry["rect"], current)
     )
     if fills_work_area(current, area, bar) or snapped_max:
-        saved = entry.get("orig") if entry else None
-        state["snaps"].pop(window["address"], None)
-        save_state(state)
-        if saved and not fills_work_area(saved, area, bar):
-            _place_saved(window, saved)
-        else:
-            dispatch(*place_commands(window, default_float(area, bar)))
+        cmd_unmax(window["address"])
         return
     cmd_snap("max", window["address"])
+
+
+def cmd_unmax(address: str | None = None) -> None:
+    """Shrink a maximized window (CSD unset_maximized). No-op if not max."""
+    window = find_window(address)
+    if window is None or is_minimized(window):
+        return
+    state = load_state()
+    area = window_area(window)
+    bar = window_bar_height(window)
+    entry = state["snaps"].get(window["address"])
+    current = geometry(window)
+    snapped_max = bool(
+        entry and entry.get("zone") == "max" and near_rect(entry["rect"], current)
+    )
+    if not (fills_work_area(current, area, bar) or snapped_max):
+        return
+    saved = entry.get("orig") if entry else None
+    state["snaps"].pop(window["address"], None)
+    save_state(state)
+    if saved and not fills_work_area(saved, area, bar):
+        _place_saved(window, saved)
+    else:
+        dispatch(*place_commands(window, default_float(area, bar)))
 
 
 def cmd_down(address: str | None = None) -> None:
@@ -635,22 +729,48 @@ def _restore_commands(address: str, origin: str | None, fallback: str) -> tuple[
 
 def cmd_restore(address: str | None = None) -> None:
     clients = query("clients")
-    minimized = {c["address"]: c for c in clients if is_minimized(c)}
-    if not minimized:
-        return
+    minimized = {
+        normalize_address(c["address"]): c for c in clients if is_minimized(c) and c.get("address")
+    }
     state = load_state()
-    entries = [e for e in state["minimized"] if e.get("address") in minimized]
+    tracked = list(state["minimized"])
     fallback = workspace_target(query("activeworkspace").get("name")) or "1"
     if address:
         address = normalize_address(address)
-        if address not in minimized:
-            return
     else:
-        address = entries[-1]["address"] if entries else next(iter(minimized))
-    origin = next((e.get("workspace") for e in entries if e.get("address") == address), None)
-    commands, target = _restore_commands(address, origin, fallback)
-    state["minimized"] = [e for e in entries if e.get("address") != address]
+        if tracked:
+            address = normalize_address(str(tracked[-1].get("address") or ""))
+        elif minimized:
+            address = next(iter(minimized))
+        else:
+            return
+        if not address:
+            return
+
+    origin = next(
+        (
+            e.get("workspace")
+            for e in tracked
+            if normalize_address(str(e.get("address") or "")) == address
+        ),
+        None,
+    )
+    # Always clear tracking so the dock/minimized strip cannot keep a ghost entry.
+    state["minimized"] = [
+        e
+        for e in tracked
+        if normalize_address(str(e.get("address") or "")) != address
+    ]
     save_state(state)
+
+    if address not in minimized:
+        # Already on a normal desktop — leave the scratchpad UI and raise.
+        dispatch(*_close_minimized_overlay())
+        if find_window(address) is not None:
+            focus_and_raise(address)
+        return
+
+    commands, target = _restore_commands(address, origin, fallback)
     dispatch(
         *commands,
         *_close_minimized_overlay(),
@@ -676,12 +796,41 @@ def cmd_restore_all() -> None:
     dispatch(*commands, *_close_minimized_overlay())
 
 
+def focus_and_raise(address: str) -> None:
+    """Focus ``address`` and put it on top.
+
+    Never batch ``bringactivetotop`` with ``focuswindow``: Hyprland can raise the
+    *previous* active window, so focus moves to a buried client and it looks like
+    Alt+Tab / taskbar only stole focus. Clear peer fullscreen/maximize first —
+    those sit above normal floats and keep "the front one" stuck on screen.
+    """
+    target = normalize_address(address)
+    if not target:
+        return
+    for window in query("clients"):
+        if not is_managed(window) or is_minimized(window):
+            continue
+        peer = normalize_address(window.get("address"))
+        if not peer or peer == target:
+            continue
+        if int(window.get("fullscreen") or 0):
+            request(f"dispatch fullscreenstate 0 0,address:{window['address']}")
+    request(f"dispatch focuswindow address:{address}")
+    request("dispatch bringactivetotop")
+    request(f"dispatch alterzorder top,address:{address}")
+
+
 def cmd_focus(address: str | None = None) -> None:
     """Taskbar semantics: minimized → restore, focused → minimize, else focus."""
     window = find_window(address)
     if window is None:
         return
-    if is_minimized(window):
+    addr = normalize_address(window["address"])
+    tracked = {
+        normalize_address(str(e.get("address") or ""))
+        for e in load_state().get("minimized", [])
+    }
+    if is_minimized(window) or addr in tracked:
         cmd_restore(window["address"])
         return
     active = query("activewindow")
@@ -691,11 +840,10 @@ def cmd_focus(address: str | None = None) -> None:
         cmd_minimize(window["address"])
         return
     target = workspace_target((window.get("workspace") or {}).get("name"))
-    dispatch(
-        *goto_workspace(target),
-        f"focuswindow address:{window['address']}",
-        f"alterzorder top,address:{window['address']}",
-    )
+    workspace_cmds = goto_workspace(target)
+    if workspace_cmds:
+        dispatch(*workspace_cmds)
+    focus_and_raise(window["address"])
 
 
 def _alt_tab_candidates() -> list[dict[str, Any]]:
@@ -749,14 +897,7 @@ def cmd_alt_tab(direction: str | None = None) -> None:
         index = _alt_tab_active_index(addresses)
         step = -1 if (direction or "").lower() in {"prev", "previous", "back"} else 1
         target = windows[(index + step) % len(windows)]
-    address = target["address"]
-    # Do not batch ``bringactivetotop``: in the same [[BATCH]] it can raise the
-    # *previous* active window before focuswindow settles, so focus moves to a
-    # buried window and it looks like Alt+Tab only stole focus.
-    dispatch(
-        f"focuswindow address:{address}",
-        f"alterzorder top,address:{address}",
-    )
+    focus_and_raise(target["address"])
 
 
 def _workspace_windows(address: str | None) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
@@ -898,21 +1039,153 @@ def drop_zone(
 
 
 def is_true_fullscreen(window: dict[str, Any]) -> bool:
-    """Real fullscreen (F11 / games) may cover the Jugoo bar; maximize must not.
+    """Real fullscreen may cover the Jugoo bar; maximize must not.
 
-    Hyprland reports both fullscreen and maximized as ``fullscreen != 0``.
-    Mode ``2`` is maximize. Mode ``1`` that still starts below the reserved
-    strip is also treated as maximize so the shell bar stays visible.
+    Hyprland 0.55 ``fullscreen`` (internal state):
+      0 none, 1 maximize, 2 fullscreen, 3 maximize+fullscreen.
+    Mode ``1`` stays in the work area under the shell exclusive zone.
+    Mode ``3`` fills the monitor and hides TOP layer shells (Jugoo).
     """
     fs = int(window.get("fullscreen") or 0)
-    if not fs:
+    if fs in (2, 3):
+        return True
+    if fs != 1:
         return False
-    if fs == 2:
-        return False
+    # Mode 1 is maximize; only treat as bar-covering if geometry already
+    # paints over the whole monitor (legacy / odd clients).
     monitor = monitor_by_id(int(window.get("monitor") or 0))
     _mx, my, _mw, mh = monitor_bounds(monitor)
     _x, y, _w, height = geometry(window)
     return y <= my + 2 and height >= mh - 8
+
+
+def is_aidyc_window(window: dict[str, Any]) -> bool:
+    """True for the AidyC IDE only (never browsers / AidyChat / AIDYCAI)."""
+    app_class = str(window.get("class") or "").casefold().strip()
+    initial = str(window.get("initialClass") or "").casefold().strip()
+    for candidate in (app_class, initial):
+        if candidate.startswith(("aidychat", "aidycai", "aidyship")):
+            return False
+        if _AIDYC_BROWSER_CLASS.match(candidate):
+            return False
+    if _AIDYC_CLASS.match(app_class) or _AIDYC_CLASS.match(initial):
+        return True
+    exe = Path(_executable(int(window.get("pid") or 0)))
+    if exe.name in _AIDYC_EXE_NAMES:
+        return True
+    text = str(exe)
+    if any(text == prefix or text.startswith(prefix + "/") for prefix in _AIDYC_EXE_PREFIXES):
+        return True
+    # Title fallback only for Tk / unbranded classes — never browser tabs.
+    title = str(window.get("title") or "")
+    if title and _AIDYC_TITLE.match(title) and app_class in {"", "tk", "wish", "aidyc"}:
+        return True
+    return False
+
+
+def is_aidyc_login_window(window: dict[str, Any]) -> bool:
+    """Login / welcome dialog before the main AidyC chrome appears.
+
+    Titles like ``AidyC 33.4 Bienvenido Minion`` are the session form; they must
+    stay a normal floating window (never compositor fullscreen).
+    """
+    if not is_aidyc_window(window):
+        return False
+    title = str(window.get("title") or "")
+    if title and _AIDYC_LOGIN_TITLE.search(title):
+        return True
+    _x, _y, width, height = geometry(window)
+    # Main IDE fills most of the monitor; the login form stays compact.
+    return width > 0 and height > 0 and (width < 1100 or height < 750)
+
+
+def ensure_true_fullscreen(window: dict[str, Any]) -> None:
+    """Put a window into compositor fullscreen that covers the Jugoo bar."""
+    if window is None or is_minimized(window):
+        return
+    if is_true_fullscreen(window):
+        return
+    address = normalize_address(window["address"])
+    # Separate requests: batching focus+fullscreen often leaves the wrong client
+    # focused (same pitfall as focus_and_raise). Mode 3 3 hides Jugoo TOP.
+    request(f"dispatch focuswindow address:{address}")
+    request("dispatch fullscreenstate 3 3")
+
+
+def present_aidyc_window(window: dict[str, Any]) -> None:
+    """Fullscreen that hides Jugoo, then keep AidyC focused on top."""
+    if window is None or is_minimized(window) or is_aidyc_login_window(window):
+        return
+    address = normalize_address(window["address"])
+    ensure_true_fullscreen(window)
+    # Re-query: fullscreen can clear focus / leave another client active.
+    focus_and_raise(address)
+    # Verify mode stuck; XWayland/Tk sometimes needs a second pass.
+    current = find_window(address)
+    if current is not None and not is_true_fullscreen(current):
+        request(f"dispatch focuswindow address:{address}")
+        request("dispatch fullscreenstate 3 3")
+        focus_and_raise(address)
+
+
+def _schedule_aidyc_followup(address: str) -> None:
+    """Retry presentation while AidyC swaps login → main session window."""
+    addr = normalize_address(address)
+    if not addr:
+        return
+    deadline = time.monotonic() + _AIDYC_FOLLOWUP_SEC
+    with _aidyc_followup_lock:
+        _aidyc_followups[addr] = deadline
+
+    def _tick() -> None:
+        now = time.monotonic()
+        with _aidyc_followup_lock:
+            ends = _aidyc_followups.get(addr)
+            if ends is None:
+                return
+            if now > ends:
+                _aidyc_followups.pop(addr, None)
+                return
+        try:
+            window = find_window(addr)
+            if window is None:
+                with _aidyc_followup_lock:
+                    _aidyc_followups.pop(addr, None)
+                return
+            if is_aidyc_window(window) and not is_aidyc_login_window(window):
+                if not is_true_fullscreen(window) or not is_effectively_focused(window):
+                    present_aidyc_window(window)
+                # Keep a couple of ticks after success: session chrome can resize once more.
+            threading.Timer(0.4, _tick).start()
+        except (HyprError, KeyError, TypeError, ValueError, IndexError) as error:
+            print(f"ventanas: aidyc followup: {error}", file=sys.stderr)
+            threading.Timer(0.6, _tick).start()
+
+    threading.Timer(0.2, _tick).start()
+
+
+def on_aidyc_hint(address: str | None = None) -> None:
+    """React to title/fullscreen changes for AidyC (post-login main chrome)."""
+    if address:
+        window = find_window(normalize_address(address))
+        windows = [window] if window is not None else []
+    else:
+        windows = [client for client in query("clients") if is_aidyc_window(client)]
+    for window in windows:
+        if window is None or not is_managed(window) or is_minimized(window):
+            continue
+        if is_aidyc_login_window(window):
+            _schedule_aidyc_followup(window["address"])
+            continue
+        fs = int(window.get("fullscreen") or 0)
+        if fs in (2, 3) and is_effectively_focused(window):
+            continue
+        addr = normalize_address(window["address"])
+        with _aidyc_followup_lock:
+            following = addr in _aidyc_followups
+        if fs != 0 or covers_shell_bar(window) or following:
+            present_aidyc_window(window)
+            _schedule_aidyc_followup(window["address"])
 
 
 def clamp_title_visible(window: dict[str, Any]) -> None:
@@ -952,22 +1225,69 @@ def covers_shell_bar(window: dict[str, Any]) -> bool:
 
 
 def fit_to_work_area(window: dict[str, Any]) -> None:
-    """Place a covering window into the work-area maximize snap."""
+    """Maximize into the work area under Jugoo (never F11 / mode 2–3)."""
     if window is None or is_minimized(window):
         return
     if is_true_fullscreen(window):
         return
-    cmd_snap("max", window["address"])
+    address = window["address"]
+    # CSD apps (Chrome, Cursor, …): use compositor maximize (fullscreenstate 1).
+    # That keeps the xdg “maximized” bit in sync so □ is restore, and Chrome
+    # does not keep re-sending set_maximized on every click after a pixel-snap.
+    if _draws_title_buttons(window):
+        if int(window.get("fullscreen") or 0) == 1 and not covers_shell_bar(window):
+            return
+        dispatch(f"focuswindow address:{address}", "fullscreenstate 1 1")
+        return
+    cmd_snap("max", address)
+
+
+def _schedule_auto_max(address: str) -> None:
+    """Chrome/Thunar often map small then resize; re-apply work-area max shortly."""
+    wanted = normalize_address(address)
+
+    def _tick() -> None:
+        window = find_window(wanted)
+        if window is None or not is_managed(window) or is_minimized(window):
+            return
+        if not _AUTO_MAX_CLASS.match(str(window.get("class") or "")):
+            return
+        if int(window.get("fullscreen") or 0) == 1 and not covers_shell_bar(window):
+            return
+        area = window_area(window)
+        bar = window_bar_height(window)
+        if fills_work_area(geometry(window), area, bar):
+            return
+        fit_to_work_area(window)
+
+    threading.Timer(0.25, _tick).start()
+    threading.Timer(0.7, _tick).start()
 
 
 def on_open_window(address: str) -> None:
     """After open: detect CSD chrome and keep the shell bar visible."""
+    window = find_window(normalize_address(address))
+    if window is None or not is_managed(window) or is_minimized(window):
+        _safe(sync_titlebars)
+        return
+    # AidyC: never snap under Jugoo. Login/welcome stays the app's own floating
+    # size; only the post-session main chrome goes true-fullscreen + focused.
+    if is_aidyc_window(window):
+        if is_aidyc_login_window(window):
+            _schedule_aidyc_followup(address)
+        else:
+            present_aidyc_window(window)
+            _schedule_aidyc_followup(address)
+        _safe(sync_titlebars)
+        return
     sync_titlebars()
     window = find_window(normalize_address(address))
     if window is None or not is_managed(window) or is_minimized(window):
         return
     if covers_shell_bar(window) or _AUTO_MAX_CLASS.match(str(window.get("class") or "")):
         fit_to_work_area(window)
+        if _AUTO_MAX_CLASS.match(str(window.get("class") or "")):
+            _schedule_auto_max(address)
         return
     clamp_title_visible(window)
 
@@ -975,6 +1295,18 @@ def on_open_window(address: str) -> None:
 def reveal_covered_windows() -> None:
     for window in query("clients"):
         if not is_managed(window) or is_minimized(window):
+            continue
+        if is_aidyc_window(window):
+            # Login/welcome: leave the app's designed size alone.
+            if is_aidyc_login_window(window):
+                continue
+            # After login AidyC often maximizes into the bar strip. Snapping it
+            # to the work area undoes the desired fullscreen — upgrade instead.
+            fs = int(window.get("fullscreen") or 0)
+            if fs in (2, 3):
+                continue
+            if fs == 1 or covers_shell_bar(window):
+                present_aidyc_window(window)
             continue
         if covers_shell_bar(window):
             fit_to_work_area(window)
@@ -1037,6 +1369,8 @@ def run_command(argv: list[str]) -> None:
         cmd_snap("max", address)
     elif name == "max":
         cmd_max(address)
+    elif name == "unmax":
+        cmd_unmax(address)
     elif name == "down":
         cmd_down(address)
     elif name == "minimize":
@@ -1144,11 +1478,23 @@ def daemon() -> int:
                         address = data.split(",", 1)[0]
                         _safe(on_open_window, address)
                     elif event == "closewindow":
+                        with _aidyc_followup_lock:
+                            _aidyc_followups.pop(normalize_address(data), None)
                         _safe(forget, data)
+                    elif event in ("windowtitle", "windowtitlev2"):
+                        address = data.split(",", 1)[0]
+                        _safe(on_aidyc_hint, address)
                     elif event == "fullscreen":
-                        # Maximize must stay under Jugoo; only true fullscreen covers it.
-                        _safe(reveal_covered_windows)
+                        address = data.split(",", 1)[0]
+                        window = find_window(normalize_address(address))
+                        if window is not None and is_aidyc_window(window):
+                            _safe(on_aidyc_hint, address)
+                        else:
+                            # Maximize must stay under Jugoo; only true fullscreen covers it.
+                            _safe(reveal_covered_windows)
                     elif event in ("movewindow", "movewindowv2", "changefloatingmode"):
+                        # reveal_covered_windows upgrades AidyC (post-login maximize)
+                        # instead of snapping it under Jugoo.
                         _safe(reveal_covered_windows)
     finally:
         cleanup()

@@ -83,11 +83,24 @@ bool CHyprBar::inputIsValid() {
     if (!g_pGlobalState->config.enabled->value())
         return false;
 
-    if (!m_pWindow->m_workspace || !m_pWindow->m_workspace->isVisible() || !g_pInputManager->m_exclusiveLSes.empty() ||
+    if (!validMapped(m_pWindow) || !m_pWindow->m_workspace || !m_pWindow->m_workspace->isVisible())
+        return false;
+
+    // Caption buttons must work even when another window is focused.
+    // vectorToWindowUnified often misses the hyprbars strip (decoration
+    // extents), so the old "must be focused OR under cursor" check made
+    // minimize/max/close look dead while CSD buttons on the same desktop
+    // still worked.
+    const auto mouse  = g_pInputManager->getMouseCoordsInternal();
+    const auto barBox = assignedBoxGlobal();
+    if (barBox.w > 0 && barBox.h > 0 && VECINRECT(mouse, barBox.x, barBox.y, barBox.x + barBox.w, barBox.y + barBox.h))
+        return true;
+
+    if (!g_pInputManager->m_exclusiveLSes.empty() ||
         (g_pSeatManager->m_seatGrab && !g_pSeatManager->m_seatGrab->accepts(m_pWindow->wlSurface()->resource())))
         return false;
 
-    const auto WINDOWATCURSOR = g_pCompositor->vectorToWindowUnified(g_pInputManager->getMouseCoordsInternal(),
+    const auto WINDOWATCURSOR = g_pCompositor->vectorToWindowUnified(mouse,
                                                                      Desktop::View::RESERVED_EXTENTS | Desktop::View::INPUT_EXTENTS | Desktop::View::ALLOW_FLOATING);
 
     auto       focusState = Desktop::focusState();
@@ -103,12 +116,12 @@ bool CHyprBar::inputIsValid() {
     Vector2D surfaceCoords;
 
     // check top layer
-    g_pCompositor->vectorToLayerSurface(g_pInputManager->getMouseCoordsInternal(), &PMONITOR->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_TOP], &surfaceCoords, &foundSurface);
+    g_pCompositor->vectorToLayerSurface(mouse, &PMONITOR->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_TOP], &surfaceCoords, &foundSurface);
 
     if (foundSurface)
         return false;
     // check overlay layer
-    g_pCompositor->vectorToLayerSurface(g_pInputManager->getMouseCoordsInternal(), &PMONITOR->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY], &surfaceCoords,
+    g_pCompositor->vectorToLayerSurface(mouse, &PMONITOR->m_layerSurfaceLayers[ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY], &surfaceCoords,
                                         &foundSurface);
 
     if (foundSurface)
@@ -227,7 +240,9 @@ void CHyprBar::handleDownEvent(Event::SCallbackInfo& info, std::optional<ITouch:
 
     if (!ON_DOUBLE_CLICK.empty() &&
         std::chrono::duration_cast<std::chrono::milliseconds>(Time::steadyNow() - m_lastMouseDown).count() < 400 /* Arbitrary delay I found suitable */) {
-        Config::Supplementary::executor()->spawn(ON_DOUBLE_CLICK);
+        // Pass the window address: exec is async and activewindow may change
+        // before ventanas runs (same race as the caption buttons below).
+        Config::Supplementary::executor()->spawn(std::format("{} 0x{:x}", ON_DOUBLE_CLICK, (uintptr_t)PWINDOW.get()));
         m_bDragPending = false;
     } else {
         m_lastMouseDown = Time::steadyNow();
@@ -276,8 +291,14 @@ bool CHyprBar::doButtonPress(Config::INTEGER barPadding, Config::INTEGER barButt
         Vector2D   currentPos = Vector2D{(BUTTONSRIGHT ? BARBUF.x - barButtonPadding - b.size - offset : offset), (BARBUF.y - b.size) / 2.0}.floor();
 
         if (VECINRECT(COORDS, currentPos.x, currentPos.y, currentPos.x + b.size + barButtonPadding, currentPos.y + b.size)) {
-            // hit on close
-            g_pKeybindManager->m_dispatchers["exec"](b.cmd);
+            // Pass the decorated window address. Spawn is async; by the time
+            // ventanas runs, activewindow is often empty or another client
+            // (Jugoo / previously focused), so minimize/max/close hit the wrong
+            // window or look like a no-op.
+            const auto window = m_pWindow.lock();
+            const auto cmd    = window ? std::format("{} 0x{:x}", b.cmd, (uintptr_t)window.get()) : b.cmd;
+            Config::Supplementary::executor()->spawn(cmd);
+            Log::logger->log(Log::INFO, "[hyprbars] button → {}", cmd);
             return true;
         }
 

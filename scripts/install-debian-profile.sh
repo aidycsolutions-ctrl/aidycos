@@ -759,6 +759,17 @@ if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]] && command -v hyprctl >/dev/null 
     exit 1
   fi
 fi
+# CSD minimize: Cursor/Chrome/Electron draw their own caption buttons; Hyprland
+# ignores those minimize clicks unless csd-minimize routes them to ventanas.
+if ! bash "${ROOT}/packaging/hyprland/setup-csd-minimize.sh"; then
+  echo "ERROR: no se pudo instalar csd-minimize (minimizar de Cursor/Chrome)." >&2
+  echo "Reparación: CSD_MINIMIZE_FORCE=1 bash packaging/hyprland/setup-csd-minimize.sh" >&2
+  exit 1
+fi
+if [[ ! -f "${HOME}/.local/lib/jugoo/csd-minimize.so" || ! -f "${HYPR_DIR}/config/jugoo_csd_minimize.conf" ]]; then
+  echo "ERROR: csd-minimize no quedó instalado tras setup-csd-minimize.sh." >&2
+  exit 1
+fi
 if [[ ! -e "${HYPR_AIDYCOS_CONF}" ]]; then
   cat >"${HYPR_AIDYCOS_CONF}" <<'EOF'
 # AidyCOS keyboard and Jugoo defaults.
@@ -945,6 +956,22 @@ for hypr_file in "${HYPR_CONF}" "${HYPR_AIDYCOS_CONF}"; do
       printf '\n# Alt+Tab is owned by jugoo_ventanas.conf (current-desktop cycle via ventanas).\n' >>"${hypr_file}"
     fi
     echo "Alt+Tab duplicado eliminado de ${hypr_file} (queda solo jugoo_ventanas.conf)."
+  fi
+done
+
+# Super+Up/Down and Super+Ctrl+Left/Right are owned by jugoo_ventanas.conf
+# (maximize / change desktop). Duplicate movefocus/movetoworkspace binds make
+# the front window look "stuck" because two actions fire on one keypress.
+for hypr_file in "${HYPR_CONF}" "${HYPR_AIDYCOS_CONF}"; do
+  [[ -f "${hypr_file}" ]] || continue
+  if grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*(Up|Down),[[:space:]]*movefocus,' "${hypr_file}" \
+    || grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER[[:space:]]+CTRL,[[:space:]]*(Left|Right),[[:space:]]*movetoworkspace,' "${hypr_file}"; then
+    cp -a "${hypr_file}" "${hypr_file}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
+    sed -i -E \
+      -e '/^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*(Up|Down),[[:space:]]*movefocus,/d' \
+      -e '/^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER[[:space:]]+CTRL,[[:space:]]*(Left|Right),[[:space:]]*movetoworkspace,/d' \
+      "${hypr_file}"
+    echo "Binds Super+flechas/Ctrl duplicados eliminados de ${hypr_file} (queda jugoo_ventanas.conf)."
   fi
 done
 
@@ -1183,6 +1210,23 @@ else
     if [[ -f "${config}" ]] && grep -qF "${HYPR_HYPERBARS_SOURCE}" "${config}"; then
       cp -a "${config}" "${config}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
       sed -i '\|^[[:space:]]*source[[:space:]]*=[[:space:]]*~/.config/hypr/config/jugoo_hyprbars.conf[[:space:]]*$|d' "${config}"
+    fi
+  done
+fi
+
+HYPR_CSD_MINIMIZE_CONF="${HYPR_DIR}/config/jugoo_csd_minimize.conf"
+HYPR_CSD_MINIMIZE_SOURCE='source = ~/.config/hypr/config/jugoo_csd_minimize.conf'
+if [[ -f "${HYPR_CSD_MINIMIZE_CONF}" ]]; then
+  if ! grep -qF "${HYPR_CSD_MINIMIZE_SOURCE}" "${HYPR_AIDYCOS_CONF}" \
+     && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qF "${HYPR_CSD_MINIMIZE_SOURCE}" "${HYPR_CONF}"; }; then
+    cp -a "${HYPR_AIDYCOS_CONF}" "${HYPR_AIDYCOS_CONF}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
+    printf '\n%s\n' "${HYPR_CSD_MINIMIZE_SOURCE}" >>"${HYPR_AIDYCOS_CONF}"
+  fi
+else
+  for config in "${HYPR_AIDYCOS_CONF}" "${HYPR_CONF}"; do
+    if [[ -f "${config}" ]] && grep -qF "${HYPR_CSD_MINIMIZE_SOURCE}" "${config}"; then
+      cp -a "${config}" "${config}.aidycos-backup-$(date +%Y%m%d%H%M%S)"
+      sed -i '\|^[[:space:]]*source[[:space:]]*=[[:space:]]*~/.config/hypr/config/jugoo_csd_minimize.conf[[:space:]]*$|d' "${config}"
     fi
   done
 fi

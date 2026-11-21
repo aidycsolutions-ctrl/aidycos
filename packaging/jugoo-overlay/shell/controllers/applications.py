@@ -117,12 +117,22 @@ class ApplicationsController:
             return
         matches = windows_for_application(application, snapshot_windows(self._hyprland.snapshot))
         active_ws = self._hyprland.active_workspace_id
-        # Prefer windows already on this desktop so a dock click on Chrome /
-        # Cursor / Thunar raises *that* app here, while browsers can still
-        # open a new window on another workspace instead of jumping away.
+        # Minimized clients live on special:minimizados (negative workspace id).
+        # Prefer restoring them before focusing another visible peer so a dock
+        # click pulls the app out of the Minimizados strip.
+        minimized = tuple(window for window in matches if int(window.workspace_id) < 0)
+        normal = tuple(window for window in matches if int(window.workspace_id) > 0)
+        # Prefer windows already on this (normal) desktop so a dock click on
+        # Chrome / Cursor / Thunar raises *that* app here, while browsers can
+        # still open a new window on another workspace instead of jumping away.
         local = tuple(
-            window for window in matches if int(window.workspace_id) == int(active_ws)
+            window for window in normal if int(window.workspace_id) == int(active_ws)
         )
+        if minimized and not local:
+            target = next_window_to_focus(minimized, "") or minimized[0]
+            if target.address:
+                self._event_bus.emit(WINDOW_FOCUS_REQUESTED, target.address)
+                return
         if local:
             active_address = (
                 self._hyprland.snapshot.active_window.address
@@ -135,6 +145,11 @@ class ApplicationsController:
             else:
                 target = next_window_to_focus(local, active_address)
             if target is not None and target.address:
+                self._event_bus.emit(WINDOW_FOCUS_REQUESTED, target.address)
+                return
+        if minimized:
+            target = next_window_to_focus(minimized, "") or minimized[0]
+            if target.address:
                 self._event_bus.emit(WINDOW_FOCUS_REQUESTED, target.address)
                 return
         if matches:

@@ -106,6 +106,9 @@ reload_and_check() {
     if [[ -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]] || ! command -v hyprctl >/dev/null 2>&1; then
         return 0
     fi
+    # Unload first so a rebuilt .so actually replaces the in-memory plugin.
+    hyprctl plugin unload "$PLUGIN" >/dev/null 2>&1 || true
+    hyprctl plugin load "$PLUGIN" >/dev/null 2>&1 || true
     hyprctl reload >/dev/null 2>&1 || true
     sleep 1
     if plugin_loaded; then
