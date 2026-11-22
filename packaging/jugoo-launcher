@@ -2,13 +2,20 @@
 set -eu
 
 # Prefer the system-managed checkout so aidycos-update always takes effect.
-# Fall back to the user tree only when /opt is missing (install without sudo).
-if [ -f /opt/aidyc/jugoo/.aidycos-managed ] && [ -d /opt/aidyc/jugoo/shell ]; then
-  JUGOO_DIR=/opt/aidyc/jugoo
-elif [ -d "${HOME}/.local/share/aidycos/jugoo/shell" ]; then
-  JUGOO_DIR="${HOME}/.local/share/aidycos/jugoo"
+# If the user tree already has newer AidyCOS bar modules not yet in /opt
+# (e.g. hostname widget before a sudo deploy), use the user tree temporarily.
+USER_JUGOO="${HOME}/.local/share/aidycos/jugoo"
+OPT_JUGOO=/opt/aidyc/jugoo
+
+if [ -f "${USER_JUGOO}/shell/widgets/barra/host_identity.py" ] \
+  && [ ! -f "${OPT_JUGOO}/shell/widgets/barra/host_identity.py" ]; then
+  JUGOO_DIR="${USER_JUGOO}"
+elif [ -f "${OPT_JUGOO}/.aidycos-managed" ] && [ -d "${OPT_JUGOO}/shell" ]; then
+  JUGOO_DIR="${OPT_JUGOO}"
+elif [ -d "${USER_JUGOO}/shell" ]; then
+  JUGOO_DIR="${USER_JUGOO}"
 else
-  JUGOO_DIR=/opt/aidyc/jugoo
+  JUGOO_DIR="${OPT_JUGOO}"
 fi
 
 BOOT="${HOME}/.local/share/aidycos/patches/jugoo_aidycos_boot.py"

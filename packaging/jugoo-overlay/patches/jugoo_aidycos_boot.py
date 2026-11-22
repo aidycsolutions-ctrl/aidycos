@@ -7,15 +7,25 @@ import runpy
 import sys
 from pathlib import Path
 
-JUGOO_DIR = Path("/opt/aidyc/jugoo")
-if (Path.home() / ".local/share/aidycos/jugoo/shell").is_dir() and not (
-    JUGOO_DIR / ".aidycos-managed"
-).is_file():
-    JUGOO_DIR = Path.home() / ".local/share/aidycos/jugoo"
+OPT_JUGOO = Path("/opt/aidyc/jugoo")
+USER_JUGOO = Path.home() / ".local/share/aidycos/jugoo"
+
+# Prefer the user checkout when it carries newer AidyCOS bar modules that
+# have not been deployed to /opt yet (no sudo). Otherwise use managed /opt.
+if (USER_JUGOO / "shell/widgets/barra/host_identity.py").is_file():
+    JUGOO_DIR = USER_JUGOO
+elif (OPT_JUGOO / ".aidycos-managed").is_file() and (OPT_JUGOO / "shell").is_dir():
+    JUGOO_DIR = OPT_JUGOO
+elif (USER_JUGOO / "shell").is_dir():
+    JUGOO_DIR = USER_JUGOO
+else:
+    JUGOO_DIR = OPT_JUGOO
 
 PATCHES = Path.home() / ".local/share/aidycos/patches"
 ICONS_PATCH = PATCHES / "icons.py"
 
+# Drop a stale PYTHONPATH pointing at /opt so user overlay modules win.
+sys.path = [p for p in sys.path if Path(p).resolve() != OPT_JUGOO.resolve()]
 sys.path.insert(0, str(JUGOO_DIR))
 
 
@@ -68,6 +78,16 @@ def _apply_session_menu_patches() -> None:
     )
 
 
+def _apply_persistent_workspaces() -> None:
+    """Always show escritorios 1–5 even if /opt config was not updated yet."""
+    try:
+        import shell.config as config
+
+        config.PERSISTENT_WORKSPACES = 5
+    except Exception as error:  # noqa: BLE001
+        print(f"aidycos: persistent workspaces skipped: {error}", flush=True)
+
+
 try:
     _apply_icons_patch()
 except Exception as error:  # noqa: BLE001
@@ -77,5 +97,7 @@ try:
     _apply_session_menu_patches()
 except Exception as error:  # noqa: BLE001
     print(f"aidycos: session menu patch skipped: {error}", flush=True)
+
+_apply_persistent_workspaces()
 
 runpy.run_module("shell", run_name="__main__")

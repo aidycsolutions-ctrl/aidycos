@@ -1475,6 +1475,97 @@ def install_native_window_focus(root: Path) -> None:
     service.write_text(text[: match.start()] + replacement + text[match.end() :], encoding="utf-8")
 
 
+def install_persistent_workspaces(root: Path) -> None:
+    """Keep escritorios 1–5 visible on the Jugoo strip even when empty.
+
+    Default Jugoo uses PERSISTENT_WORKSPACES=None (only Hyprland's live list).
+    Fresh sessions / other PCs then look like they have “no desktop icons”.
+    """
+    config = root / "shell/config.py"
+    try_replace_once(
+        config,
+        "PERSISTENT_WORKSPACES: int | None = None\n",
+        "PERSISTENT_WORKSPACES: int | None = 5\n",
+        "mostrar siempre los escritorios 1–5 en la barra",
+    )
+    # Idempotent if a previous pass already set 5, or used a plain assignment.
+    try_replace_once(
+        config,
+        "PERSISTENT_WORKSPACES = None\n",
+        "PERSISTENT_WORKSPACES = 5\n",
+        "mostrar siempre los escritorios 1–5 en la barra (asignación simple)",
+    )
+
+
+def install_host_identity(root: Path) -> None:
+    """Discreet hostname on the left of the bar (tooltip user@host)."""
+    overlay = Path(__file__).parent / "shell"
+    install_overlay_file(
+        overlay / "widgets/barra/host_identity.py",
+        root / "shell/widgets/barra/host_identity.py",
+    )
+
+    app = root / "shell/app.py"
+    try_replace_once(
+        app,
+        "from .widgets.barra.applications import ApplicationsMenuWidget\n",
+        "from .widgets.barra.applications import ApplicationsMenuWidget\n"
+        "from .widgets.barra.host_identity import HostIdentityWidget\n",
+        "importar identidad del equipo",
+    )
+    # After the apps grid (still left side). Before active-window the label
+    # was crushed to "…" by the fixed-width active-window block.
+    try_replace_once(
+        app,
+        "        self.applications_menu_widget = ApplicationsMenuWidget(self.toggle_launcher)\n"
+        "        self.layout.left.add(self.applications_menu_widget)\n",
+        "        self.applications_menu_widget = ApplicationsMenuWidget(self.toggle_launcher)\n"
+        "        self.layout.left.add(self.applications_menu_widget)\n"
+        "        self.host_identity_widget = HostIdentityWidget()\n"
+        "        self.layout.left.add(self.host_identity_widget)\n",
+        "mostrar nombre del equipo a la izquierda de la barra",
+    )
+
+    layout = root / "shell/settings/layout_model.py"
+    if layout.is_file():
+        try_replace_once(
+            layout,
+            '    ModuleSlot("applications_menu", "left", 1),\n'
+            '    ModuleSlot("pinned_apps", "left", 2),\n',
+            '    ModuleSlot("applications_menu", "left", 1),\n'
+            '    ModuleSlot("host_identity", "left", 2),\n'
+            '    ModuleSlot("pinned_apps", "left", 3),\n',
+            "layout: identidad del equipo tras el menú de apps",
+        )
+
+    style = root / "shell/style.css"
+    style_text = style.read_text(encoding="utf-8")
+    if "host-identity-widget" not in style_text:
+        css = """
+
+/* AidyCOS: discreet PC hostname on the left of the bar. */
+window#shell box#shell-left > box.host-identity-widget,
+box.host-identity-widget {
+    margin: 4px 4px 4px 2px;
+    padding: 0 8px;
+    min-height: 0;
+    background-color: transparent;
+    box-shadow: none;
+}
+label.host-identity-label {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    opacity: 0.88;
+    color: @shell_text_primary;
+}
+"""
+        backup = style.with_suffix(style.suffix + ".aidycos-backup")
+        if not backup.exists():
+            shutil.copy2(style, backup)
+        style.write_text(style_text.rstrip() + "\n" + css, encoding="utf-8")
+
+
 def install_native_workspace_dispatch(root: Path) -> None:
     """Use Hyprland's built-in workspace dispatcher for strip clicks."""
     service = root / "shell/servicios/escritorio/hyprland.py"
@@ -1978,6 +2069,7 @@ def main() -> None:
     install_desktop_icons(root)
     install_applications_menu(root)
     install_keyboard_cat(root)
+    install_host_identity(root)
     install_bar_position(root)
     # Keep the Jugoo bar visible: do not retract under maximized floating windows.
     config = root / "shell/config.py"
@@ -1996,6 +2088,7 @@ def main() -> None:
             ),
             encoding="utf-8",
         )
+    install_persistent_workspaces(root)
     install_battery(root)
     install_network_wifi(root)
     install_bluetooth(root)

@@ -14,11 +14,14 @@ notify() {
   fi
 }
 
-ensure_flatpak() {
-  if command -v flatpak >/dev/null 2>&1; then
-    return 0
-  fi
-  notify "OnlyOffice" "Falta Flatpak. Ábrelo desde Instalar paquetes (Synaptic) o vuelve a actualizar AidyCOS."
+# Prefer a native .deb / PATH binary when Flatpak is missing or broken.
+try_native() {
+  local bin
+  for bin in onlyoffice-desktopeditors desktopeditors onlyoffice; do
+    if command -v "${bin}" >/dev/null 2>&1; then
+      exec "${bin}" "$@"
+    fi
+  done
   return 1
 }
 
@@ -36,6 +39,7 @@ ensure_flathub() {
 }
 
 already_installed() {
+  command -v flatpak >/dev/null 2>&1 || return 1
   flatpak info --user "${APP_ID}" >/dev/null 2>&1 \
     || flatpak info "${APP_ID}" >/dev/null 2>&1
 }
@@ -56,8 +60,9 @@ Necesitas Internet; la primera descarga puede tardar unos minutos."
     [[ "${answer}" == [sS] || "${answer}" == [sS][iíIÍ] ]]
     return $?
   fi
-  notify "OnlyOffice" "Confirma la instalación desde una terminal o vuelve a abrir el icono con pantalla gráfica."
-  return 1
+  # Desktop icon click without zenity: proceed (notify) instead of silent fail.
+  notify "OnlyOffice" "Descargando OnlyOffice desde Flathub (primera vez)…"
+  return 0
 }
 
 run_onlyoffice() {
@@ -67,10 +72,18 @@ run_onlyoffice() {
   exec flatpak run "${APP_ID}" "$@"
 }
 
-ensure_flatpak || exit 1
-
 if already_installed; then
   run_onlyoffice "$@"
+fi
+
+# Native .deb before requiring Flatpak.
+if try_native "$@"; then
+  exit 0
+fi
+
+if ! command -v flatpak >/dev/null 2>&1; then
+  notify "OnlyOffice" "Falta Flatpak. Ábrelo desde Instalar paquetes (Synaptic) o vuelve a actualizar AidyCOS."
+  exit 1
 fi
 
 ensure_flathub || {
@@ -78,7 +91,10 @@ ensure_flathub || {
   exit 1
 }
 
-confirm_install || exit 0
+confirm_install || {
+  notify "OnlyOffice" "Instalación cancelada. Vuelve a abrir OnlyOffice para instalarlo."
+  exit 0
+}
 
 notify "OnlyOffice" "Descargando OnlyOffice desde Flathub…"
 if flatpak install -y --user "${REMOTE}" "${APP_ID}"; then
