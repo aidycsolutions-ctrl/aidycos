@@ -13,8 +13,6 @@ gi.require_version("Pango", "1.0")
 
 from gi.repository import Gtk, Pango
 
-from ...ui.module import ShellModule
-
 
 def _hostname() -> str:
     for getter in (
@@ -40,19 +38,18 @@ def _username() -> str:
     return (os.environ.get("USER") or os.environ.get("LOGNAME") or "").strip() or "user"
 
 
-class HostIdentityWidget(ShellModule):
-    """Small hostname label so techs can tell which machine they are on."""
+class HostIdentityWidget(Gtk.Box):
+    """Tiny hostname label — not a shell-module capsule (avoids shoving the power button)."""
 
     def __init__(self) -> None:
-        super().__init__("host-identity-widget", spacing=0)
+        super().__init__(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        self.get_style_context().add_class("host-identity-widget")
         host = _hostname()
         user = _username()
 
         self._label = Gtk.Label(label=host)
         self._label.set_xalign(0.0)
-        # Short hostnames must stay fully readable (no "AidyC…").
         self._label.set_ellipsize(Pango.EllipsizeMode.NONE)
-        self._label.set_width_chars(len(host))
         self._label.get_style_context().add_class("host-identity-label")
 
         self.set_tooltip_text(f"{user}@{host}")

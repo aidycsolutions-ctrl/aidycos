@@ -1538,25 +1538,37 @@ def install_host_identity(root: Path) -> None:
             "layout: identidad del equipo tras el menú de apps",
         )
 
+    # Free horizontal room so left+hostname does not shove the power button
+    # off the right edge of the bar.
+    config = root / "shell/config.py"
+    try_replace_once(
+        config,
+        "ACTIVE_WINDOW_WIDTH = 280\n",
+        "ACTIVE_WINDOW_WIDTH = 220\n",
+        "dejar hueco al nombre del equipo sin correr el apagado",
+    )
+
     style = root / "shell/style.css"
     style_text = style.read_text(encoding="utf-8")
     if "host-identity-widget" not in style_text:
         css = """
 
-/* AidyCOS: discreet PC hostname on the left of the bar. */
+/* AidyCOS: discreet PC hostname — minimal width so the power button stays put. */
 window#shell box#shell-left > box.host-identity-widget,
 box.host-identity-widget {
-    margin: 4px 4px 4px 2px;
-    padding: 0 8px;
+    margin: 0 2px 0 0;
+    padding: 0 2px;
+    min-width: 0;
     min-height: 0;
     background-color: transparent;
     box-shadow: none;
+    border-radius: 0;
 }
 label.host-identity-label {
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.03em;
-    opacity: 0.88;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0;
+    opacity: 0.7;
     color: @shell_text_primary;
 }
 """
@@ -1564,6 +1576,26 @@ label.host-identity-label {
         if not backup.exists():
             shutil.copy2(style, backup)
         style.write_text(style_text.rstrip() + "\n" + css, encoding="utf-8")
+    else:
+        # Tighten an older, bulkier hostname style if present.
+        try_replace_once(
+            style,
+            "label.host-identity-label {\n"
+            "    font-size: 12px;\n"
+            "    font-weight: 700;\n"
+            "    letter-spacing: 0.03em;\n"
+            "    opacity: 0.88;\n"
+            "    color: @shell_text_primary;\n"
+            "}\n",
+            "label.host-identity-label {\n"
+            "    font-size: 10px;\n"
+            "    font-weight: 600;\n"
+            "    letter-spacing: 0;\n"
+            "    opacity: 0.7;\n"
+            "    color: @shell_text_primary;\n"
+            "}\n",
+            "compactar etiqueta del equipo",
+        )
 
 
 def install_native_workspace_dispatch(root: Path) -> None:
