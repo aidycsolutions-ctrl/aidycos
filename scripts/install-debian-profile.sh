@@ -453,6 +453,10 @@ install_jugoo() {
     install -m 0644 "${ROOT}/packaging/jugoo-overlay/patches/jugoo_aidycos_boot.py" \
       "${HOME}/.local/share/aidycos/patches/jugoo_aidycos_boot.py"
   fi
+  if [[ -f "${ROOT}/packaging/jugoo-overlay/shell/runtime_relaunch.py" ]]; then
+    install -m 0644 "${ROOT}/packaging/jugoo-overlay/shell/runtime_relaunch.py" \
+      "${HOME}/.local/share/aidycos/patches/runtime_relaunch.py"
+  fi
   install -D -m 0755 "${ROOT}/packaging/jugoo-launcher" "${HOME}/.local/bin/jugoo"
   install -D -m 0644 "${ROOT}/packaging/jugoo-overlay/aidyc.desktop" "${HOME}/.local/share/applications/aidyc.desktop"
   # Logo AidyC en hicolor + lanzador que marca WM_CLASS/icono sin recompilar AidyC.

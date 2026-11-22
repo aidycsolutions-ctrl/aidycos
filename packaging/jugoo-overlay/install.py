@@ -2085,6 +2085,13 @@ def _patch_app_bar_position(app: Path) -> None:
     app.write_text(text, encoding="utf-8")
 
 
+def install_quiet_relaunch(root: Path) -> None:
+    """Respawn Jugoo after a short delay instead of execv in-place."""
+    source = Path(__file__).parent / "shell/runtime_relaunch.py"
+    if source.is_file():
+        install_overlay_file(source, root / "shell/runtime_relaunch.py")
+
+
 def install_quiet_theme_reload(root: Path) -> None:
     """Do not hyprctl-reload on Jugoo restart when the theme file is unchanged.
 
@@ -2131,6 +2138,7 @@ def main() -> None:
             raise SystemExit(f"Checkout de Jugoo incompleto: falta {path}")
 
     install_quiet_theme_reload(root)
+    install_quiet_relaunch(root)
     install_desktop_icons(root)
     install_applications_menu(root)
     install_keyboard_cat(root)
