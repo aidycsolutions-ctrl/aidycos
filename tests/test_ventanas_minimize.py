@@ -88,6 +88,24 @@ class MinimizeFocusTests(unittest.TestCase):
         ):
             self.assertEqual(ventanas.find_window(None)["address"], "0xtarget")
 
+    def test_find_window_unknown_address_uses_titlebar(self) -> None:
+        target = _window("0xoffice", focus=0)
+        target["at"] = [100, 80]
+        target["size"] = [800, 600]
+
+        def fake_query(name: str):
+            if name == "cursorpos":
+                return {"x": 200, "y": 60}
+            if name == "clients":
+                return [target]
+            raise AssertionError(name)
+
+        with (
+            mock.patch.object(ventanas, "query", side_effect=fake_query),
+            mock.patch.object(ventanas, "window_bar_height", return_value=28),
+        ):
+            self.assertEqual(ventanas.find_window("0xdead")["address"], "0xoffice")
+
     def test_find_window_falls_back_when_active_is_empty(self) -> None:
         recent = _window("0xabc", focus=0)
         other = _window("0xdef", focus=1)

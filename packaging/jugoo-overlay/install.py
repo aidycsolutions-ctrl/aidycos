@@ -2085,6 +2085,37 @@ def _patch_app_bar_position(app: Path) -> None:
     app.write_text(text, encoding="utf-8")
 
 
+def install_quiet_theme_reload(root: Path) -> None:
+    """Do not hyprctl-reload on Jugoo restart when the theme file is unchanged.
+
+    A reload repaints live XWayland clients. OnlyOffice on Yurle then draws
+    its ribbon icons as yellow squares; a cold login is fine because that
+    window is not open yet.
+    """
+    theme = root / "shell/ui/theme.py"
+    if not theme.is_file():
+        return
+    try_replace_once(
+        theme,
+        "        try:\n"
+        "            export_hypr_theme(theme, self._hypr_export_path)\n"
+        "            self._reload_hyprland()\n"
+        "        except (OSError, subprocess.SubprocessError) as error:\n"
+        '            print(f"Jugoo theme: Hyprland export skipped: {error}")\n',
+        "        try:\n"
+        "            previous = \"\"\n"
+        "            if self._hypr_export_path.is_file():\n"
+        "                previous = self._hypr_export_path.read_text(encoding=\"utf-8\")\n"
+        "            export_hypr_theme(theme, self._hypr_export_path)\n"
+        "            if self._hypr_export_path.read_text(encoding=\"utf-8\") == previous:\n"
+        "                return\n"
+        "            self._reload_hyprland()\n"
+        "        except (OSError, subprocess.SubprocessError) as error:\n"
+        '            print(f"Jugoo theme: Hyprland export skipped: {error}")\n',
+        "no recargar Hyprland si el tema no cambió",
+    )
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("Uso: install.py RUTA_DE_JUGOO")
@@ -2099,6 +2130,7 @@ def main() -> None:
         if not path.is_file():
             raise SystemExit(f"Checkout de Jugoo incompleto: falta {path}")
 
+    install_quiet_theme_reload(root)
     install_desktop_icons(root)
     install_applications_menu(root)
     install_keyboard_cat(root)

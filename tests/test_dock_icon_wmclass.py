@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -45,6 +46,17 @@ class WmClassMatchTests(unittest.TestCase):
         self.assertTrue(icons._wm_class_matches("aidyc", "aidyc"))
         self.assertTrue(icons._wm_class_matches("org.foo.bar", "bar"))
         self.assertTrue(icons._wm_class_matches("firefox-esr", "firefox"))
+
+    def test_icon_file_is_found_without_the_gtk_theme(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            icon = root / "icons" / "hicolor" / "48x48" / "apps" / "google-chrome.png"
+            icon.parent.mkdir(parents=True)
+            icon.write_bytes(b"png")
+            found = icons.resolve_icon_file("google-chrome", 18, roots=(root,))
+            self.assertEqual(found, icon)
+            missing = icons.resolve_icon_file("no-such-app", 18, roots=(root,))
+            self.assertIsNone(missing)
 
     def test_resolver_prefers_aidychat(self) -> None:
         resolver = icons.DesktopIconResolver(directories=[])

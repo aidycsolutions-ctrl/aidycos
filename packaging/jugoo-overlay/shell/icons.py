@@ -185,6 +185,133 @@ def find_desktop_icon(app: str) -> str:
     return _resolver.describe(app).icon
 
 
+_ICON_FILE_CACHE: dict[tuple[str, int], Path | None] = {}
+_ICON_EXTS = (".png", ".svg", ".xpm", ".svgz")
+_ICON_SIZE_DIRS = (
+    "48x48",
+    "64x64",
+    "32x32",
+    "128x128",
+    "256x256",
+    "24x24",
+    "22x22",
+    "16x16",
+    "512x512",
+    "scalable",
+)
+
+
+def resolve_icon_file(
+    icon: str,
+    size: int = 48,
+    *,
+    roots: tuple[Path, ...] | None = None,
+) -> Path | None:
+    """Find the icon on disk.
+
+    The workspace pill asks GTK for a theme name. On a cold login the theme
+    cache is already warm, so AidyCSO and the first paint on Yurle show Chrome
+    and Cursor. After ``jugoo`` restarts, Yurle's GTK lookup comes back empty
+    and the pill stays blank. A direct file still exists.
+    """
+    name = (icon or "").strip()
+    if not name:
+        return None
+    cache_key = (name, int(size))
+    if roots is None and cache_key in _ICON_FILE_CACHE:
+        return _ICON_FILE_CACHE[cache_key]
+
+    direct = Path(name).expanduser()
+    if direct.is_file():
+        if roots is None:
+            _ICON_FILE_CACHE[cache_key] = direct
+        return direct
+
+    stem = Path(name).name
+    if stem.endswith(_ICON_EXTS):
+        stem = Path(stem).stem
+    found = _search_icon_dirs(stem, roots if roots is not None else _icon_roots())
+    if roots is None:
+        _ICON_FILE_CACHE[cache_key] = found
+    return found
+
+
+def configure_workspace_icon(image: object, icon_name: str, pixel_size: int) -> None:
+    """Paint a workspace-pill icon from a file, then fall back to the theme."""
+    try:
+        import gi
+
+        gi.require_version("GdkPixbuf", "2.0")
+        gi.require_version("Gtk", "3.0")
+        from gi.repository import GdkPixbuf, Gtk
+    except (ImportError, ValueError):
+        return
+    size = max(1, int(pixel_size or 18))
+    path = resolve_icon_file(icon_name, size)
+    if path is not None:
+        try:
+            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(str(path), size, size)
+            image.set_from_pixbuf(pixbuf)
+            image.set_pixel_size(size)
+            return
+        except Exception:
+            pass
+    image.set_from_icon_name(icon_name or FALLBACK_ICON, Gtk.IconSize.MENU)
+    image.set_pixel_size(size)
+
+
+def _icon_roots() -> tuple[Path, ...]:
+    roots: list[Path] = []
+    home = Path.home()
+    roots.append(home / ".local/share")
+    roots.append(home / ".local/share/flatpak/exports/share")
+    data_dirs = os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share"
+    for raw in data_dirs.split(":"):
+        location = raw.strip()
+        if location:
+            roots.append(Path(location))
+    roots.append(Path("/var/lib/flatpak/exports/share"))
+    seen: set[Path] = set()
+    ordered: list[Path] = []
+    for root in roots:
+        if root in seen:
+            continue
+        seen.add(root)
+        ordered.append(root)
+    return tuple(ordered)
+
+
+def _search_icon_dirs(stem: str, roots: tuple[Path, ...]) -> Path | None:
+    names = tuple(f"{stem}{ext}" for ext in _ICON_EXTS)
+    for root in roots:
+        icons = root / "icons"
+        pixmap = root / "pixmaps"
+        for name in names:
+            candidate = pixmap / name
+            if candidate.is_file():
+                return candidate
+        if not icons.is_dir():
+            continue
+        # hicolor is the shared app-icon tree. Other themes are fallbacks.
+        themes = [icons / "hicolor"]
+        try:
+            themes.extend(
+                path for path in icons.iterdir() if path.is_dir() and path.name != "hicolor"
+            )
+        except OSError:
+            continue
+        for theme in themes:
+            for size_dir in _ICON_SIZE_DIRS:
+                folder = theme / size_dir / "apps"
+                if not folder.is_dir():
+                    continue
+                for name in names:
+                    candidate = folder / name
+                    if candidate.is_file():
+                        return candidate
+    return None
+
+
 def _wm_class_matches(app_class: str, name: str) -> bool:
     """True when desktop WM class / id reasonably matches a Hyprland class."""
     if app_class == name:

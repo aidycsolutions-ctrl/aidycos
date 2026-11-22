@@ -7,5 +7,6 @@ if [ -d "${USER_OVERLAY}/aidylink" ]; then
 else
   export PYTHONPATH=/opt/aidyc/aidylink${PYTHONPATH:+:$PYTHONPATH}
 fi
-cd /opt/aidyc/aidylink
-exec python3 -m aidylink "$@"
+# -P keeps the current directory from hiding the overlay. `python -m` otherwise
+# inserts cwd first, and this script used to cd into /opt/aidyc/aidylink.
+exec python3 -P -m aidylink "$@"

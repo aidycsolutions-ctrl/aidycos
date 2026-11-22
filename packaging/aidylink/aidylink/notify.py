@@ -242,6 +242,25 @@ def _raise_existing_ui() -> bool:
     return _raise_via_wm()
 
 
+def _focus_command_found_window(completed: subprocess.CompletedProcess[str]) -> bool:
+    """True only when a window manager actually focused a window.
+
+    ``hyprctl dispatch focuswindow`` exits 0 and prints ``No such window found``
+    when nothing matches. Treating that exit code as success made AidyChat
+    quit without opening a window.
+    """
+    if completed.returncode != 0:
+        return False
+    text = f"{completed.stdout or ''}\n{completed.stderr or ''}".lower()
+    if "no such window" in text:
+        return False
+    tokens = text.split()
+    if "ok" in tokens:
+        return True
+    # wmctrl / xdotool stay silent when the window was focused.
+    return not text.strip()
+
+
 def _raise_via_wm() -> bool:
     """Best-effort focus by window title when the raise socket is missing."""
     # Hyprland / Wayland first (wmctrl is X11-only and often no-ops here).
@@ -254,15 +273,15 @@ def _raise_via_wm() -> bool:
             try:
                 completed = subprocess.run(
                     ["hyprctl", "dispatch", "focuswindow", arg],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
                     timeout=2,
                     check=False,
                 )
-                if completed.returncode == 0:
-                    return True
             except (OSError, subprocess.TimeoutExpired):
                 continue
+            if _focus_command_found_window(completed):
+                return True
     for cmd in (
         ["wmctrl", "-a", "AidyChat"],
         ["xdotool", "search", "--name", "AidyChat", "windowactivate", "--sync"],
@@ -272,15 +291,15 @@ def _raise_via_wm() -> bool:
         try:
             completed = subprocess.run(
                 cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
                 timeout=2,
                 check=False,
             )
-            if completed.returncode == 0:
-                return True
         except (OSError, subprocess.TimeoutExpired):
             continue
+        if _focus_command_found_window(completed):
+            return True
     return False
 
 

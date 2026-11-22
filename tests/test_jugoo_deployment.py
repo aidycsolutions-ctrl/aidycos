@@ -97,6 +97,41 @@ class JugooDeploymentTests(unittest.TestCase):
             ROOT / "packaging" / "jugoo-overlay" / "install.py"
         ).read_text(encoding="utf-8"))
 
+    def test_restart_does_not_reload_hyprland_when_theme_is_unchanged(self) -> None:
+        boot = (
+            ROOT / "packaging" / "jugoo-overlay" / "patches" / "jugoo_aidycos_boot.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("def _apply_theme_reload_guard", boot)
+        self.assertIn("if path.read_text(encoding=\"utf-8\") == previous:", boot)
+        self.assertIn("_apply_theme_reload_guard()", boot)
+
+        spec = importlib.util.spec_from_file_location(
+            "jugoo_overlay_install_theme",
+            ROOT / "packaging" / "jugoo-overlay" / "install.py",
+        )
+        assert spec and spec.loader
+        overlay = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(overlay)
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            theme = root / "shell" / "ui" / "theme.py"
+            theme.parent.mkdir(parents=True)
+            theme.write_text(
+                "        try:\n"
+                "            export_hypr_theme(theme, self._hypr_export_path)\n"
+                "            self._reload_hyprland()\n"
+                "        except (OSError, subprocess.SubprocessError) as error:\n"
+                "            print(f\"Jugoo theme: Hyprland export skipped: {error}\")\n",
+                encoding="utf-8",
+            )
+            overlay.install_quiet_theme_reload(root)
+            text = theme.read_text(encoding="utf-8")
+            self.assertIn("if self._hypr_export_path.read_text(encoding=\"utf-8\") == previous:", text)
+            self.assertLess(text.index("== previous"), text.index("self._reload_hyprland()"))
+            overlay.install_quiet_theme_reload(root)
+            self.assertEqual(text, theme.read_text(encoding="utf-8"))
+
     def test_overlay_keeps_desktop_layer_transparent(self) -> None:
         spec = importlib.util.spec_from_file_location(
             "jugoo_overlay_install",

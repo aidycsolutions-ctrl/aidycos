@@ -47,6 +47,9 @@ _FORCE_HYPRBARS_CLASS = frozenset(
         "foot",
         "thunar",
         "xfce4-terminal",
+        "desktopeditors",
+        "onlyoffice-desktopeditors",
+        "org.onlyoffice.desktopeditors",
     }
 )
 _CLASS_MARK = re.compile(r"^# class: (.+)$", re.MULTILINE)

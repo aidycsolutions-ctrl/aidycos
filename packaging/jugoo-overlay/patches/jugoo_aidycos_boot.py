@@ -58,6 +58,8 @@ def _apply_icons_patch() -> None:
     target.application_for_window = module.application_for_window
     target.icon_for_window = module.icon_for_window
     target.find_desktop_icon = module.find_desktop_icon
+    target.resolve_icon_file = module.resolve_icon_file
+    target.configure_workspace_icon = module.configure_workspace_icon
     target._resolver = module._resolver
 
 
@@ -78,6 +80,37 @@ def _apply_session_menu_patches() -> None:
     )
 
 
+def _apply_workspace_icon_files() -> None:
+    """Draw workspace-pill icons from files so a Jugoo restart cannot blank them."""
+    import gi
+
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import GLib, Gtk
+
+    import shell.icons as icons
+    import shell.widgets.barra.workspace as workspace
+
+    paint = icons.configure_workspace_icon
+    original = workspace.WorkspaceApplicationIcon.__init__
+
+    def __init__(self, window, icon_name: str, focused: bool) -> None:
+        original(self, window, icon_name, focused)
+        image = self.get_child()
+        if not isinstance(image, Gtk.Image):
+            return
+        size = image.get_pixel_size() or 18
+
+        def repaint(*_args: object) -> bool:
+            paint(image, icon_name, size)
+            return False
+
+        repaint()
+        self.connect("realize", repaint)
+        GLib.timeout_add(500, repaint)
+
+    workspace.WorkspaceApplicationIcon.__init__ = __init__
+
+
 def _apply_workspace_strip_defaults() -> None:
     """Live Hyprland list only — no reserved empty desktop dots 1–5."""
     try:
@@ -86,6 +119,33 @@ def _apply_workspace_strip_defaults() -> None:
         config.PERSISTENT_WORKSPACES = None
     except Exception as error:  # noqa: BLE001
         print(f"aidycos: workspace strip defaults skipped: {error}", flush=True)
+
+
+def _apply_theme_reload_guard() -> None:
+    """Skip ``hyprctl reload`` when the exported theme file did not change.
+
+    Jugoo rewrites the theme and reloads Hyprland on every start. Login looks
+    fine because apps are not open yet. ``jugoo action restart`` reloads while
+    OnlyOffice is already mapped; on some GPUs (Yurle) the ribbon icons come
+    back as yellow squares. AidyCSO's GPU redraws them, so the same restart
+    looks healthy there.
+    """
+    import shell.ui.theme as theme_mod
+
+    def _export_hyprland(self, theme) -> None:
+        path = self._hypr_export_path
+        if path is None:
+            return
+        try:
+            previous = path.read_text(encoding="utf-8") if path.is_file() else ""
+            theme_mod.export_hypr_theme(theme, path)
+            if path.read_text(encoding="utf-8") == previous:
+                return
+            self._reload_hyprland()
+        except (OSError, theme_mod.subprocess.SubprocessError) as error:
+            print(f"Jugoo theme: Hyprland export skipped: {error}")
+
+    theme_mod.ThemeManager._export_hyprland = _export_hyprland
 
 
 try:
@@ -99,5 +159,15 @@ except Exception as error:  # noqa: BLE001
     print(f"aidycos: session menu patch skipped: {error}", flush=True)
 
 _apply_workspace_strip_defaults()
+
+try:
+    _apply_theme_reload_guard()
+except Exception as error:  # noqa: BLE001
+    print(f"aidycos: theme reload guard skipped: {error}", flush=True)
+
+try:
+    _apply_workspace_icon_files()
+except Exception as error:  # noqa: BLE001
+    print(f"aidycos: workspace icon files skipped: {error}", flush=True)
 
 runpy.run_module("shell", run_name="__main__")

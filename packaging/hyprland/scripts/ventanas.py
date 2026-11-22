@@ -469,7 +469,9 @@ def find_window(address: str | None) -> dict[str, Any] | None:
     for window in query("clients"):
         if str(window.get("address", "")).lower() == wanted:
             return window
-    return None
+    # Hyprbars passes the compositor object pointer. OnlyOffice (XWayland)
+    # sometimes reports a different address, and a miss used to no-op close.
+    return window_under_titlebar_cursor()
 
 
 def is_effectively_focused(window: dict[str, Any], active: dict[str, Any] | None = None) -> bool:
