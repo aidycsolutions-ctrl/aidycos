@@ -78,14 +78,14 @@ def _apply_session_menu_patches() -> None:
     )
 
 
-def _apply_persistent_workspaces() -> None:
-    """Always show escritorios 1–5 even if /opt config was not updated yet."""
+def _apply_workspace_strip_defaults() -> None:
+    """Live Hyprland list only — no reserved empty desktop dots 1–5."""
     try:
         import shell.config as config
 
-        config.PERSISTENT_WORKSPACES = 5
+        config.PERSISTENT_WORKSPACES = None
     except Exception as error:  # noqa: BLE001
-        print(f"aidycos: persistent workspaces skipped: {error}", flush=True)
+        print(f"aidycos: workspace strip defaults skipped: {error}", flush=True)
 
 
 try:
@@ -98,6 +98,6 @@ try:
 except Exception as error:  # noqa: BLE001
     print(f"aidycos: session menu patch skipped: {error}", flush=True)
 
-_apply_persistent_workspaces()
+_apply_workspace_strip_defaults()
 
 runpy.run_module("shell", run_name="__main__")

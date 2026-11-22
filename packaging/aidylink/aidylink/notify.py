@@ -229,15 +229,40 @@ def _raise_existing_ui() -> bool:
                 reply = sock.recv(16)
             except OSError:
                 reply = b""
-        if reply.startswith(b"ok") or not reply:
+        # Only treat an explicit ACK as success. An empty reply used to mean
+        # “raised” and made AidyChat exit without opening when the socket was stale.
+        if reply.startswith(b"ok"):
             return True
     except OSError:
         LOGGER.debug("ui raise socket failed", exc_info=True)
+    try:
+        sock_path.unlink(missing_ok=True)
+    except OSError:
+        pass
     return _raise_via_wm()
 
 
 def _raise_via_wm() -> bool:
     """Best-effort focus by window title when the raise socket is missing."""
+    # Hyprland / Wayland first (wmctrl is X11-only and often no-ops here).
+    if shutil.which("hyprctl"):
+        for arg in (
+            "class:^(aidychat)$",
+            "title:^(AidyChat)(.*)$",
+            "title:^(AidyLink)(.*)$",
+        ):
+            try:
+                completed = subprocess.run(
+                    ["hyprctl", "dispatch", "focuswindow", arg],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=2,
+                    check=False,
+                )
+                if completed.returncode == 0:
+                    return True
+            except (OSError, subprocess.TimeoutExpired):
+                continue
     for cmd in (
         ["wmctrl", "-a", "AidyChat"],
         ["xdotool", "search", "--name", "AidyChat", "windowactivate", "--sync"],

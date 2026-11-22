@@ -1,5 +1,11 @@
 #!/bin/sh
 set -eu
-export PYTHONPATH=/opt/aidyc/aidylink${PYTHONPATH:+:$PYTHONPATH}
+# Prefer a user overlay (aidycos-update may land fixes here before /opt is writable).
+USER_OVERLAY="${HOME}/.local/share/aidycos/aidylink-overlay"
+if [ -d "${USER_OVERLAY}/aidylink" ]; then
+  export PYTHONPATH="${USER_OVERLAY}:/opt/aidyc/aidylink${PYTHONPATH:+:$PYTHONPATH}"
+else
+  export PYTHONPATH=/opt/aidyc/aidylink${PYTHONPATH:+:$PYTHONPATH}
+fi
 cd /opt/aidyc/aidylink
 exec python3 -m aidylink "$@"

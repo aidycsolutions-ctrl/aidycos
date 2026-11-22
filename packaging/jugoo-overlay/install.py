@@ -1476,24 +1476,25 @@ def install_native_window_focus(root: Path) -> None:
 
 
 def install_persistent_workspaces(root: Path) -> None:
-    """Keep escritorios 1–5 visible on the Jugoo strip even when empty.
+    """Do not reserve empty desktop slots 1–5 on the Jugoo strip.
 
-    Default Jugoo uses PERSISTENT_WORKSPACES=None (only Hyprland's live list).
-    Fresh sessions / other PCs then look like they have “no desktop icons”.
+    Forcing PERSISTENT_WORKSPACES=5 made every PC show four empty dots/squares
+    even with a single desktop in use. Restore Jugoo's live Hyprland list so
+    only real desktops appear — and occupied ones show their app icons.
     """
     config = root / "shell/config.py"
+    # Undo a previous AidyCOS pass that forced 5 empty slots.
     try_replace_once(
         config,
-        "PERSISTENT_WORKSPACES: int | None = None\n",
         "PERSISTENT_WORKSPACES: int | None = 5\n",
-        "mostrar siempre los escritorios 1–5 en la barra",
+        "PERSISTENT_WORKSPACES: int | None = None\n",
+        "quitar escritorios vacíos reservados en la barra",
     )
-    # Idempotent if a previous pass already set 5, or used a plain assignment.
     try_replace_once(
         config,
-        "PERSISTENT_WORKSPACES = None\n",
         "PERSISTENT_WORKSPACES = 5\n",
-        "mostrar siempre los escritorios 1–5 en la barra (asignación simple)",
+        "PERSISTENT_WORKSPACES = None\n",
+        "quitar escritorios vacíos reservados (asignación simple)",
     )
 
 
