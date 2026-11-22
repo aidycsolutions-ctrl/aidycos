@@ -14,6 +14,7 @@
 #include <hyprland/src/config/values/types/StringValue.hpp>
 #include <hyprland/src/desktop/view/Window.hpp>
 #include <hyprland/src/event/EventBus.hpp>
+#include <hyprland/src/managers/input/InputManager.hpp>
 #include <hyprland/src/plugins/PluginAPI.hpp>
 #include <hyprland/src/protocols/XDGShell.hpp>
 #include <hyprland/src/xwayland/XSurface.hpp>
@@ -95,11 +96,19 @@ class CCSDMinimizePlugin {
         return value;
     }
 
-    void runCommandFor(PHLWINDOW pWindow, const std::string& base) {
+    void runCommandFor(PHLWINDOW pWindow, const std::string& base, bool withCursor = false) {
         if (!pWindow || base.empty() || base == "true")
             return;
-        // Append address: system()/exec is async and activewindow often races.
-        const auto cmd = std::format("{} 0x{:x}", base, reinterpret_cast<uintptr_t>(pWindow.get()));
+        // Append address (+ cursor at event time): system()/exec is async, so
+        // ventanas must not re-query cursorpos after the pointer has moved.
+        std::string cmd;
+        if (withCursor && g_pInputManager) {
+            const auto mouse = g_pInputManager->getMouseCoordsInternal();
+            cmd = std::format("{} 0x{:x} {:.0f} {:.0f}", base, reinterpret_cast<uintptr_t>(pWindow.get()), mouse.x,
+                              mouse.y);
+        } else {
+            cmd = std::format("{} 0x{:x}", base, reinterpret_cast<uintptr_t>(pWindow.get()));
+        }
         std::thread([cmd]() { system(cmd.c_str()); }).detach();
     }
 
@@ -107,10 +116,11 @@ class CCSDMinimizePlugin {
         // set_maximized → ensure max (idempotent). unset_maximized → shrink.
         // Never route both through a toggle: Chrome sends set_maximized on map
         // and that would undo ventanas auto-max / re-expand after □.
+        // Pass cursor so □ hit-test survives async exec.
         if (wantMax)
-            runCommandFor(pWindow, m_maximizeCommandVal->value());
+            runCommandFor(pWindow, m_maximizeCommandVal->value(), true);
         else
-            runCommandFor(pWindow, m_unmaximizeCommandVal->value());
+            runCommandFor(pWindow, m_unmaximizeCommandVal->value(), true);
     }
 
     void handleState(PHLWINDOW pWindow, bool minimize, bool fullscreen) {

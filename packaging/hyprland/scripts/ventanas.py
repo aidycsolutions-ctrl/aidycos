@@ -11,6 +11,7 @@ Every window floats; this script arranges them like a classic desktop:
   close [ADDR]           close the window
   max [ADDR]             toggle maximized (snap-to-work-area) / restore size
   up [ADDR]              maximize (ensure work-area snap; idempotent)
+  csd-max [ADDR]         CSD set_maximized → snap if needed (no-op if already filled)
   unmax [ADDR]           restore size only if currently maximized (CSD □)
   down [ADDR]            restore a snapped window, otherwise minimize
   left | right | top-left | top-right | bottom-left | bottom-right [ADDR]
@@ -54,8 +55,16 @@ GAP = 8
 SHELL_TOP_MIN = 57
 # Apps that should open snapped to the work area under the Jugoo bar.
 _AUTO_MAX_CLASS = re.compile(
-    r"^(firefox(?:-esr)?|org\.mozilla\.firefox|google-chrome(?:-[\w-]+)?|"
+    r"^(firefox(?:-esr)?|org\.mozilla\.firefox|google-chrome(?:-[\w-]+)?|chrome-[\w-]+|"
     r"chromium(?:-browser)?|thunar|org\.xfce\.thunar)$",
+    re.IGNORECASE,
+)
+# CSD apps: never leave them in compositor maximize (fs=1) or they hide
+# caption buttons and jump “F11-like” on tab changes.
+_CSD_BROWSER_CLASS = re.compile(
+    r"^(firefox(?:-esr)?|org\.mozilla\.firefox|google-chrome(?:-[\w-]+)?|chrome-[\w-]+|"
+    r"chromium(?:-browser)?|brave-browser|microsoft-edge|vivaldi|"
+    r"chatgpt|cursor)$",
     re.IGNORECASE,
 )
 # AidyC alone: true fullscreen so it covers (and hides) the Jugoo bar.
@@ -543,9 +552,16 @@ def remember_snap(state: dict[str, Any], window: dict[str, Any], rect: Rect, zon
     current = geometry(window)
     entry = state["snaps"].get(address)
     if entry and near_rect(entry["rect"], current):
-        original = entry["orig"]
+        original = list(entry["orig"])
     else:
         original = list(current)
+    if zone == "max":
+        area = window_area(window)
+        bar = window_bar_height(window)
+        # If we never saw a real windowed size (auto-max on open, or re-max),
+        # keep a centered float so □ / unmax visibly shrinks ChatGPT/Chrome.
+        if fills_work_area(original, area, bar) or near_rect(original, rect, slop=24):
+            original = list(default_float(area, bar))
     state["snaps"][address] = {"orig": list(original), "rect": list(rect), "zone": zone}
 
 
@@ -614,28 +630,196 @@ def cmd_max(address: str | None = None) -> None:
     cmd_snap("max", window["address"])
 
 
-def cmd_unmax(address: str | None = None) -> None:
-    """Shrink a maximized window (CSD unset_maximized). No-op if not max."""
-    window = find_window(address)
-    if window is None or is_minimized(window):
-        return
-    state = load_state()
+def _already_work_area_max(window: dict[str, Any]) -> bool:
+    """True when geometry already matches the flush work-area max snap."""
+    area = window_area(window)
+    bar = window_bar_height(window)
+    wanted = client_rect(zone_rect("max", area), bar)
+    # Tight slop: NEAR_PX (80) treated almost-max Chrome as done and left gaps.
+    return near_rect(geometry(window), wanted, slop=12)
+
+
+def _is_effectively_maximized(window: dict[str, Any], state: dict[str, Any] | None = None) -> bool:
+    """Whether we should treat the window as maximized for CSD restore/expand."""
+    if int(window.get("fullscreen") or 0) == 1:
+        return True
+    if _already_work_area_max(window):
+        return True
+    state = state if state is not None else load_state()
+    entry = state["snaps"].get(window["address"])
+    current = geometry(window)
+    if entry and entry.get("zone") == "max" and near_rect(entry["rect"], current):
+        return True
+    area = window_area(window)
+    bar = window_bar_height(window)
+    return fills_work_area(current, area, bar)
+
+
+_csd_log = Path("/tmp/jugoo-csd-caption.log")
+_csd_last_path = Path("/tmp/jugoo-csd-last.json")
+# Wall-clock last action (each plugin exec is a new process — memory alone is useless).
+_last_csd_action: dict[str, tuple[str, float]] = {}
+# Cursor sampled by csd-minimize at event time (async system() would miss the □).
+_csd_event_cursor: tuple[int, int] | None = None
+# Hard debounce: swallow duplicate protocol fires from the same □ click.
+_CSD_ECHO_S = 0.28
+# After expand, ignore set/finger-still-on-□ so maximize does not instantly undo.
+# After shrink, bare unset echoes are ignored — but a new □ click (on_btn) may expand.
+_CSD_SETTLE_S = 0.85
+
+
+def _csd_trace(action: str, address: str, detail: str = "") -> None:
+    try:
+        with _csd_log.open("a", encoding="utf-8") as fh:
+            cur = ""
+            if _csd_event_cursor is not None:
+                cur = f" cur={_csd_event_cursor[0]},{_csd_event_cursor[1]}"
+            fh.write(f"{time.time():.3f} {action} {address} {detail}{cur}\n")
+    except OSError:
+        pass
+
+
+def _csd_prev(addr: str) -> tuple[str, float] | None:
+    prev = _last_csd_action.get(addr)
+    try:
+        data = json.loads(_csd_last_path.read_text(encoding="utf-8"))
+        entry = data.get(addr)
+        if entry:
+            file_prev = (str(entry["action"]), float(entry["t"]))
+            if prev is None or file_prev[1] >= prev[1]:
+                return file_prev
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        pass
+    return prev
+
+
+def _csd_remember(addr: str, action: str) -> None:
+    now = time.time()
+    _last_csd_action[addr] = (action, now)
+    try:
+        data: dict[str, Any] = {}
+        if _csd_last_path.exists():
+            try:
+                data = json.loads(_csd_last_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                data = {}
+        data[addr] = {"action": action, "t": now}
+        _csd_last_path.write_text(json.dumps(data), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _cursor_on_csd_buttons(window: dict[str, Any]) -> bool:
+    """True when the pointer is over the CSD title strip (where □ lives).
+
+    Use the full top strip, not only the far-right corner: real clicks often
+    land a bit left of our old 220px box, and tests that forced exact □ coords
+    hid that miss.
+    """
+    if _csd_event_cursor is not None:
+        x, y = _csd_event_cursor
+    else:
+        try:
+            cursor = query("cursorpos")
+            x, y = int(cursor["x"]), int(cursor["y"])
+        except (HyprError, TypeError, ValueError, KeyError):
+            return False
+    wx, wy, ww, _wh = geometry(window)
+    zone_h = 72
+    return (wx - 8) <= x <= (wx + ww + 12) and (wy - 12) <= y <= (wy + zone_h)
+
+
+def _shrink_from_max(window: dict[str, Any], state: dict[str, Any]) -> None:
     area = window_area(window)
     bar = window_bar_height(window)
     entry = state["snaps"].get(window["address"])
-    current = geometry(window)
-    snapped_max = bool(
-        entry and entry.get("zone") == "max" and near_rect(entry["rect"], current)
-    )
-    if not (fills_work_area(current, area, bar) or snapped_max):
-        return
     saved = entry.get("orig") if entry else None
     state["snaps"].pop(window["address"], None)
     save_state(state)
-    if saved and not fills_work_area(saved, area, bar):
+    if saved and not fills_work_area(saved, area, bar) and not near_rect(
+        saved, client_rect(zone_rect("max", area), bar), slop=24
+    ):
         _place_saved(window, saved)
     else:
         dispatch(*place_commands(window, default_float(area, bar)))
+
+
+def _csd_caption(address: str | None, want_max: bool) -> None:
+    """CSD □ / maximize protocol: act on *visual* size, not Chrome's opinion.
+
+    - Pointer on caption buttons (coords from plugin at click time) → toggle.
+    - Otherwise honor set/unset idempotently (map / tab noise).
+    - Settle only blocks same-direction echoes, never the opposite □ click.
+    """
+    window = find_window(address)
+    if window is None or is_minimized(window):
+        _csd_trace("csd-skip", str(address or ""), "missing/min")
+        return
+    if is_true_fullscreen(window):
+        _csd_trace("csd-skip", normalize_address(window["address"]), "true-fs")
+        return
+    if int(window.get("fullscreen") or 0) == 1:
+        request(f"dispatch fullscreenstate 0 0,address:{window['address']}")
+        window = find_window(window["address"]) or window
+
+    addr = normalize_address(window["address"])
+    now = time.time()
+    prev = _csd_prev(addr)
+    state = load_state()
+    maxed = _is_effectively_maximized(window, state)
+    on_btn = _cursor_on_csd_buttons(window)
+
+    # Same-click duplicates only (do not block the next □ after reduce).
+    if prev and now - prev[1] < _CSD_ECHO_S:
+        _csd_trace("csd-echo", addr, prev[0])
+        return
+
+    if prev and now - prev[1] < _CSD_SETTLE_S:
+        # After expand: ignore set echo / finger still on □ (do not shrink).
+        if prev[0] == "max" and maxed and (want_max or on_btn):
+            _csd_trace("csd-settle", addr, "post-max")
+            return
+        # Do NOT settle-block post-unmax: Chrome/ChatGPT □ after reduce often
+        # sends unset again (app still thinks max). That must expand.
+
+    if on_btn:
+        if maxed:
+            _csd_trace("csd-toggle-shrink", addr, "btn")
+            _csd_remember(addr, "unmax")
+            _shrink_from_max(window, state)
+        else:
+            _csd_trace("csd-toggle-expand", addr, "btn")
+            _csd_remember(addr, "max")
+            cmd_snap("max", window["address"])
+        return
+
+    if want_max and not maxed:
+        _csd_trace("csd-max-snap", addr, "proto")
+        _csd_remember(addr, "max")
+        cmd_snap("max", window["address"])
+        return
+    if not want_max and maxed:
+        _csd_trace("unmax-shrink", addr, "proto")
+        _csd_remember(addr, "unmax")
+        _shrink_from_max(window, state)
+        return
+    # Pixel-shrunk but app still believes maximized → □ sends unset, no hit.
+    if not want_max and not maxed and is_csd_browser(window):
+        _csd_trace("csd-toggle-expand", addr, "desync")
+        _csd_remember(addr, "max")
+        cmd_snap("max", window["address"])
+        return
+    _csd_trace("csd-noop", addr, "max" if maxed else "win")
+
+
+def cmd_csd_max(address: str | None = None) -> None:
+    """CSD set_maximized."""
+    _csd_caption(address, want_max=True)
+
+
+def cmd_unmax(address: str | None = None) -> None:
+    """CSD unset_maximized."""
+    _csd_caption(address, want_max=False)
 
 
 def cmd_down(address: str | None = None) -> None:
@@ -1251,6 +1435,37 @@ _fit_cooldown_lock = threading.Lock()
 _fit_cooldown_until: dict[str, float] = {}
 
 
+def is_csd_browser(window: dict[str, Any]) -> bool:
+    return bool(_CSD_BROWSER_CLASS.match(str(window.get("class") or "")))
+
+
+def demote_browser_compositor_max(window: dict[str, Any]) -> None:
+    """Turn Chrome/Firefox mode-1 maximize into a floating work-area snap.
+
+    Compositor maximize makes Chrome drop its CSD buttons and look like F11;
+    Firefox stays usable with a plain pixel snap (fs=0). Same treatment for both.
+    """
+    if window is None or not is_csd_browser(window) or is_minimized(window):
+        return
+    if is_true_fullscreen(window):
+        # Real F11 (mode 2/3): leave alone.
+        return
+    address = normalize_address(window["address"])
+    now = time.monotonic()
+    with _fit_cooldown_lock:
+        until = _fit_cooldown_until.get(address, 0.0)
+        if now < until:
+            return
+        _fit_cooldown_until[address] = now + 0.8
+    fs = int(window.get("fullscreen") or 0)
+    if fs == 1:
+        request(f"dispatch fullscreenstate 0 0,address:{window['address']}")
+        window = find_window(address) or window
+    if _already_work_area_max(window):
+        return
+    cmd_snap("max", address)
+
+
 def fit_to_work_area(window: dict[str, Any]) -> None:
     """Snap into the work area under Jugoo (pixel snap only — never fullscreenstate).
 
@@ -1261,6 +1476,9 @@ def fit_to_work_area(window: dict[str, Any]) -> None:
         return
     if is_true_fullscreen(window):
         return
+    if is_csd_browser(window) and int(window.get("fullscreen") or 0) == 1:
+        demote_browser_compositor_max(window)
+        return
     if int(window.get("fullscreen") or 0) == 1:
         return
     address = normalize_address(window["address"])
@@ -1270,9 +1488,7 @@ def fit_to_work_area(window: dict[str, Any]) -> None:
         if now < until:
             return
         _fit_cooldown_until[address] = now + 1.0
-    area = window_area(window)
-    bar = window_bar_height(window)
-    if fills_work_area(geometry(window), area, bar):
+    if _already_work_area_max(window):
         return
     cmd_snap("max", address)
 
@@ -1402,11 +1618,21 @@ ZONES = ("left", "right", "top-left", "top-right", "bottom-left", "bottom-right"
 def run_command(argv: list[str]) -> None:
     if not argv:
         return
+    global _csd_event_cursor
+    _csd_event_cursor = None
     name, address = argv[0], (argv[1] if len(argv) > 1 else None)
+    # csd-minimize appends "ADDR CURSOR_X CURSOR_Y" sampled at click time.
+    if name in ("csd-max", "unmax") and len(argv) >= 4:
+        try:
+            _csd_event_cursor = (int(float(argv[2])), int(float(argv[3])))
+        except ValueError:
+            _csd_event_cursor = None
     if name in ZONES:
         cmd_snap(name, address)
     elif name == "up":
         cmd_snap("max", address)
+    elif name == "csd-max":
+        cmd_csd_max(address)
     elif name == "max":
         cmd_max(address)
     elif name == "unmax":
@@ -1529,8 +1755,10 @@ def daemon() -> int:
                         window = find_window(normalize_address(address))
                         if window is not None and is_aidyc_window(window):
                             _safe(on_aidyc_hint, address)
-                        # Non-AidyC: ignore fullscreen events. Chasing Chrome/Firefox
-                        # maximize here caused an infinite fit/maximize loop.
+                        elif window is not None and is_csd_browser(window):
+                            # Mode 1 maximize → floating snap (keep CSD buttons).
+                            # True F11 (2/3) is left alone.
+                            _safe(demote_browser_compositor_max, window)
                     elif event in ("movewindow", "movewindowv2", "changefloatingmode"):
                         # Only AidyC needs live upgrades; browsers maximize natively.
                         address = data.split(",", 1)[0] if data else ""
