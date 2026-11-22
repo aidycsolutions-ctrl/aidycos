@@ -338,22 +338,52 @@ install_wifi_reclaim_oneshot() {
   run_root systemctl restart aidycos-wifi-reclaim.service >/dev/null 2>&1 || true
 }
 
+nm_managed_conf() {
+  printf '%s\n' \
+    '[main]' \
+    'plugins=ifupdown,keyfile' \
+    '' \
+    '[ifupdown]' \
+    'managed=true'
+}
+
+nm_wifi_conf() {
+  printf '%s\n' \
+    '# AidyCOS Wi-Fi defaults (NetworkManager sole manager; avoid DHCP/ifupdown fights).' \
+    '[device]' \
+    'wifi.scan-rand-mac-address=no'
+}
+
+# Restarting NetworkManager and scanning Wi-Fi on every profile update drops
+# the connection and reprints the same "ya gestiona" line.
+network_profile_current() {
+  [[ -f "${MARKER}" ]] || return 1
+  interfaces_still_claim_wifi && return 1
+  [[ -f "${NM_MANAGED_DROPIN}" && -f "${NM_WIFI_DROPIN}" ]] || return 1
+  [[ -x "${RECLAIM_DST}" && -f "${RECLAIM_UNIT_DST}" ]] || return 1
+  cmp -s "${RECLAIM_SRC}" "${RECLAIM_DST}" || return 1
+  cmp -s "${RECLAIM_UNIT_SRC}" "${RECLAIM_UNIT_DST}" || return 1
+  local managed wifi
+  managed="$(mktemp)"
+  wifi="$(mktemp)"
+  nm_managed_conf >"${managed}"
+  nm_wifi_conf >"${wifi}"
+  cmp -s "${managed}" "${NM_MANAGED_DROPIN}" || { rm -f "${managed}" "${wifi}"; return 1; }
+  cmp -s "${wifi}" "${NM_WIFI_DROPIN}" || { rm -f "${managed}" "${wifi}"; return 1; }
+  rm -f "${managed}" "${wifi}"
+  systemctl is-enabled NetworkManager.service >/dev/null 2>&1 || return 1
+}
+
+if network_profile_current; then
+  exit 0
+fi
+
 run_root install -d -m 0755 "${NM_CONF_D}" /var/lib/aidycos
-printf '%s\n' \
-  '[main]' \
-  'plugins=ifupdown,keyfile' \
-  '' \
-  '[ifupdown]' \
-  'managed=true' \
-  | run_root tee "${NM_MANAGED_DROPIN}" >/dev/null
+nm_managed_conf | run_root tee "${NM_MANAGED_DROPIN}" >/dev/null
 
 # Minimal Wi-Fi defaults: disable scan MAC randomization (helps flaky Realtek/
 # Broadcom on Debian). Keep NM as DHCP/Wi-Fi owner — no competing clients.
-printf '%s\n' \
-  '# AidyCOS Wi-Fi defaults (NetworkManager sole manager; avoid DHCP/ifupdown fights).' \
-  '[device]' \
-  'wifi.scan-rand-mac-address=no' \
-  | run_root tee "${NM_WIFI_DROPIN}" >/dev/null
+nm_wifi_conf | run_root tee "${NM_WIFI_DROPIN}" >/dev/null
 
 if run_root test -f /etc/NetworkManager/NetworkManager.conf; then
   if run_root grep -q '^[[:space:]]*managed[[:space:]]*=' /etc/NetworkManager/NetworkManager.conf; then

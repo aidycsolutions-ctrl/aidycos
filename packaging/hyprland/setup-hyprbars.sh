@@ -182,18 +182,18 @@ elif [[ ! -f "$PLUGIN" ]]; then
 elif [[ -f "$STAMP" && "$(cat "$STAMP")" == "$running" ]]; then
     write_conf
     ensure_source
-    echo "• hyprbars ya compilado para hyprland ${running}"
-    echo "  → $PLUGIN"
-    echo "  → $CONF"
-    if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
-        if reload_and_check; then
-            exit 0
-        fi
-        echo "• recompilando porque el plugin no carga en esta sesión…"
-        needs_build=1
-    else
+    # Already built for this Hyprland. Do not unload/reload or recompile just
+    # because an update ran; that reprints "ya compilado" and can rebuild on a
+    # transient hyprctl failure.
+    if [[ -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]] || plugin_loaded; then
         exit 0
     fi
+    hyprctl plugin load "$PLUGIN" >/dev/null 2>&1 || true
+    if plugin_loaded; then
+        exit 0
+    fi
+    echo "• hyprbars no cargó en esta sesión; se recompila"
+    needs_build=1
 elif [[ -f "$PLUGIN" && ! -f "$STAMP" ]]; then
     # Legacy installs (plugin without stamp): keep the .so, record the version, refresh conf.
     printf '%s\n' "$running" >"$STAMP"

@@ -187,6 +187,67 @@ apt_has_suite() {
     | awk -v suite="${suite}/" 'index($0, suite) { found=1 } END { exit !found }'
 }
 
+pkg_installed() {
+  dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null | grep -qx installed
+}
+
+# Install only packages that are missing. Re-running apt-get install on a
+# current profile prints "ya está en su versión más reciente" once per package
+# and still solves the whole dependency tree.
+apt_install_missing() {
+  local suite=""
+  if [[ "${1:-}" == "-t" ]]; then
+    suite="$2"
+    shift 2
+  fi
+  local -a missing=()
+  local pkg
+  for pkg in "$@"; do
+    if ! pkg_installed "${pkg}"; then
+      missing+=("${pkg}")
+    fi
+  done
+  if ((${#missing[@]} == 0)); then
+    return 0
+  fi
+  echo "Instalando paquetes que faltan: ${missing[*]}"
+  if [[ -n "${suite}" ]]; then
+    sudo apt-get install -y --no-install-recommends -t "${suite}" "${missing[@]}"
+  else
+    sudo apt-get install -y --no-install-recommends "${missing[@]}"
+  fi
+}
+
+desktop_packages_present() {
+  local line pkg
+  line="$("${HOME}/.local/bin/aidycos" plan aidyc-desktop 2>/dev/null | sed -n 's/^Paquetes: //p' | head -n1)"
+  [[ -n "${line}" && "${line}" != "ninguno" ]] || return 1
+  for pkg in ${line}; do
+    pkg_installed "${pkg}" || return 1
+  done
+}
+
+# -f rebuilds every icon. On an update, refresh only if files are newer, and
+# never rebuild Adwaita (the profile does not edit that theme).
+refresh_icon_cache() {
+  local as_root="$1" theme="$2"
+  [[ -d "${theme}" ]] || return 0
+  command -v gtk-update-icon-cache >/dev/null 2>&1 || return 0
+  if [[ "${theme}" == */Adwaita && "${PROFILE_REFRESH:-0}" == 1 ]]; then
+    return 0
+  fi
+  local -a cmd=(gtk-update-icon-cache)
+  if [[ "${PROFILE_REFRESH:-0}" != 1 ]]; then
+    cmd+=(-f)
+  fi
+  cmd+=("${theme}")
+  if [[ "${as_root}" == sudo ]]; then
+    sudo "${cmd[@]}" >/dev/null 2>&1 || true
+  else
+    "${cmd[@]}" >/dev/null 2>&1 || true
+  fi
+}
+
 ensure_source() {
   local path="$1" content="$2"
   if [[ -e "${path}" ]]; then
@@ -199,7 +260,23 @@ ensure_source() {
   echo "Fuente APT de AidyCOS añadida: ${path}"
 }
 
-sudo apt-get update
+# Re-applying an installed profile must not refresh APT twice and then
+# reinstall every package that is already current.
+PROFILE_REFRESH=0
+if [[ -f /var/lib/aidycos/profile-installed ]]; then
+  PROFILE_REFRESH=1
+  echo "Actualizando AidyCOS: se omite lo que ya coincide."
+fi
+
+sources_changed=0
+indexes_ready=0
+if apt_has_suite python3-venv trixie && apt_has_suite libonnxruntime1.21 trixie \
+   && apt_has_suite hyprland trixie-backports && apt_has_suite xdg-desktop-portal-hyprland trixie-backports; then
+  indexes_ready=1
+fi
+if [[ "${PROFILE_REFRESH}" != 1 || "${indexes_ready}" != 1 ]]; then
+  sudo apt-get update
+fi
 if ! apt_has_suite python3-venv trixie || ! apt_has_suite libonnxruntime1.21 trixie; then
   ensure_source "${STANDARD_SOURCE}" 'Types: deb
 URIs: http://deb.debian.org/debian
@@ -212,6 +289,7 @@ URIs: http://security.debian.org/debian-security
 Suites: trixie-security
 Components: main contrib non-free non-free-firmware
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg'
+  sources_changed=1
 fi
 if ! apt_has_suite hyprland trixie-backports || ! apt_has_suite xdg-desktop-portal-hyprland trixie-backports; then
   ensure_source "${BACKPORT_SOURCE}" 'Types: deb
@@ -219,8 +297,11 @@ URIs: http://deb.debian.org/debian
 Suites: trixie-backports
 Components: main contrib non-free non-free-firmware
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg'
+  sources_changed=1
 fi
-sudo apt-get update
+if [[ "${sources_changed}" == 1 ]]; then
+  sudo apt-get update
+fi
 if ! apt_has_suite python3-venv trixie || ! apt_has_candidate python3-venv; then
   echo "APT aún no encuentra python3-venv. Revisa la conectividad y las fuentes de Debian 13." >&2
   exit 1
@@ -236,13 +317,17 @@ if ! apt_has_suite hyprland trixie-backports || ! apt_has_suite xdg-desktop-port
 fi
 
 BOOTSTRAP=(ca-certificates curl git python3 python3-pip python3-venv python3-setuptools)
-sudo apt-get install -y --no-install-recommends "${BOOTSTRAP[@]}"
+apt_install_missing "${BOOTSTRAP[@]}"
 
 "${ROOT}/scripts/install-local.sh"
-"${HOME}/.local/bin/aidycos" install aidyc-desktop --apply
-sudo apt-get install -y --no-install-recommends -t trixie-backports \
+if [[ "${PROFILE_REFRESH}" == 1 ]] && desktop_packages_present; then
+  :
+else
+  "${HOME}/.local/bin/aidycos" install aidyc-desktop --apply
+fi
+apt_install_missing -t trixie-backports \
   hyprland xdg-desktop-portal-hyprland hyprland-guiutils hyprpolkitagent
-sudo apt-get install -y --no-install-recommends plymouth plymouth-themes
+apt_install_missing plymouth plymouth-themes
 # Polkit agent is required so Synaptic/Flatpak can ask for the admin password in GUI.
 POLKIT_AGENT=""
 for candidate in \
@@ -285,7 +370,36 @@ install_jugoo() {
   local source_dir="${AIDYCOS_JUGOO_SOURCE:-}"
   # Wallpaper + atajos + iconos viven en esta rama hasta fusionarse en main.
   local jugoo_ref="${AIDYCOS_JUGOO_REF:-feature/atajos-aidyc-escritorio}"
+  local data_home="${XDG_DATA_HOME:-${HOME}/.local/share}"
+  local jugoo_stamp_file="${data_home}/aidycos/jugoo-deploy-stamp"
+  local jugoo_stamp=""
+  local skip_jugoo_fetch=0
 
+  # Same upstream commit and same overlay: do not clone, deploy, or reinstall.
+  if [[ -z "${source_dir}" ]]; then
+    local overlay_hash remote_sha
+    overlay_hash="$(
+      find "${ROOT}/packaging/jugoo-overlay" "${ROOT}/scripts/deploy-jugoo.py" \
+        -type f ! -path '*/__pycache__/*' -print0 \
+        | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}'
+    )"
+    remote_sha="$(
+      timeout 20 git ls-remote --heads \
+        https://github.com/aidycsolutions-ctrl/jugoo.git "refs/heads/${jugoo_ref}" \
+        | awk 'NR==1 {print $1}'
+    )" || true
+    if [[ -n "${remote_sha}" && -n "${overlay_hash}" ]]; then
+      jugoo_stamp="${remote_sha} ${overlay_hash}"
+      if [[ -f "${jugoo_dir}/shell/__main__.py" && -f "${jugoo_stamp_file}" \
+         && "$(cat "${jugoo_stamp_file}")" == "${jugoo_stamp}" ]]; then
+        skip_jugoo_fetch=1
+      fi
+    fi
+  fi
+
+  if [[ "${skip_jugoo_fetch}" == 1 ]]; then
+    jugoo_source="${jugoo_dir}"
+  else
   staging_dir="$(mktemp -d "${TMPDIR:-/tmp}/aidycos-jugoo.XXXXXX")"
   trap 'rm -rf "${staging_dir}"' RETURN
   jugoo_source="${staging_dir}/jugoo"
@@ -318,6 +432,7 @@ install_jugoo() {
   sudo python3 "${ROOT}/scripts/deploy-jugoo.py" "${jugoo_source}" "${jugoo_dir}"
   trap - RETURN
   rm -rf "${staging_dir}"
+  fi
 
   sudo install -D -m 0755 "${ROOT}/packaging/jugoo-launcher" /usr/local/bin/jugoo
   # Parche de iconos AidyC/AidyChat en Jugoo sin tocar /opt si el overlay ya lo trajo.
@@ -358,10 +473,8 @@ install_jugoo() {
   done
   sudo install -m 0755 "${ROOT}/packaging/aidyc/aidyc-wrapper" /usr/local/bin/aidyc
   sudo install -m 0755 "${ROOT}/packaging/aidyc/aidyc-window-brand.py" /usr/local/libexec/aidycos/aidyc-window-brand.py
-  if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-    sudo gtk-update-icon-cache -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
-    gtk-update-icon-cache -f "${HOME}/.local/share/icons/hicolor" >/dev/null 2>&1 || true
-  fi
+  refresh_icon_cache sudo /usr/share/icons/hicolor
+  refresh_icon_cache user "${HOME}/.local/share/icons/hicolor"
   if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "${HOME}/.local/share/applications" >/dev/null 2>&1 || true
   fi
@@ -374,7 +487,13 @@ install_jugoo() {
       sudo rm -f "${HOME}/.local/bin/jugoo"
     fi
   fi
-  (cd "${jugoo_dir}" && python3 -m shell --install)
+  if [[ "${skip_jugoo_fetch}" != 1 ]]; then
+    (cd "${jugoo_dir}" && python3 -m shell --install)
+    if [[ -n "${jugoo_stamp}" ]]; then
+      install -D -m 0644 /dev/null "${jugoo_stamp_file}"
+      printf '%s\n' "${jugoo_stamp}" >"${jugoo_stamp_file}"
+    fi
+  fi
   # shell --install may create a user-local launcher and service. Keep the
   # launcher as a compatibility shim, and override the unit's command so both
   # entry points always execute the same system-managed checkout.
@@ -395,10 +514,13 @@ install_jugoo() {
       || sudo chown "$(id -u):$(id -g)" "${HOME}/.local/bin/jugoo"
   fi
   local service_dir="${config_home}/systemd/user/jugoo-task-watcher.service.d"
-  install -D -m 0644 "${ROOT}/packaging/systemd/jugoo-task-watcher.service.d/aidycos.conf" \
-    "${service_dir}/aidycos.conf"
-  systemctl --user daemon-reload >/dev/null 2>&1 || true
-  systemctl --user try-restart jugoo-task-watcher.service >/dev/null 2>&1 || true
+  local service_dropin="${service_dir}/aidycos.conf"
+  local service_src="${ROOT}/packaging/systemd/jugoo-task-watcher.service.d/aidycos.conf"
+  if [[ ! -f "${service_dropin}" ]] || ! cmp -s "${service_src}" "${service_dropin}"; then
+    install -D -m 0644 "${service_src}" "${service_dropin}"
+    systemctl --user daemon-reload >/dev/null 2>&1 || true
+    systemctl --user try-restart jugoo-task-watcher.service >/dev/null 2>&1 || true
+  fi
   # hyprbars is owned by AidyCOS (packaging/hyprland/setup-hyprbars.sh) and runs
   # after the ventanas scripts are installed further below — Jugoo upstream does
   # not ship setup-hyprbars on the branches we clone.
@@ -444,18 +566,28 @@ fi
 # without running lpadmin by hand.
 printer_catalog_src="${ROOT}/packaging/printers/shared-printers.json"
 printer_catalog_dst="${HOME}/.local/share/aidycos/shared-printers.json"
+printer_stamp="${HOME}/.local/share/aidycos/printers-stamp"
 if [[ -f "${printer_catalog_src}" ]]; then
-  install -D -m 0644 "${printer_catalog_src}" "${printer_catalog_dst}"
-  docs_dir="$(xdg-user-dir DOCUMENTS 2>/dev/null || true)"
-  if [[ -n "${docs_dir}" && -d "${docs_dir}" ]]; then
-    install -D -m 0644 "${printer_catalog_src}" "${docs_dir}/shared-printers.json"
-  fi
-  echo "Catálogo de impresoras AidyCOS listo en ${printer_catalog_dst}"
-  if [[ -f "${ROOT}/scripts/apply-shared-printers.py" ]]; then
-    if python3 "${ROOT}/scripts/apply-shared-printers.py" "${printer_catalog_dst}"; then
-      echo "Impresoras compartidas aplicadas desde el catálogo AidyCOS."
-    else
-      echo "Aviso: no se pudieron aplicar las impresoras del catálogo (¿CUPS/lpadmin?)." >&2
+  printer_hash="$(sha256sum "${printer_catalog_src}" | awk '{print $1}')"
+  # force=True rewrites every queue and prints them as "actualizadas" even
+  # when the catalog file did not change.
+  if [[ -f "${printer_stamp}" && "$(cat "${printer_stamp}")" == "${printer_hash}" \
+     && -f "${printer_catalog_dst}" ]]; then
+    :
+  else
+    install -D -m 0644 "${printer_catalog_src}" "${printer_catalog_dst}"
+    docs_dir="$(xdg-user-dir DOCUMENTS 2>/dev/null || true)"
+    if [[ -n "${docs_dir}" && -d "${docs_dir}" ]]; then
+      install -D -m 0644 "${printer_catalog_src}" "${docs_dir}/shared-printers.json"
+    fi
+    echo "Catálogo de impresoras AidyCOS listo en ${printer_catalog_dst}"
+    if [[ -f "${ROOT}/scripts/apply-shared-printers.py" ]]; then
+      if python3 "${ROOT}/scripts/apply-shared-printers.py" "${printer_catalog_dst}"; then
+        printf '%s\n' "${printer_hash}" >"${printer_stamp}"
+        echo "Impresoras compartidas aplicadas desde el catálogo AidyCOS."
+      else
+        echo "Aviso: no se pudieron aplicar las impresoras del catálogo (¿CUPS/lpadmin?)." >&2
+      fi
     fi
   fi
 fi
@@ -521,10 +653,8 @@ for gtk_settings in "${GTK3_SETTINGS}" "${GTK4_SETTINGS}"; do
   ensure_gtk_setting "${gtk_settings}" "gtk-theme-name" "Adwaita"
   ensure_gtk_setting "${gtk_settings}" "gtk-decoration-layout" "icon:minimize,maximize,close"
 done
-if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-  sudo gtk-update-icon-cache -f /usr/share/icons/Adwaita >/dev/null 2>&1 || true
-  sudo gtk-update-icon-cache -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
-fi
+refresh_icon_cache sudo /usr/share/icons/Adwaita
+refresh_icon_cache sudo /usr/share/icons/hicolor
 
 # Jugoo's network and battery indicators use NetworkManager and UPower.
 # wpasupplicant (+ iw/rfkill/wireless firmware) comes from the aidyc-desktop
@@ -646,15 +776,15 @@ install_aidylink() {
   install -m 0755 "${desktop_entry}" "${user_desktop}/AidyChat.desktop"
   rm -f "${user_desktop}/AidyLink.desktop" "${user_desktop}/aidylink.desktop"
   systemctl --user daemon-reload >/dev/null 2>&1 || true
-  if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-    sudo gtk-update-icon-cache -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
-    gtk-update-icon-cache -f "${HOME}/.local/share/icons/hicolor" >/dev/null 2>&1 || true
-  fi
+  refresh_icon_cache sudo /usr/share/icons/hicolor
+  refresh_icon_cache user "${HOME}/.local/share/icons/hicolor"
   if command -v update-desktop-database >/dev/null 2>&1; then
     sudo update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
     update-desktop-database "${desktop_dir}" >/dev/null 2>&1 || true
   fi
-  echo "AidyChat instalado. Abre el acceso del escritorio; la primera vez pide el nombre del PC y puedes emparejar otros con un código."
+  if [[ "${PROFILE_REFRESH}" != 1 ]]; then
+    echo "AidyChat instalado. Abre el acceso del escritorio; la primera vez pide el nombre del PC y puedes emparejar otros con un código."
+  fi
 }
 install_aidylink
 
@@ -698,15 +828,15 @@ install_aidyship() {
         "${HOME}/.local/share/icons/hicolor/${icon_size}x${icon_size}/apps/aidyship.png"
     fi
   done
-  if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-    sudo gtk-update-icon-cache -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
-    gtk-update-icon-cache -f "${HOME}/.local/share/icons/hicolor" >/dev/null 2>&1 || true
-  fi
+  refresh_icon_cache sudo /usr/share/icons/hicolor
+  refresh_icon_cache user "${HOME}/.local/share/icons/hicolor"
   if command -v update-desktop-database >/dev/null 2>&1; then
     sudo update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
     update-desktop-database "${desktop_dir}" >/dev/null 2>&1 || true
   fi
-  echo "AidyShip instalado. Abre el menú o Super+G; la primera vez pide conectar tu GitHub."
+  if [[ "${PROFILE_REFRESH}" != 1 ]]; then
+    echo "AidyShip instalado. Abre el menú o Super+G; la primera vez pide conectar tu GitHub."
+  fi
 }
 install_aidyship
 
@@ -1237,14 +1367,15 @@ bash "${ROOT}/packaging/boot/apply-aidycos-boot.sh"
 
 if command -v systemctl >/dev/null && systemctl list-unit-files cups-browsed.service >/dev/null 2>&1; then
   override=/etc/systemd/system/cups-browsed.service.d/aidycos.conf
+  cups_changed=0
   if [[ ! -e "${override}" ]]; then
     sudo install -d /etc/systemd/system/cups-browsed.service.d
     printf '[Unit]\nAfter=graphical.target\n' | sudo tee "${override}" >/dev/null
+    cups_changed=1
   elif ! sudo grep -q '^After=graphical.target$' "${override}"; then
     echo "Se conserva el override existente de cups-browsed: ${override}"
-    override=
   fi
-  if [[ -n "${override}" ]]; then
+  if [[ "${cups_changed}" == 1 ]]; then
     sudo systemctl daemon-reload
     sudo systemctl disable cups-browsed.service >/dev/null 2>&1 || true
     sudo systemctl add-wants graphical.target cups-browsed.service
@@ -1306,7 +1437,9 @@ configure_login() {
       echo "SDDM usa autenticación por contraseña sin espera de huella."
     fi
   fi
-  echo "SDDM usa el tema AidyCOS con logo y formulario de acceso en cada pantalla y NumLock activo."
+  if [[ "${PROFILE_REFRESH}" != 1 || "${sddm_needs_update}" == 1 ]]; then
+    echo "SDDM usa el tema AidyCOS con logo y formulario de acceso en cada pantalla y NumLock activo."
+  fi
 }
 configure_login
 
@@ -1317,16 +1450,22 @@ systemctl --user enable --now aidycos-update-check.timer >/dev/null 2>&1 || true
 sudo install -d -m 0755 /var/lib/aidycos
 printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" | sudo tee /var/lib/aidycos/profile-installed >/dev/null
 
-cat <<EOF
+if [[ "${PROFILE_REFRESH}" == 1 ]]; then
+  echo "AidyCOS actualizado."
+else
+  cat <<EOF
 
 AidyCOS quedó aplicado sobre Debian 13.
 GRUB queda oculto en modo gráfico (con resoluciones de respaldo; prioriza el monitor externo si estaba conectado al aplicar el perfil). Plymouth muestra solo el logo AidyCOS y SDDM muestra logo y formulario de acceso en cada pantalla.
 En SDDM selecciona la sesión Hyprland la primera vez; luego se recordará. NumLock queda activo en SDDM y Hyprland. Si se modificó tu configuración de Hyprland, revisa el respaldo indicado arriba.
 Si el perfil no te sirve, quítalo con «Quitar AidyCOS» en el menú, \`aidycos-uninstall\` o \`aidycos uninstall\`.
 EOF
+fi
 
 if [[ "${NO_REBOOT}" == 1 ]]; then
-  echo "Reinicio omitido por --no-reboot."
+  if [[ "${PROFILE_REFRESH}" != 1 ]]; then
+    echo "Reinicio omitido por --no-reboot."
+  fi
   exit 0
 fi
 

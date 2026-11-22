@@ -201,9 +201,10 @@ if [[ -z "${latest}" ]]; then
   exit 1
 fi
 if [[ "${latest}" == "${current}" ]]; then
-  if [[ -t 0 ]]; then
-    echo "AidyCOS está actualizado (${latest:0:8})."
-  elif command -v notify-send >/dev/null 2>&1; then
+  echo "AidyCOS está actualizado (${latest:0:8})."
+  # The daily timer (systemd sets INVOCATION_ID) must stay quiet when nothing
+  # changed. A manual menu/shortcut launch still gets one notification.
+  if [[ -z "${INVOCATION_ID:-}" && ! -t 0 ]] && command -v notify-send >/dev/null 2>&1; then
     notify-send -a AidyCOS "AidyCOS" "Ya está actualizado (${latest:0:8})." || true
   fi
   exit 0

@@ -151,15 +151,15 @@ elif [[ ! -f "$PLUGIN" ]]; then
 elif [[ -f "$STAMP" && "$(cat "$STAMP")" == "$running" ]]; then
     write_conf
     ensure_source
-    echo "• csd-minimize ya compilado para hyprland ${running}"
-    if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]]; then
-        if reload_and_check; then
-            exit 0
-        fi
-        needs_build=1
-    else
+    if [[ -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]] || plugin_loaded; then
         exit 0
     fi
+    hyprctl plugin load "$PLUGIN" >/dev/null 2>&1 || true
+    if plugin_loaded; then
+        exit 0
+    fi
+    echo "• csd-minimize no cargó en esta sesión; se recompila"
+    needs_build=1
 else
     needs_build=1
 fi

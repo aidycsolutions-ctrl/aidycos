@@ -51,6 +51,72 @@ if [[ ! -f "${ROOT}/packaging/boot/aidycos-boot-gfxmode" ]]; then
   exit 1
 fi
 
+# update-grub + update-initramfs -k all is the slow part of every profile
+# reapply. Skip both when the generated boot files already match.
+boot_already_current() {
+  local gfxmode cmdline expected plymouth_expected fb_expected
+  [[ -f "${GRUB_DROPIN}" ]] || return 1
+  [[ -f /boot/grub/AidyCOS.png ]] || return 1
+  [[ -f "${PLYMOUTH_THEME_DIR}/AidyCOS.png" ]] || return 1
+  [[ -f "${PLYMOUTH_THEME_DIR}/aidycos.plymouth" ]] || return 1
+  [[ -f "${PLYMOUTH_THEME_DIR}/aidycos.script" ]] || return 1
+  [[ -f /usr/share/backgrounds/aidycos.png ]] || return 1
+  [[ -f /etc/plymouth/plymouthd.conf ]] || return 1
+  [[ -f /etc/initramfs-tools/conf.d/aidycos-framebuffer ]] || return 1
+  [[ -L /usr/share/plymouth/themes/default.plymouth ]] || return 1
+  [[ "$(readlink /usr/share/plymouth/themes/default.plymouth)" == "${PLYMOUTH_THEME_DIR}/aidycos.plymouth" ]] || return 1
+  cmp -s "${ROOT}/packaging/plymouth/AidyCOS.png" "${PLYMOUTH_THEME_DIR}/AidyCOS.png" || return 1
+  cmp -s "${ROOT}/packaging/plymouth/AidyCOS.png" /usr/share/backgrounds/aidycos.png || return 1
+  cmp -s "${ROOT}/packaging/plymouth/aidycos.plymouth" "${PLYMOUTH_THEME_DIR}/aidycos.plymouth" || return 1
+  cmp -s "${ROOT}/packaging/plymouth/aidycos.script" "${PLYMOUTH_THEME_DIR}/aidycos.script" || return 1
+  if [[ -f /etc/grub.d/10_linux ]] && grep -q '^quiet_boot="0"$' /etc/grub.d/10_linux; then
+    return 1
+  fi
+
+  gfxmode="$(python3 "${ROOT}/packaging/boot/aidycos-boot-gfxmode" 2>/dev/null || true)"
+  if [[ -z "${gfxmode}" ]]; then
+    gfxmode="1920x1080x32,1680x1050x32,1600x900x32,1366x768x32,1280x720x32,1024x768x32,auto"
+  fi
+  cmdline="${CMDLINE_OPTIONS[*]}"
+  expected="$(mktemp)"
+  cat >"${expected}" <<EOF
+# Managed by AidyCOS. Quiet graphical boot with logo; hides GRUB menu text.
+GRUB_TIMEOUT=0
+GRUB_TIMEOUT_STYLE=hidden
+GRUB_DISTRIBUTOR="AidyCOS"
+GRUB_BACKGROUND="/boot/grub/AidyCOS.png"
+GRUB_GFXMODE="${gfxmode}"
+GRUB_GFXPAYLOAD_LINUX=keep
+GRUB_TERMINAL_OUTPUT=gfxterm
+GRUB_CMDLINE_LINUX_DEFAULT="${cmdline}"
+EOF
+  cmp -s "${expected}" "${GRUB_DROPIN}" || { rm -f "${expected}"; return 1; }
+  rm -f "${expected}"
+
+  plymouth_expected="$(mktemp)"
+  cat >"${plymouth_expected}" <<'EOF'
+# Managed by AidyCOS. Quiet boot splash with the AidyCOS logo.
+[Daemon]
+Theme=aidycos
+ShowDelay=0
+DeviceTimeout=8
+EOF
+  cmp -s "${plymouth_expected}" /etc/plymouth/plymouthd.conf || { rm -f "${plymouth_expected}"; return 1; }
+  rm -f "${plymouth_expected}"
+
+  fb_expected="$(mktemp)"
+  cat >"${fb_expected}" <<'EOF'
+# Managed by AidyCOS.
+FRAMEBUFFER=y
+EOF
+  cmp -s "${fb_expected}" /etc/initramfs-tools/conf.d/aidycos-framebuffer || { rm -f "${fb_expected}"; return 1; }
+  rm -f "${fb_expected}"
+}
+
+if boot_already_current; then
+  exit 0
+fi
+
 run_root apt-get install -y --no-install-recommends plymouth plymouth-themes python3-pil >/dev/null
 run_root install -d -m 0755 "${PLYMOUTH_THEME_DIR}"
 run_root install -D -m 0644 "${ROOT}/packaging/plymouth/AidyCOS.png" "${PLYMOUTH_THEME_DIR}/AidyCOS.png"

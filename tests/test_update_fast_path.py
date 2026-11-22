@@ -1,0 +1,58 @@
+"""The profile reapply used by aidycos-update must skip work that already matches."""
+
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+INSTALLER = ROOT / "scripts" / "install-debian-profile.sh"
+UPDATER = ROOT / "scripts" / "aidycos-update"
+BOOT = ROOT / "packaging" / "boot" / "apply-aidycos-boot.sh"
+NETWORK = ROOT / "packaging" / "network" / "apply-aidycos-network.sh"
+HYPRBARS = ROOT / "packaging" / "hyprland" / "setup-hyprbars.sh"
+CSD = ROOT / "packaging" / "hyprland" / "setup-csd-minimize.sh"
+
+
+class UpdateFastPathTests(unittest.TestCase):
+    def test_updater_timer_stays_quiet_when_current(self) -> None:
+        text = UPDATER.read_text(encoding="utf-8")
+        self.assertIn("INVOCATION_ID", text)
+        self.assertLess(text.index("INVOCATION_ID"), text.index("Ya está actualizado"))
+
+    def test_installer_skips_repeated_apt_and_deploys(self) -> None:
+        text = INSTALLER.read_text(encoding="utf-8")
+        self.assertIn("PROFILE_REFRESH", text)
+        self.assertIn("apt_install_missing", text)
+        self.assertIn("sources_changed", text)
+        self.assertIn("desktop_packages_present", text)
+        self.assertIn("jugoo-deploy-stamp", text)
+        self.assertIn("printers-stamp", text)
+        self.assertIn("refresh_icon_cache", text)
+        self.assertNotIn("gtk-update-icon-cache -f", text)
+
+    def test_boot_skips_grub_and_initramfs_when_files_match(self) -> None:
+        text = BOOT.read_text(encoding="utf-8")
+        self.assertLess(
+            text.index("if boot_already_current; then"),
+            text.index('run_root "${UPDATE_GRUB}"'),
+        )
+        self.assertIn('"${UPDATE_INITRAMFS}"', text)
+
+    def test_network_does_not_restart_when_profile_matches(self) -> None:
+        text = NETWORK.read_text(encoding="utf-8")
+        self.assertLess(
+            text.index("if network_profile_current; then"),
+            text.rindex("run_root systemctl restart NetworkManager.service"),
+        )
+
+    def test_plugins_do_not_reload_when_already_built(self) -> None:
+        for path in (HYPRBARS, CSD):
+            text = path.read_text(encoding="utf-8")
+            self.assertNotIn("ya compilado para", text)
+            self.assertIn("plugin_loaded", text)
+
+
+if __name__ == "__main__":
+    unittest.main()
