@@ -34,6 +34,7 @@ Vista previa del perfil AidyCOS para Debian 13:
   * Quitar la versión anterior del paquete AidyC si está instalada (conservar sus datos).
   * Instalar AidyChat nativo, icono/acceso de escritorio y daemon de usuario para notificaciones.
   * Instalar AidyShip (commit/push GitHub con gh por usuario), icono de menú y atajo Super+G.
+  * Instalar AidyShare (respaldo a AidyCShare del negocio con login AidyC).
   * Habilitar NetworkManager, UPower y BlueZ para Wi-Fi, batería y Bluetooth de Jugoo.
   * Migrar Wi-Fi de ifupdown (instalador Debian) a NetworkManager para que Jugoo no lo vea como LAN.
   * Instalar librsvg2-common para que los iconos symbolic SVG de Adwaita no salgan como rectángulos.
@@ -839,6 +840,54 @@ install_aidyship() {
   fi
 }
 install_aidyship
+
+install_aidyshare() {
+  local aidyshare_dir=/opt/aidyc/aidyshare
+  local desktop_dir="${HOME}/.local/share/applications"
+  local desktop_entry="${ROOT}/packaging/aidyshare/aidyshare.desktop"
+  local icon_size
+  if ! dpkg-query -W -f='${db:Status-Status}' python3-gi 2>/dev/null | grep -qx 'installed'; then
+    sudo apt-get install -y --no-install-recommends python3-gi gir1.2-gtk-3.0
+  fi
+  if ! command -v notify-send >/dev/null 2>&1; then
+    sudo apt-get install -y --no-install-recommends libnotify-bin
+  fi
+  sudo install -d -m 0755 "${aidyshare_dir}/aidyshare" /usr/local/bin /usr/share/applications
+  sudo install -m 0644 "${ROOT}/packaging/aidyshare/aidyshare/"*.py "${aidyshare_dir}/aidyshare/"
+  sudo install -m 0644 "${ROOT}/packaging/aidyshare/README.md" "${aidyshare_dir}/README.md"
+  if [[ -f "${ROOT}/packaging/aidyshare/aidyshare.png" ]]; then
+    sudo install -D -m 0644 "${ROOT}/packaging/aidyshare/aidyshare.png" "${aidyshare_dir}/aidyshare.png"
+    sudo install -D -m 0644 "${ROOT}/packaging/aidyshare/aidyshare.png" /usr/share/pixmaps/aidyshare.png
+  fi
+  sudo install -m 0755 "${ROOT}/packaging/aidyshare/aidyshare-wrapper" /usr/local/bin/aidyshare
+  sudo install -m 0644 "${desktop_entry}" /usr/share/applications/aidyshare.desktop
+  for icon_size in 16 24 32 48 64 128 256 512; do
+    if [[ -f "${ROOT}/packaging/aidyshare/icons/aidyshare-${icon_size}.png" ]]; then
+      sudo install -D -m 0644 \
+        "${ROOT}/packaging/aidyshare/icons/aidyshare-${icon_size}.png" \
+        "/usr/share/icons/hicolor/${icon_size}x${icon_size}/apps/aidyshare.png"
+    fi
+  done
+  install -d "${desktop_dir}" "${HOME}/.local/share/icons/hicolor"
+  install -m 0644 "${desktop_entry}" "${desktop_dir}/aidyshare.desktop"
+  for icon_size in 16 24 32 48 64 128 256 512; do
+    if [[ -f "${ROOT}/packaging/aidyshare/icons/aidyshare-${icon_size}.png" ]]; then
+      install -D -m 0644 \
+        "${ROOT}/packaging/aidyshare/icons/aidyshare-${icon_size}.png" \
+        "${HOME}/.local/share/icons/hicolor/${icon_size}x${icon_size}/apps/aidyshare.png"
+    fi
+  done
+  refresh_icon_cache sudo /usr/share/icons/hicolor
+  refresh_icon_cache user "${HOME}/.local/share/icons/hicolor"
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    sudo update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+    update-desktop-database "${desktop_dir}" >/dev/null 2>&1 || true
+  fi
+  if [[ "${PROFILE_REFRESH}" != 1 ]]; then
+    echo "AidyShare instalado. Login AidyC → respaldo en AidyCShare del negocio (500 MB)."
+  fi
+}
+install_aidyshare
 
 CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
 HYPR_DIR="${CONFIG_HOME}/hypr"

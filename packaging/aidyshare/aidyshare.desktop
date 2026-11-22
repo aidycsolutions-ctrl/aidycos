@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=AidyShare
+GenericName=Respaldo
+Comment=Respaldo sencillo a AidyCShare del negocio (login AidyC)
+Exec=/usr/local/bin/aidyshare ui
+TryExec=/usr/local/bin/aidyshare
+Icon=aidyshare
+Terminal=false
+Categories=Network;FileTransfer;Office;
+StartupNotify=true
+Keywords=backup;share;aidyc;cloud;respaldo;
+StartupWMClass=aidyshare
