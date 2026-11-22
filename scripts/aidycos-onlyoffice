@@ -14,6 +14,16 @@ notify() {
   fi
 }
 
+# Jugoo appends --new-window on another desktop; OnlyOffice wants --new:word.
+ARGS=()
+for arg in "$@"; do
+  case "${arg}" in
+    --new-window|--new-instance) ARGS+=(--new:word) ;;
+    *) ARGS+=("${arg}") ;;
+  esac
+done
+set -- "${ARGS[@]}"
+
 # Prefer a native .deb / PATH binary when Flatpak is missing or broken.
 try_native() {
   local bin

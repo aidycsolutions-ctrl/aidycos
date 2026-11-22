@@ -10,3 +10,10 @@ Terminal=false
 Categories=Office;WordProcessor;Spreadsheet;Presentation;
 Keywords=office;documentos;onlyoffice;flatpak;
 StartupNotify=true
+StartupWMClass=ONLYOFFICE
+Actions=new-window;
+
+[Desktop Action new-window]
+Name=Nueva ventana
+Name[es]=Nueva ventana
+Exec=aidycos-onlyoffice --new:word

@@ -2092,6 +2092,65 @@ def install_quiet_relaunch(root: Path) -> None:
         install_overlay_file(source, root / "shell/runtime_relaunch.py")
 
 
+def install_new_instance_on_other_desktops(root: Path) -> None:
+    """Open a real new window when the app already runs on another desktop.
+
+    Generic ``--new-window`` is ignored by OnlyOffice (needs ``--new:word``), so
+    a dock/launcher click looked like a no-op on the current escritorio.
+    """
+    models = root / "shell/models.py"
+    if not models.is_file():
+        return
+    try_replace_once(
+        models,
+        "_NEW_WINDOW_FLAGS = (\"--new-window\", \"--new-instance\", \"-new-window\")\n"
+        "\n"
+        "\n"
+        "def new_instance_command(application: DesktopApplication) -> str:\n"
+        "    \"\"\"Best-effort command that asks the app for a fresh window/instance.\"\"\"\n"
+        "    if application.new_instance_exec.strip():\n"
+        "        return application.new_instance_exec.strip()\n"
+        "    command = application.exec_cmd.strip()\n"
+        "    if not command:\n"
+        "        return \"\"\n"
+        "    if any(flag in command for flag in _NEW_WINDOW_FLAGS) or application.terminal:\n"
+        "        return command\n"
+        "    return f\"{command} --new-window\"\n",
+        "_NEW_WINDOW_FLAGS = (\"--new-window\", \"--new-instance\", \"-new-window\", \"--new:\", \"--new=\")\n"
+        "\n"
+        "_ONLYOFFICE_KEYS = frozenset(\n"
+        "    {\n"
+        "        \"aidycos-onlyoffice\",\n"
+        "        \"onlyoffice\",\n"
+        "        \"desktopeditors\",\n"
+        "        \"org.onlyoffice.desktopeditors\",\n"
+        "        \"onlyoffice-desktopeditors\",\n"
+        "    }\n"
+        ")\n"
+        "\n"
+        "\n"
+        "def new_instance_command(application: DesktopApplication) -> str:\n"
+        "    \"\"\"Best-effort command that asks the app for a fresh window/instance.\"\"\"\n"
+        "    if application.new_instance_exec.strip():\n"
+        "        return application.new_instance_exec.strip()\n"
+        "    command = application.exec_cmd.strip()\n"
+        "    if not command:\n"
+        "        return \"\"\n"
+        "    if any(flag in command for flag in _NEW_WINDOW_FLAGS) or application.terminal:\n"
+        "        return command\n"
+        "    keys = {\n"
+        "        application.id.casefold().strip(),\n"
+        "        (application.wm_class or \"\").casefold().strip(),\n"
+        "    }\n"
+        "    if application.desktop_path:\n"
+        "        keys.add(Path(application.desktop_path).stem.casefold())\n"
+        "    if keys & _ONLYOFFICE_KEYS or any(\"onlyoffice\" in key for key in keys if key):\n"
+        "        return f\"{command} --new:word\"\n"
+        "    return f\"{command} --new-window\"\n",
+        "abrir OnlyOffice/Chrome en otro escritorio con ventana nueva",
+    )
+
+
 def install_quiet_theme_reload(root: Path) -> None:
     """Do not hyprctl-reload on Jugoo restart when the theme file is unchanged.
 
@@ -2139,6 +2198,7 @@ def main() -> None:
 
     install_quiet_theme_reload(root)
     install_quiet_relaunch(root)
+    install_new_instance_on_other_desktops(root)
     install_desktop_icons(root)
     install_applications_menu(root)
     install_keyboard_cat(root)
