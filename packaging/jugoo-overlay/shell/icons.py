@@ -226,6 +226,20 @@ _ICON_SIZE_DIRS = (
     "16x16",
     "512x512",
     "scalable",
+    "symbolic",
+)
+# GTK themes keep app logos under apps/, but media/transport and many
+# fallbacks live in actions/mimetypes/…. Only searching apps/ left the
+# center workspace pill blank on Yurle after a Jugoo restart.
+_ICON_CONTEXT_DIRS = (
+    "apps",
+    "actions",
+    "mimetypes",
+    "status",
+    "devices",
+    "places",
+    "categories",
+    "legacy",
 )
 
 
@@ -258,7 +272,10 @@ def resolve_icon_file(
     stem = Path(name).name
     if stem.endswith(_ICON_EXTS):
         stem = Path(stem).stem
-    found = _search_icon_dirs(stem, roots if roots is not None else _icon_roots())
+    search_roots = roots if roots is not None else _icon_roots()
+    found = _search_icon_dirs(stem, search_roots)
+    if found is None and stem.endswith("-symbolic"):
+        found = _search_icon_dirs(stem[: -len("-symbolic")], search_roots)
     if roots is None:
         _ICON_FILE_CACHE[cache_key] = found
     return found
@@ -275,15 +292,17 @@ def configure_workspace_icon(image: object, icon_name: str, pixel_size: int) -> 
     except (ImportError, ValueError):
         return
     size = max(1, int(pixel_size or 18))
-    path = resolve_icon_file(icon_name, size)
-    if path is not None:
+    for candidate in (icon_name, FALLBACK_ICON):
+        path = resolve_icon_file(candidate, size)
+        if path is None:
+            continue
         try:
             pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_size(str(path), size, size)
             image.set_from_pixbuf(pixbuf)
             image.set_pixel_size(size)
             return
         except Exception:
-            pass
+            continue
     image.set_from_icon_name(icon_name or FALLBACK_ICON, Gtk.IconSize.MENU)
     image.set_pixel_size(size)
 
@@ -330,13 +349,14 @@ def _search_icon_dirs(stem: str, roots: tuple[Path, ...]) -> Path | None:
             continue
         for theme in themes:
             for size_dir in _ICON_SIZE_DIRS:
-                folder = theme / size_dir / "apps"
-                if not folder.is_dir():
-                    continue
-                for name in names:
-                    candidate = folder / name
-                    if candidate.is_file():
-                        return candidate
+                for context in _ICON_CONTEXT_DIRS:
+                    folder = theme / size_dir / context
+                    if not folder.is_dir():
+                        continue
+                    for name in names:
+                        candidate = folder / name
+                        if candidate.is_file():
+                            return candidate
     return None
 
 

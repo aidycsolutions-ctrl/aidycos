@@ -105,7 +105,8 @@ class JugooDeploymentTests(unittest.TestCase):
         self.assertIn("if path.read_text(encoding=\"utf-8\") == previous:", boot)
         self.assertIn("_apply_theme_reload_guard()", boot)
         self.assertIn("def _apply_active_window_icons", boot)
-        self.assertIn("media-skip-backward-symbolic", boot)
+        self.assertIn('"prev": "media-skip-backward"', boot)
+        self.assertIn("def _apply_workspace_icon_files", boot)
         self.assertIn("def _apply_quiet_relaunch", boot)
         relaunch = (
             ROOT / "packaging" / "jugoo-overlay" / "shell" / "runtime_relaunch.py"

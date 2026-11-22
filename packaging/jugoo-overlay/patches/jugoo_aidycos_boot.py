@@ -81,7 +81,13 @@ def _apply_session_menu_patches() -> None:
 
 
 def _apply_workspace_icon_files() -> None:
-    """Draw workspace-pill icons from files so a Jugoo restart cannot blank them."""
+    """Draw the center workspace-pill program icons from files.
+
+    That center pill is what should show Chrome/Cursor/OnlyOffice. After
+    ``Reiniciar Jugoo`` on Yurle, GTK theme lookup often returns empty and the
+    pill looks blank (or like empty orange slots). Painting the PNG/SVG from
+    disk keeps those program icons visible.
+    """
     import gi
 
     gi.require_version("Gtk", "3.0")
@@ -106,7 +112,11 @@ def _apply_workspace_icon_files() -> None:
 
         repaint()
         self.connect("realize", repaint)
-        GLib.timeout_add(500, repaint)
+        self.connect("map", repaint)
+        # Yurle: theme/cache can lag past the first realize after a restart.
+        GLib.timeout_add(200, repaint)
+        GLib.timeout_add(800, repaint)
+        GLib.timeout_add(2000, repaint)
 
     workspace.WorkspaceApplicationIcon.__init__ = __init__
 
@@ -116,7 +126,7 @@ def _apply_active_window_icons() -> None:
 
     After ``Reiniciar Jugoo`` on Yurle the color-emoji font is not ready yet, so
     ⏮/⏭ paint as orange squares with a lone ▶ between them — the bar looks
-    “broken”. Symbolic icons + on-disk app icons stay visible.
+    “broken”. Prefer on-disk Tango action PNGs (not only -symbolic names).
     """
     import gi
 
@@ -127,11 +137,13 @@ def _apply_active_window_icons() -> None:
     import shell.widgets.barra.active_window as active_window
 
     paint = icons.configure_workspace_icon
+    # Prefer names that resolve to real PNG/SVG files under actions/, so a cold
+    # GTK IconTheme on Yurle cannot blank the transport controls.
     transport_icons = {
-        "prev": "media-skip-backward-symbolic",
-        "play": "media-playback-start-symbolic",
-        "pause": "media-playback-pause-symbolic",
-        "next": "media-skip-forward-symbolic",
+        "prev": "media-skip-backward",
+        "play": "media-playback-start",
+        "pause": "media-playback-pause",
+        "next": "media-skip-forward",
     }
 
     def _set_button_icon(button: Gtk.Button, icon_name: str) -> None:

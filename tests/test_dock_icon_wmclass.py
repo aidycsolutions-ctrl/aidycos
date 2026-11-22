@@ -58,6 +58,17 @@ class WmClassMatchTests(unittest.TestCase):
             missing = icons.resolve_icon_file("no-such-app", 18, roots=(root,))
             self.assertIsNone(missing)
 
+    def test_icon_file_searches_actions_and_strips_symbolic(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            icon = root / "icons" / "Tango" / "24x24" / "actions" / "media-skip-backward.png"
+            icon.parent.mkdir(parents=True)
+            icon.write_bytes(b"png")
+            found = icons.resolve_icon_file(
+                "media-skip-backward-symbolic", 18, roots=(root,)
+            )
+            self.assertEqual(found, icon)
+
     def test_onlyoffice_hypr_class_uses_flatpak_logo(self) -> None:
         from shell.models import Window
 
