@@ -25,11 +25,25 @@ KNOWN_APPLICATION_NAMES = {
     "aidyc": "AidyC",
     "aidycai": "AIDYCAI",
     "aidychat": "AidyChat",
+    "aidycos-onlyoffice": "OnlyOffice",
+    "onlyoffice": "OnlyOffice",
+    "org.onlyoffice.desktopeditors": "OnlyOffice",
     "code-oss": "Code - OSS",
     "firefox": "Firefox",
     "kitty": "Kitty",
     "steam": "Steam",
 }
+_ONLYOFFICE_ICON = "org.onlyoffice.desktopeditors"
+_ONLYOFFICE_INFO = None
+_ONLYOFFICE_CLASSES = frozenset(
+    {
+        "onlyoffice",
+        "desktopeditors",
+        "onlyoffice-desktopeditors",
+        "org.onlyoffice.desktopeditors",
+        "aidycos-onlyoffice",
+    }
+)
 _DEFAULT_XDG_DATA_DIRS = "/usr/local/share:/usr/share"
 _FLATPAK_AND_SNAP_APPLICATION_DIRS = (
     Path.home() / ".local/share/flatpak/exports/share/applications",
@@ -171,6 +185,9 @@ def icon_for_window(window: Window) -> str:
 
 def application_for_window(window: Window) -> ApplicationInfo:
     """Return the desktop-entry identity shared by every shell widget."""
+    onlyoffice = _onlyoffice_application(window)
+    if onlyoffice is not None:
+        return onlyoffice
     aidycai = _aidycai_application(window)
     if aidycai is not None:
         return aidycai
@@ -178,6 +195,17 @@ def application_for_window(window: Window) -> ApplicationInfo:
     if aidyc is not None:
         return aidyc
     return _resolver.describe(window.app_class)
+
+
+def _onlyoffice_application(window: Window) -> ApplicationInfo | None:
+    """Map Hyprland class ONLYOFFICE to the Flatpak logo (not x-office-document)."""
+    global _ONLYOFFICE_INFO
+    app_class = (window.app_class or "").casefold().strip()
+    if app_class not in _ONLYOFFICE_CLASSES:
+        return None
+    if _ONLYOFFICE_INFO is None:
+        _ONLYOFFICE_INFO = ApplicationInfo("OnlyOffice", _ONLYOFFICE_ICON)
+    return _ONLYOFFICE_INFO
 
 
 def find_desktop_icon(app: str) -> str:

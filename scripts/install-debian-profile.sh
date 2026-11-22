@@ -551,6 +551,29 @@ install -D -m 0644 "${ROOT}/packaging/applications/aidycos-paquetes.desktop" \
   "${HOME}/.local/share/applications/aidycos-paquetes.desktop"
 install -D -m 0644 "${ROOT}/packaging/applications/aidycos-onlyoffice.desktop" \
   "${HOME}/.local/share/applications/aidycos-onlyoffice.desktop"
+# Prefer the Flatpak OnlyOffice logo over the generic x-office-document icon.
+install_onlyoffice_icons() {
+  local src_root="" size src dest name
+  for src_root in \
+      "${HOME}/.local/share/flatpak/exports/share/icons/hicolor" \
+      "/var/lib/flatpak/exports/share/icons/hicolor"; do
+    if [[ -f "${src_root}/48x48/apps/org.onlyoffice.desktopeditors.png" ]]; then
+      break
+    fi
+    src_root=""
+  done
+  [[ -n "${src_root}" ]] || return 0
+  for size in 16 24 32 48 64 128 256; do
+    src="${src_root}/${size}x${size}/apps/org.onlyoffice.desktopeditors.png"
+    [[ -f "${src}" ]] || continue
+    for name in org.onlyoffice.desktopeditors ONLYOFFICE aidycos-onlyoffice onlyoffice; do
+      dest="${HOME}/.local/share/icons/hicolor/${size}x${size}/apps/${name}.png"
+      install -D -m 0644 "${src}" "${dest}"
+    done
+  done
+  refresh_icon_cache user "${HOME}/.local/share/icons/hicolor"
+}
+install_onlyoffice_icons
 if command -v update-desktop-database >/dev/null 2>&1; then
   update-desktop-database "${HOME}/.local/share/applications" >/dev/null 2>&1 || true
 fi
@@ -958,6 +981,9 @@ if [[ ! -e "${HYPR_AIDYCOS_CONF}" ]]; then
 # AidyCOS keyboard and Jugoo defaults.
 env = XDG_CURRENT_DESKTOP,Hyprland
 env = XDG_SESSION_TYPE,wayland
+misc {
+    focus_on_activate = true
+}
 input {
     numlock_by_default = true
 }
@@ -980,6 +1006,14 @@ EOF
 else
   missing=0
   grep -qE '^[[:space:]]*numlock_by_default[[:space:]]*=[[:space:]]*true' "${HYPR_AIDYCOS_CONF}" || missing=1
+  if ! grep -qE '^[[:space:]]*focus_on_activate[[:space:]]*=[[:space:]]*true' "${HYPR_AIDYCOS_CONF}" \
+     && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*focus_on_activate[[:space:]]*=[[:space:]]*true' "${HYPR_CONF}"; }; then
+    if grep -qE '^[[:space:]]*misc[[:space:]]*\{' "${HYPR_AIDYCOS_CONF}"; then
+      sed -i '/^[[:space:]]*misc[[:space:]]*{/a\    focus_on_activate = true' "${HYPR_AIDYCOS_CONF}"
+    else
+      printf '\nmisc {\n    focus_on_activate = true\n}\n' >>"${HYPR_AIDYCOS_CONF}"
+    fi
+  fi
   grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*SPACE,[[:space:]]*exec,[[:space:]]*jugoo action launcher' "${HYPR_AIDYCOS_CONF}" || missing=1
   # Drop legacy Ctrl+Space launcher (canonical is Super+Space).
   if grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*CTRL,[[:space:]]*SPACE,[[:space:]]*exec,[[:space:]]*jugoo action launcher' "${HYPR_AIDYCOS_CONF}"; then
@@ -1258,7 +1292,11 @@ if not match:
     raise SystemExit(0)
 indent = match.group("indent")
 insert_at = match.end()
-insertion = f"\n{indent}    disable_hyprland_logo = true\n{indent}    force_default_wallpaper = 0"
+insertion = (
+        f"\n{indent}    disable_hyprland_logo = true"
+        f"\n{indent}    force_default_wallpaper = 0"
+        f"\n{indent}    focus_on_activate = true"
+    )
 path.write_text(text[:insert_at] + insertion + text[insert_at:])
 PY
     else
@@ -1267,6 +1305,7 @@ PY
 misc {
     disable_hyprland_logo = true
     force_default_wallpaper = 0
+    focus_on_activate = true
 }
 EOF
     fi
@@ -1296,6 +1335,7 @@ decoration {
 misc {
     disable_hyprland_logo = true
     force_default_wallpaper = 0
+    focus_on_activate = true
 }
 exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE DISPLAY
 exec-once = /usr/local/bin/jugoo

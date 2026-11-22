@@ -58,6 +58,17 @@ class WmClassMatchTests(unittest.TestCase):
             missing = icons.resolve_icon_file("no-such-app", 18, roots=(root,))
             self.assertIsNone(missing)
 
+    def test_onlyoffice_hypr_class_uses_flatpak_logo(self) -> None:
+        from shell.models import Window
+
+        win = Window()
+        win.app_class = "ONLYOFFICE"
+        win.title = "token.txt"
+        win.pid = None
+        info = icons.application_for_window(win)
+        self.assertEqual(info.icon, "org.onlyoffice.desktopeditors")
+        self.assertEqual(info.name, "OnlyOffice")
+
     def test_resolver_prefers_aidychat(self) -> None:
         resolver = icons.DesktopIconResolver(directories=[])
         resolver._index = {

@@ -75,11 +75,46 @@ Necesitas Internet; la primera descarga puede tardar unos minutos."
   return 0
 }
 
-run_onlyoffice() {
-  if flatpak info --user "${APP_ID}" >/dev/null 2>&1; then
-    exec flatpak run --user "${APP_ID}" "$@"
+schedule_focus() {
+  # When OnlyOffice is already running, the second launch hands the file to the
+  # existing process and exits. Hyprland must still raise that window.
+  if ! command -v hyprctl >/dev/null 2>&1; then
+    return 0
   fi
-  exec flatpak run "${APP_ID}" "$@"
+  nohup bash -c '
+    for _ in 1 2 3 4 5 6 7 8; do
+      sleep 0.25
+      if hyprctl clients -j 2>/dev/null | grep -Eqi "\"class\": \"ONLYOFFICE\""; then
+        hyprctl dispatch focuswindow "class:^(ONLYOFFICE)$" >/dev/null 2>&1 || true
+        hyprctl dispatch alterzorder top,"class:^(ONLYOFFICE)$" >/dev/null 2>&1 || true
+        exit 0
+      fi
+    done
+  ' >/dev/null 2>&1 &
+}
+
+run_onlyoffice() {
+  schedule_focus
+  local -a cmd=(flatpak run)
+  if flatpak info --user "${APP_ID}" >/dev/null 2>&1; then
+    cmd+=(--user)
+  fi
+  cmd+=(--command=desktopeditors)
+  local has_files=0
+  local arg
+  for arg in "$@"; do
+    case "${arg}" in
+      --*) ;;
+      *) has_files=1; break ;;
+    esac
+  done
+  if ((has_files)); then
+    # Match Flathub desktop: forward paths into the sandbox for open-with.
+    cmd+=(--file-forwarding "${APP_ID}" @@u "$@" @@)
+  else
+    cmd+=("${APP_ID}" "$@")
+  fi
+  exec "${cmd[@]}"
 }
 
 if already_installed; then
