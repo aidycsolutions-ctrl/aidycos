@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""Abre el cajón de la XPRINTER desde AidyCOS, sin recompilar AidyC.
+
+    aidycos-cajon
+    python3 scripts/aidycos-cajon
+    python3 scripts/aidycos-cajon --dry-run
+
+Manda el pulso que ya abrió el cajón en Debian::
+
+    printf '\\033\\160\\001\\045\\372' | lp -d XPRINTER -o raw
+
+No toca la cola de las facturas ni la HP Smart Tank. ``--dry-run`` no envía nada.
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+logger = logging.getLogger("aidycos.cajon")
+
+DRAWER_QUEUE = "XPRINTER"
+DRAWER_PIN = 1
+# printf '\033\160\001\045\372' → ESC p, pin 1, pulso 37, reposo 250.
+DRAWER_PULSE = bytes((27, 112, DRAWER_PIN, 0o045, 0o372))
+_CUPS_BIN_DIRS = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
+_OFFICE_PRINTER_RE = re.compile(r"hp[_\- ]?smart[_\- ]?tank|hewlett", re.IGNORECASE)
+_JOB_ID_RE = re.compile(
+    r"(?:request id is|id de solicitud es|identificador de solicitud es)\s+(\S+)",
+    re.IGNORECASE,
+)
+_BAD_JOB_RE = re.compile(
+    r"abort|cancel|held|stopped|abortad|cancelad|retenid",
+    re.IGNORECASE,
+)
+
+
+def is_office_printer(name: str | None) -> bool:
+    return bool(_OFFICE_PRINTER_RE.search(str(name or "")))
+
+
+def cups_tool(name: str) -> str:
+    found = shutil.which(name)
+    if found:
+        return found
+    for directory in _CUPS_BIN_DIRS:
+        candidate = os.path.join(directory, name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return name
+
+
+def resolve_drawer_printer(printer_name: str | None, available: list[str]) -> str:
+    """Cola del cajón. Nunca la HP, aunque sea la predeterminada."""
+    canonical = DRAWER_QUEUE
+    for name in available:
+        if str(name).lower() == DRAWER_QUEUE.lower():
+            canonical = str(name)
+            break
+    requested = str(printer_name or "").strip()
+    if requested and is_office_printer(requested):
+        logger.error("Se ignoró %s; el cajón sale por %s", requested, canonical)
+        return canonical
+    if requested:
+        return requested
+    return canonical
+
+
+def list_printers() -> list[str]:
+    try:
+        result = subprocess.run(
+            [cups_tool("lpstat"), "-a"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        logger.error("No se pudo enumerar impresoras: %s", error)
+        return []
+    if result.returncode != 0:
+        return []
+    names: list[str] = []
+    for line in (result.stdout or "").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        name = text.split()[0]
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def confirm_cups_job(
+    printer_name: str,
+    completed: subprocess.CompletedProcess[str],
+    *,
+    run=None,
+) -> str:
+    output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
+    if completed.returncode != 0:
+        raise RuntimeError(output.strip() or f"lp terminó con código {completed.returncode}")
+    match = _JOB_ID_RE.search(output)
+    if not match:
+        raise RuntimeError(f"CUPS no confirmó el trabajo: {output.strip()}")
+    job_id = match.group(1).strip("().,")
+    queue = job_id.rsplit("-", 1)[0]
+    if queue.lower() != printer_name.lower():
+        raise RuntimeError(f"CUPS aceptó {job_id} en lugar de {printer_name}")
+    if is_office_printer(queue):
+        raise RuntimeError(f"El trabajo cayó en la impresora de oficina {queue}")
+    sender = run or subprocess.run
+    try:
+        status = sender(
+            [cups_tool("lpstat"), "-W", "not-completed", "-l", "-o", job_id],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        logger.warning("No se pudo consultar %s: %s", job_id, error)
+        return job_id
+    detail = f"{status.stdout or ''}\n{status.stderr or ''}"
+    if _BAD_JOB_RE.search(detail):
+        raise RuntimeError(f"Trabajo {job_id} no completó: {detail.strip()}")
+    return job_id
+
+
+def open_drawer(
+    printer_name: str | None = None,
+    *,
+    available: list[str] | None = None,
+    dry_run: bool = False,
+    run=None,
+) -> tuple[bool, str]:
+    """Envía el pulso. Con ``dry_run`` no llama a CUPS (sirve para pruebas)."""
+    names = list_printers() if available is None else list(available)
+    target = resolve_drawer_printer(printer_name, names)
+    if is_office_printer(target):
+        message = f"Se rechazó {target}; el cajón solo sale por {DRAWER_QUEUE}"
+        logger.error(message)
+        return False, message
+    if dry_run:
+        logger.info("Prueba en seco: no se abre el cajón de %s", target)
+        return True, f"dry-run {target}"
+    sender = run or subprocess.run
+    try:
+        completed = sender(
+            [cups_tool("lp"), "-d", target, "-o", "raw", "-t", "Open Drawer"],
+            input=DRAWER_PULSE,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        logger.error("No se pudo ejecutar lp: %s", error)
+        return False, str(error)
+    if not isinstance(completed.stdout, str):
+        completed = subprocess.CompletedProcess(
+            args=getattr(completed, "args", ()),
+            returncode=completed.returncode,
+            stdout=(completed.stdout or b"").decode("utf-8", "replace"),
+            stderr=(completed.stderr or b"").decode("utf-8", "replace"),
+        )
+    try:
+        job_id = confirm_cups_job(target, completed, run=sender)
+    except RuntimeError as error:
+        logger.error(
+            "Cajón rechazado printer=%s rc=%s stdout=%s stderr=%s",
+            target,
+            completed.returncode,
+            (completed.stdout or "").strip(),
+            (completed.stderr or "").strip(),
+        )
+        return False, str(error)
+    logger.info("Cajón abierto cola=%s pin=%s trabajo=%s", target, DRAWER_PIN, job_id)
+    return True, job_id
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Abre el cajón de la XPRINTER por CUPS raw.")
+    parser.add_argument("--printer", default="", help="Cola CUPS. Por defecto XPRINTER.")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="No envía el pulso. Úsalo al probar; no abre el cajón.",
+    )
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    opened, detail = open_drawer(args.printer or None, dry_run=args.dry_run)
+    print(detail)
+    return 0 if opened else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

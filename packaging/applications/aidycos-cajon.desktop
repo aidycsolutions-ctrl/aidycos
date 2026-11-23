@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Abrir cajón
+Comment=Abre el cajón monedero de la XPRINTER
+Exec=aidycos-cajon
+Icon=printer
+Terminal=false
+Categories=Office;Utility;
+Keywords=cajon;caja;xprinter;escpos;
+StartupNotify=false

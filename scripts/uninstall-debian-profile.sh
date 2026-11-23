@@ -371,6 +371,7 @@ remove_system_binaries() {
     /usr/local/bin/aidylink \
     /usr/local/bin/aidyship \
     /usr/local/bin/aidycos-onlyoffice \
+    /usr/local/bin/aidycos-cajon \
     /usr/local/bin/aidycos-download-dir \
     /usr/local/bin/aidycos-prefer-external-display \
     /usr/local/bin/aidycos-numlock \

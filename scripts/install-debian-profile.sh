@@ -56,6 +56,7 @@ Vista previa del perfil AidyCOS para Debian 13:
   * Retrasar cups-browsed hasta el entorno gráfico.
   * Instalar el gestor de impresoras y Alt+F4 para el menú de apagado.
   * Crear la cola raw Tickets cuando hay una térmica ESC/POS, para abrir el cajón.
+  * Instalar el comando aidycos-cajon (abre la XPRINTER sin recompilar AidyC).
   * Mantener usuario, contraseña y autologin actuales; cambiar el gestor de sesión a SDDM y respaldar los ajustes Hyprland tocados.
   * Instalar el comando y acceso de menú «Quitar AidyCOS» para devolver el sistema anterior.
 No se hicieron cambios.
@@ -538,6 +539,8 @@ install_jugoo
 # need an explicit launcher that checks GitHub and compares Debian versions.
 sudo install -m 0755 "${ROOT}/scripts/aidyc-update" /usr/local/bin/aidyc-update
 sudo install -m 0755 "${ROOT}/scripts/aidycos-onlyoffice" /usr/local/bin/aidycos-onlyoffice
+sudo install -m 0755 "${ROOT}/scripts/aidycos-cajon" /usr/local/bin/aidycos-cajon
+install -D -m 0755 "${ROOT}/scripts/aidycos-cajon" "${HOME}/.local/bin/aidycos-cajon"
 sudo install -m 0755 "${ROOT}/scripts/uninstall-debian-profile.sh" /usr/local/bin/aidycos-uninstall
 install -D -m 0755 "${ROOT}/scripts/uninstall-debian-profile.sh" \
   "${HOME}/.local/bin/aidycos-uninstall"
@@ -548,6 +551,8 @@ install -D -m 0644 "${ROOT}/packaging/applications/aidycos-uninstall.desktop" \
 # Friendly Spanish entry for the CUPS printer manager.
 install -D -m 0644 "${ROOT}/packaging/applications/aidycos-impresoras.desktop" \
   "${HOME}/.local/share/applications/aidycos-impresoras.desktop"
+install -D -m 0644 "${ROOT}/packaging/applications/aidycos-cajon.desktop" \
+  "${HOME}/.local/share/applications/aidycos-cajon.desktop"
 # Synaptic + OnlyOffice helpers so users can install office and other apps.
 install -D -m 0644 "${ROOT}/packaging/applications/aidycos-paquetes.desktop" \
   "${HOME}/.local/share/applications/aidycos-paquetes.desktop"
