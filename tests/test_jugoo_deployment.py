@@ -59,6 +59,27 @@ class JugooDeploymentTests(unittest.TestCase):
             self.assertEqual((destination / "shell" / "__main__.py").read_text(), "official v2")
             self.assertEqual((preserved / "iso-version.txt").read_text(), "ISO copy")
 
+    def test_private_clone_and_opt_stay_readable_by_the_desktop_user(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = make_source(root / "official", "official v1")
+            source.chmod(0o700)
+            (source / "shell").chmod(0o700)
+            parent = root / "opt" / "aidyc"
+            parent.mkdir(parents=True)
+            parent.chmod(0o700)
+            destination = parent / "jugoo"
+
+            deploy_jugoo.deploy(source, destination)
+
+            self.assertEqual(destination.stat().st_mode & 0o005, 0o005)
+            self.assertEqual((destination / "shell").stat().st_mode & 0o005, 0o005)
+            self.assertEqual(
+                (destination / "shell" / "__main__.py").stat().st_mode & 0o004,
+                0o004,
+            )
+            self.assertEqual(parent.stat().st_mode & 0o005, 0o005)
+
     def test_launcher_and_user_service_override_share_system_entry_point(self) -> None:
         launcher = (ROOT / "packaging" / "jugoo-launcher").read_text(encoding="utf-8")
         service = (
@@ -71,11 +92,15 @@ class JugooDeploymentTests(unittest.TestCase):
         installer = (ROOT / "scripts" / "install-debian-profile.sh").read_text(
             encoding="utf-8"
         )
-        self.assertIn("JUGOO_DIR=/opt/aidyc/jugoo", launcher)
+        self.assertIn("OPT_JUGOO=/opt/aidyc/jugoo", launcher)
         self.assertIn("python3 -m shell \"$@\"", launcher)
         self.assertIn("ExecStart=/usr/local/bin/jugoo --task-watcher", service)
         self.assertIn("exec-once = /usr/local/bin/jugoo", installer)
         self.assertIn("feature/atajos-aidyc-escritorio", installer)
+        self.assertLess(
+            installer.index('sudo chmod -R a+rX "${jugoo_dir}"'),
+            installer.index('(cd "${jugoo_dir}" && python3 -m shell --install)'),
+        )
         self.assertIn("seed-desktop-defaults.py", installer)
         self.assertIn("bind = ALT, F4, exec, jugoo action session", installer)
         self.assertIn("bind = SUPER, SPACE, exec, jugoo action launcher", installer)

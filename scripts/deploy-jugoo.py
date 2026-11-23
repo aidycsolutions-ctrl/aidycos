@@ -12,6 +12,23 @@ from pathlib import Path
 MARKER = ".aidycos-managed"
 
 
+def publish_tree(root: Path) -> None:
+    """The deploy runs as root. A 0700 clone, or a private /opt/aidyc from the
+    POS install, would leave the desktop user unable to enter the tree.
+    """
+    parent = root.parent
+    if parent.is_dir() and not parent.is_symlink():
+        parent.chmod(parent.stat().st_mode | 0o755)
+    for path in [root, *root.rglob("*")]:
+        if path.is_symlink():
+            continue
+        mode = path.stat().st_mode
+        if path.is_dir():
+            path.chmod(mode | 0o755)
+        elif path.is_file():
+            path.chmod(mode | 0o644)
+
+
 def deploy(source: Path, destination: Path) -> None:
     source = source.resolve(strict=True)
     destination = destination.absolute()
@@ -44,6 +61,7 @@ def deploy(source: Path, destination: Path) -> None:
                 legacy.rename(destination)
                 raise
             print(f"Se conservó la instalación anterior de Jugoo en {legacy}")
+            publish_tree(destination)
             return
 
         previous = destination.with_name(
@@ -56,8 +74,10 @@ def deploy(source: Path, destination: Path) -> None:
             previous.rename(destination)
             raise
         shutil.rmtree(previous)
+        publish_tree(destination)
         return
     staging.rename(destination)
+    publish_tree(destination)
 
 
 def main() -> None:

@@ -496,6 +496,14 @@ install_jugoo() {
     fi
   fi
   if [[ "${skip_jugoo_fetch}" != 1 ]]; then
+    # install -d does not loosen an existing /opt/aidyc (often 0700 from the
+    # POS install). copytree also keeps a private clone mode, then root owns it.
+    if [[ -d /opt/aidyc ]]; then
+      sudo chmod a+rx /opt/aidyc
+    fi
+    if [[ -d "${jugoo_dir}" ]]; then
+      sudo chmod -R a+rX "${jugoo_dir}"
+    fi
     (cd "${jugoo_dir}" && python3 -m shell --install)
     if [[ -n "${jugoo_stamp}" ]]; then
       install -D -m 0644 /dev/null "${jugoo_stamp_file}"

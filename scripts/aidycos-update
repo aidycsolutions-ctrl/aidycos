@@ -95,6 +95,66 @@ notify_info() {
   fi
 }
 
+# Enter activates Sí. Escape and the No button cancel.
+ask_update() {
+  local text="$1"
+  if python3 -c 'import gi; gi.require_version("Gtk", "4.0"); from gi.repository import Gtk' >/dev/null 2>&1; then
+    python3 - "${text}" <<'PY'
+import sys
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+from gi.repository import GLib, Gtk
+
+text = sys.argv[1]
+heading, _sep, body = text.partition("\n")
+
+
+class Ask(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="com.aidycos.update-question")
+        self.choice = -1
+
+    def do_activate(self):
+        # Without a window, GTK quits as soon as activate returns and the
+        # question never stays on screen.
+        self.hold()
+        dialog = Gtk.AlertDialog()
+        dialog.set_modal(True)
+        dialog.set_message(heading.strip() or "¿Quieres actualizar AidyCOS?")
+        detail = body.strip()
+        if detail:
+            dialog.set_detail(detail)
+        dialog.set_buttons(["_No", "_Sí"])
+        dialog.set_default_button(1)
+        dialog.set_cancel_button(0)
+        dialog.choose(None, None, self.on_choose)
+
+    def on_choose(self, dialog, result):
+        try:
+            self.choice = dialog.choose_finish(result)
+        except GLib.Error:
+            self.choice = -1
+        self.release()
+        self.quit()
+
+
+app = Ask()
+app.run(None)
+sys.exit(0 if app.choice == 1 else 1)
+PY
+    return $?
+  fi
+  if command -v zenity >/dev/null 2>&1; then
+    zenity --question --title="Actualización de AidyCOS" \
+      --ok-label="Sí" --cancel-label="No" \
+      --text="${text}" --width=460
+    return $?
+  fi
+  return 127
+}
+
 mkdir -p "$(dirname "${LOCK}")"
 exec 9>"${LOCK}"
 if ! flock -n 9; then
@@ -148,19 +208,30 @@ message="Hay una actualización de AidyCOS disponible (${latest:0:8})."
 [[ -z "${subject}" ]] || message+=$'\n\n'"${subject}"
 message+=$'\n\n'"¿Quieres descargarla y aplicar el perfil ahora?"
 accept=0
-if command -v zenity >/dev/null 2>&1 && gui_available; then
-  zenity --question --title="Actualización de AidyCOS" \
-    --text="${message}"$'\n\n'"Solo se pedirá la contraseña; la descarga y la instalación siguen en segundo plano." \
-    --width=460 && accept=1 || true
-elif [[ -t 0 ]]; then
-  printf '%s\n' "${message}" "Escribe S para actualizar: "
+answered=0
+prompt="${message}"$'\n\n'"Solo se pedirá la contraseña; la descarga y la instalación siguen en segundo plano."
+if gui_available; then
+  status=0
+  ask_update "${prompt}" || status=$?
+  if [[ "${status}" -eq 0 ]]; then
+    accept=1
+    answered=1
+  elif [[ "${status}" -ne 127 ]]; then
+    answered=1
+  fi
+fi
+if [[ "${answered}" != 1 && -t 0 ]]; then
+  printf '%s\n' "${message}" "Pulsa Enter para actualizar o N para cancelar: "
   read -r answer
-  [[ "${answer,,}" == "s" || "${answer,,}" == "si" || "${answer,,}" == "sí" ]] && accept=1
-elif command -v notify-send >/dev/null 2>&1; then
+  [[ -z "${answer}" || "${answer,,}" == "s" || "${answer,,}" == "si" || "${answer,,}" == "sí" ]] && accept=1
+  answered=1
+fi
+if [[ "${answered}" != 1 ]] && command -v notify-send >/dev/null 2>&1; then
   notify-send -a AidyCOS "Actualización disponible" \
     "Abre «Actualizar AidyCOS» o pulsa Super+Shift+U para revisar ${latest:0:8}."
   exit 0
-else
+fi
+if [[ "${answered}" != 1 ]]; then
   echo "${message}" >&2
   echo "Ejecuta aidycos-update desde una terminal para confirmar." >&2
   exit 0

@@ -31,6 +31,14 @@ class UpdateFastPathTests(unittest.TestCase):
         self.assertNotIn("hyprctl dispatch exec", text)
         self.assertNotIn("Pulsa Enter para cerrar", text)
 
+    def test_update_question_accepts_enter_as_yes(self) -> None:
+        text = UPDATER.read_text(encoding="utf-8")
+        self.assertIn('dialog.set_buttons(["_No", "_Sí"])', text)
+        self.assertLess(text.index('dialog.set_buttons(["_No", "_Sí"])'), text.index("dialog.set_default_button(1)"))
+        self.assertIn("dialog.set_cancel_button(0)", text)
+        self.assertLess(text.index("self.hold()"), text.index("dialog.choose"))
+        self.assertIn("Pulsa Enter para actualizar", text)
+
     def test_installer_skips_repeated_apt_and_deploys(self) -> None:
         text = INSTALLER.read_text(encoding="utf-8")
         self.assertIn("PROFILE_REFRESH", text)

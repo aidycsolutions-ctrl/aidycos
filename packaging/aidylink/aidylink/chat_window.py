@@ -19,6 +19,7 @@ gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
 
 from .chat_history import ChatHideStore, plan_message_batch
+from .clipboard_image import image_file_from_uris, target_includes_image
 from .cloud import AidyChatBridge
 try:
     from .calls import NativeCall
@@ -166,6 +167,7 @@ class AidyChatWindow(Gtk.Window):
         self.sidebar.pack_start(self.sidebar_status, False, False, 0)
 
         self._show_empty_conversation()
+        self.connect("key-press-event", self._on_window_paste)
         self.connect("destroy", self._on_destroy)
         self.refresh_chats()
         GLib.timeout_add_seconds(2, self._tick)
@@ -375,7 +377,9 @@ class AidyChatWindow(Gtk.Window):
         composer.pack_start(self.record_button, False, False, 0)
         self.entry = Gtk.Entry()
         self.entry.set_placeholder_text("Escribe un mensaje")
+        self.entry.set_tooltip_text("Ctrl+V pega una imagen del portapapeles")
         self.entry.set_activates_default(False)
+        self.entry.connect("key-press-event", self._on_composer_paste)
         self.entry.connect("activate", lambda *_: self._send_text())
         composer.pack_start(self.entry, True, True, 0)
         send = Gtk.Button(label="Enviar")
@@ -911,6 +915,128 @@ class AidyChatWindow(Gtk.Window):
         dialog.destroy()
         return response == Gtk.ResponseType.OK
 
+    @staticmethod
+    def _is_paste_shortcut(event: Gdk.EventKey) -> bool:
+        if event.type != Gdk.EventType.KEY_PRESS:
+            return False
+        if not (event.state & Gdk.ModifierType.CONTROL_MASK):
+            return False
+        if event.state & (Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.MOD1_MASK):
+            return False
+        return event.keyval in (Gdk.KEY_v, Gdk.KEY_V)
+
+    def _on_composer_paste(self, _entry: Gtk.Entry, event: Gdk.EventKey) -> bool:
+        if not self._is_paste_shortcut(event):
+            return False
+        return self._paste_clipboard_image()
+
+    def _on_window_paste(self, _window: Gtk.Window, event: Gdk.EventKey) -> bool:
+        if not self._is_paste_shortcut(event):
+            return False
+        focus = self.get_focus()
+        if isinstance(focus, (Gtk.Entry, Gtk.TextView)):
+            return False
+        return self._paste_clipboard_image()
+
+    def _paste_clipboard_image(self) -> bool:
+        """Send a copied screenshot. Leave real text for the normal paste."""
+        if not self._active_chat:
+            return False
+        found = self._take_clipboard_image()
+        if found is None:
+            return False
+        path, cleanup = found
+        if path is None:
+            return True
+        if not self._confirm_send_image(path):
+            if cleanup:
+                path.unlink(missing_ok=True)
+            return True
+        self._upload_and_send(path, cleanup=cleanup)
+        return True
+
+    def _take_clipboard_image(self) -> tuple[Path | None, bool] | None:
+        """Return (file, delete_after_send) when the clipboard holds an image.
+
+        None means the clipboard is text or something else, so the normal paste
+        should run. A path of None means an image was there but could not be read.
+        """
+        clip = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+        names = _clipboard_target_names(clip)
+        bases = {name.split(";", 1)[0].strip().lower() for name in names}
+        offers_uri = "text/uri-list" in bases
+        offers_image = target_includes_image(names)
+        if names and not offers_image and not offers_uri:
+            return None
+        if offers_uri or not names:
+            uri_path = image_file_from_uris(list(clip.wait_for_uris() or []))
+            if uri_path and Path(uri_path).is_file():
+                return Path(uri_path), False
+        if not offers_image and names:
+            return None
+        if not names and not clip.wait_is_image_available():
+            return None
+        image = clip.wait_for_image()
+        if image is not None:
+            return self._write_clipboard_pixbuf(image)
+        raw = _clipboard_image_bytes(clip, names)
+        if raw is None:
+            self.sidebar_status.set_text("No se pudo leer la imagen del portapapeles")
+            return None, False
+        payload, suffix = raw
+        path = _capture_path(suffix)
+        try:
+            path.write_bytes(payload)
+        except OSError as exc:
+            path.unlink(missing_ok=True)
+            self.sidebar_status.set_text(f"No se pudo pegar la imagen: {exc}")
+            return None, False
+        return path, True
+
+    def _write_clipboard_pixbuf(self, image: Any) -> tuple[Path | None, bool]:
+        path = _capture_path(".png")
+        try:
+            image.savev(str(path), "png", [], [])
+        except Exception as exc:
+            path.unlink(missing_ok=True)
+            self.sidebar_status.set_text(f"No se pudo pegar la imagen: {exc}")
+            return None, False
+        return path, True
+
+    def _confirm_send_image(self, path: Path) -> bool:
+        dialog = Gtk.Dialog(title="Enviar imagen", transient_for=self, modal=True)
+        dialog.add_button("Cancelar", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Enviar", Gtk.ResponseType.OK)
+        dialog.set_default_response(Gtk.ResponseType.OK)
+        box = dialog.get_content_area()
+        box.set_border_width(12)
+        box.set_spacing(8)
+        box.pack_start(
+            Gtk.Label(label="Imagen del portapapeles", xalign=0),
+            False,
+            False,
+            0,
+        )
+        try:
+            from gi.repository import GdkPixbuf
+
+            pixbuf = GdkPixbuf.Pixbuf.new_from_file(str(path))
+            width, height = pixbuf.get_width(), pixbuf.get_height()
+            ratio = min(1.0, 420 / max(width, 1), 320 / max(height, 1))
+            if ratio < 1.0:
+                pixbuf = pixbuf.scale_simple(
+                    max(1, int(width * ratio)),
+                    max(1, int(height * ratio)),
+                    GdkPixbuf.InterpType.BILINEAR,
+                )
+            box.pack_start(Gtk.Image.new_from_pixbuf(pixbuf), False, False, 0)
+        except Exception:
+            box.pack_start(Gtk.Label(label=path.name, xalign=0), False, False, 0)
+        dialog.show_all()
+        response = dialog.run()
+        dialog.destroy()
+        return response == Gtk.ResponseType.OK
+
     def _choose_attachment(self) -> None:
         if not self._active_chat:
             return
@@ -926,7 +1052,7 @@ class AidyChatWindow(Gtk.Window):
         if path:
             self._upload_and_send(path)
 
-    def _upload_and_send(self, path: Path) -> None:
+    def _upload_and_send(self, path: Path, *, cleanup: bool = False) -> None:
         mime = mimetypes.guess_type(path.name)[0] or ""
         kind = "image" if mime.startswith("image/") else "video" if mime.startswith("video/") else "audio" if mime.startswith("audio/") else "document"
         chat_id = int(self._active_chat.get("chat_id") or 0)
@@ -939,6 +1065,8 @@ class AidyChatWindow(Gtk.Window):
                 error = None
             except Exception as exc:
                 result, error = None, exc
+            if cleanup:
+                path.unlink(missing_ok=True)
             GLib.idle_add(self._media_sent, result, error, path.name)
 
         threading.Thread(target=work, daemon=True, name="aidylink-media-upload").start()
@@ -1331,6 +1459,57 @@ class AidyChatWindow(Gtk.Window):
             self._recorder.terminate()
         if self.call_engine is not None and self.call_engine.call is not None:
             self.call_engine.hangup()
+
+
+def _clipboard_target_names(clip: Gtk.Clipboard) -> list[str]:
+    try:
+        found = clip.wait_for_targets()
+    except Exception:
+        return []
+    atoms: list[Any] = []
+    if isinstance(found, tuple):
+        if found and isinstance(found[0], bool):
+            atoms = list(found[1] or []) if found[0] else []
+        elif found:
+            atoms = list(found[0] or [])
+    names: list[str] = []
+    for atom in atoms:
+        try:
+            names.append(str(atom.name()))
+        except Exception:
+            continue
+    return names
+
+
+def _clipboard_image_bytes(clip: Gtk.Clipboard, names: list[str]) -> tuple[bytes, str] | None:
+    bases = {name.split(";", 1)[0].strip().lower() for name in names}
+    for mime, suffix in (
+        ("image/png", ".png"),
+        ("image/jpeg", ".jpg"),
+        ("image/jpg", ".jpg"),
+        ("image/webp", ".webp"),
+        ("image/gif", ".gif"),
+        ("image/bmp", ".bmp"),
+    ):
+        if bases and mime not in bases:
+            continue
+        data = clip.wait_for_contents(Gdk.Atom.intern(mime, False))
+        if data is None:
+            continue
+        raw = data.get_data()
+        if raw:
+            return bytes(raw), suffix
+    return None
+
+
+def _capture_path(suffix: str) -> Path:
+    folder = data_dir() / "paste"
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    path = folder / f"Captura-{stamp}{suffix}"
+    if path.exists():
+        path = folder / f"Captura-{stamp}-{os.getpid()}{suffix}"
+    return path
 
 
 def shutil_which(program: str) -> str | None:
