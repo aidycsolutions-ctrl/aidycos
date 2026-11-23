@@ -14,12 +14,15 @@ No toca la cola de las facturas ni la HP Smart Tank. ``--dry-run`` no envía nad
 from __future__ import annotations
 
 import argparse
+import fcntl
 import logging
 import os
 import re
 import shutil
 import subprocess
 import sys
+import time
+from pathlib import Path
 
 logger = logging.getLogger("aidycos.cajon")
 
@@ -35,6 +38,16 @@ _JOB_ID_RE = re.compile(
 )
 _BAD_JOB_RE = re.compile(
     r"abort|cancel|held|stopped|abortad|cancelad|retenid",
+    re.IGNORECASE,
+)
+_JOB_HEAD_RE = re.compile(r"^(\S+-\d+)\s+\S+")
+_META_LINE_RE = re.compile(
+    r"^(?:alerts|alertas|status|estado|queued for|en cola para)\b",
+    re.IGNORECASE,
+)
+# El pulso del propio cajón y las páginas de prueba no deben volver a abrirlo.
+_SKIP_TITLE_RE = re.compile(
+    r"open drawer|caj[oó]n|p[aá]gina de prueba|test page|\btest\b|\bprueba\b",
     re.IGNORECASE,
 )
 
@@ -182,6 +195,152 @@ def open_drawer(
     return True, job_id
 
 
+def parse_completed_jobs(text: str) -> list[tuple[str, str]]:
+    """Lee ``lpstat -W completed -l``. Cada item es (línea de id, título)."""
+    jobs: list[tuple[str, str]] = []
+    header = ""
+    extras: list[str] = []
+
+    def flush() -> None:
+        nonlocal header, extras
+        if header:
+            title = ""
+            for line in extras:
+                if _META_LINE_RE.match(line):
+                    continue
+                title = line
+                break
+            jobs.append((header, title))
+        header = ""
+        extras = []
+
+    for raw in text.splitlines():
+        if raw.startswith(("\t", " ")):
+            if header:
+                extras.append(raw.strip())
+            continue
+        flush()
+        stripped = raw.strip()
+        if _JOB_HEAD_RE.match(stripped):
+            header = stripped
+    flush()
+    return jobs
+
+
+def should_open_after_print(title: str) -> bool:
+    """Una factura sí abre el cajón. El pulso y la página de prueba, no."""
+    return _SKIP_TITLE_RE.search(str(title or "").strip()) is None
+
+
+def kicks_for_new_jobs(
+    seen: set[str] | None,
+    jobs: list[tuple[str, str]],
+) -> tuple[set[str], list[tuple[str, str]]]:
+    """La primera lectura solo recuerda trabajos ya impresos."""
+    keys = {key for key, _title in jobs}
+    if seen is None:
+        return keys, []
+    fresh = [
+        (key, title)
+        for key, title in jobs
+        if key not in seen and should_open_after_print(title)
+    ]
+    return seen | keys, fresh
+
+
+def completed_jobs_text(queue: str = DRAWER_QUEUE) -> str:
+    try:
+        result = subprocess.run(
+            [cups_tool("lpstat"), "-W", "completed", "-l", "-o", queue],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        logger.error("No se pudieron leer los trabajos de %s: %s", queue, error)
+        return ""
+    return result.stdout or ""
+
+
+def watch_prints(queue: str = DRAWER_QUEUE, *, interval: float = 1.0) -> int:
+    """Tras cada factura en la XPRINTER, abre el cajón una vez."""
+    lock_path = Path.home() / ".local" / "share" / "aidycos" / "cajon-watch.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = lock_path.open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        logger.info("El vigilante del cajón ya está corriendo")
+        return 0
+    seen: set[str] | None = None
+    logger.info("Vigilando impresiones de %s", queue)
+    while True:
+        seen, fresh = kicks_for_new_jobs(seen, parse_completed_jobs(completed_jobs_text(queue)))
+        if fresh:
+            opened, detail = open_drawer(queue)
+            logger.info("Tras imprimir %s: %s", fresh[-1][1] or fresh[-1][0], detail)
+            if not opened:
+                logger.error("No se abrió el cajón tras imprimir: %s", detail)
+        time.sleep(interval)
+
+
+def command_path() -> Path:
+    """Ruta sin espacios: la de /usr/local/bin o una copia en ~/.local/bin."""
+    system = Path("/usr/local/bin/aidycos-cajon")
+    if system.is_file() and os.access(system, os.X_OK):
+        return system
+    target = Path.home() / ".local" / "bin" / "aidycos-cajon"
+    source = Path(__file__).resolve()
+    if source != target.resolve():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        target.chmod(0o755)
+    return target
+
+
+def ensure_session_config(text: str, command: str) -> str:
+    """Añade F6 y el vigilante. No duplica el atajo si ya apunta a este comando."""
+    bind = f"bind = , F6, exec, {command}"
+    watch = f"exec-once = {command} watch"
+    bind_re = re.compile(r"(?m)^[ \t]*bind[ \t]*=[ \t]*,[ \t]*F6,[ \t]*exec,.*$")
+    watch_re = re.compile(r"(?m)^[ \t]*exec-once[ \t]*=[ \t]*.*aidycos-cajon(?:\s+watch)?[ \t]*$")
+    if bind_re.search(text):
+        text = bind_re.sub(bind, text, count=1)
+    else:
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += bind + "\n"
+    if watch_re.search(text):
+        text = watch_re.sub(watch, text, count=1)
+    else:
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += watch + "\n"
+    return text
+
+
+def install_session(conf_path: Path | None = None) -> int:
+    """Deja F6 y la apertura tras imprimir en la sesión actual."""
+    command = str(command_path())
+    conf = conf_path or (Path.home() / ".config" / "hypr" / "aidycos.conf")
+    conf.parent.mkdir(parents=True, exist_ok=True)
+    current = conf.read_text(encoding="utf-8") if conf.is_file() else ""
+    updated = ensure_session_config(current, command)
+    if updated != current:
+        conf.write_text(updated, encoding="utf-8")
+    if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") and shutil.which("hyprctl"):
+        subprocess.run(["hyprctl", "reload"], check=False, timeout=5)
+    subprocess.Popen(
+        [command, "watch"],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    print(f"F6 y vigilante listos ({command})")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Abre el cajón de la XPRINTER por CUPS raw.")
     parser.add_argument("--printer", default="", help="Cola CUPS. Por defecto XPRINTER.")
@@ -190,8 +349,20 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="No envía el pulso. Úsalo al probar; no abre el cajón.",
     )
+    parser.add_argument(
+        "action",
+        nargs="?",
+        choices=("watch", "install-session"),
+        help="watch: abrir tras cada factura. install-session: atajo F6 y vigilante.",
+    )
+    parser.add_argument("conf", nargs="?", help="hyprland aidycos.conf, solo con install-session.")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    if args.action == "watch":
+        return watch_prints(args.printer or DRAWER_QUEUE)
+    if args.action == "install-session":
+        conf = Path(args.conf).expanduser() if args.conf else None
+        return install_session(conf)
     opened, detail = open_drawer(args.printer or None, dry_run=args.dry_run)
     print(detail)
     return 0 if opened else 1

@@ -81,10 +81,52 @@ class DrawerCommandTests(unittest.TestCase):
         self.assertFalse(opened)
         self.assertIn("does not exist", detail)
 
+    def test_factura_opens_once_and_test_pages_do_not(self) -> None:
+        cajon = _load()
+        sample = "\n".join(
+            [
+                "XPRINTER-4  caja  512  lun 23 nov 2026 12:00:00",
+                "\ten cola para XPRINTER",
+                "\tFactura-E",
+                "XPRINTER-5  caja  5  lun 23 nov 2026 12:00:02",
+                "\ten cola para XPRINTER",
+                "\tOpen Drawer",
+                "XPRINTER-6  caja  80  lun 23 nov 2026 12:00:03",
+                "\tqueued for XPRINTER",
+                "\tPágina de prueba",
+            ]
+        )
+        jobs = cajon.parse_completed_jobs(sample)
+        self.assertEqual([title for _key, title in jobs], ["Factura-E", "Open Drawer", "Página de prueba"])
+        seen, fresh = cajon.kicks_for_new_jobs(None, jobs)
+        self.assertEqual(fresh, [])
+        seen, fresh = cajon.kicks_for_new_jobs(seen, jobs)
+        self.assertEqual(fresh, [])
+        extra = jobs + [
+            ("XPRINTER-7  caja  400  lun 23 nov 2026 12:01:00", "Ticket"),
+        ]
+        seen, fresh = cajon.kicks_for_new_jobs(seen, extra)
+        self.assertEqual([title for _key, title in fresh], ["Ticket"])
+        self.assertTrue(cajon.should_open_after_print("Factura-E"))
+        self.assertFalse(cajon.should_open_after_print("Open Drawer"))
+        self.assertFalse(cajon.should_open_after_print("Test Page"))
+        self.assertFalse(cajon.should_open_after_print("Página de prueba"))
+
+    def test_session_config_adds_f6_and_watcher_once(self) -> None:
+        cajon = _load()
+        command = "/usr/local/bin/aidycos-cajon"
+        once = cajon.ensure_session_config("bind = ALT, F4, exec, jugoo action session\n", command)
+        twice = cajon.ensure_session_config(once, command)
+        self.assertEqual(once, twice)
+        self.assertEqual(once.count("bind = , F6, exec, /usr/local/bin/aidycos-cajon"), 1)
+        self.assertIn("exec-once = /usr/local/bin/aidycos-cajon watch", once)
+
     def test_installer_ships_the_command(self) -> None:
         text = (ROOT / "scripts" / "install-debian-profile.sh").read_text(encoding="utf-8")
         self.assertIn("/usr/local/bin/aidycos-cajon", text)
         self.assertIn("aidycos-cajon.desktop", text)
+        self.assertIn("bind = , F6, exec, /usr/local/bin/aidycos-cajon", text)
+        self.assertIn("aidycos-cajon watch", text)
 
 
 if __name__ == "__main__":

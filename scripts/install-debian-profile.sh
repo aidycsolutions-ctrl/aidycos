@@ -1011,12 +1011,14 @@ bind = SUPER, E, exec, /usr/bin/env GDK_BACKEND=wayland /usr/bin/thunar
 bind = SUPER, G, exec, aidyship ui
 bind = , Print, exec, ~/.local/bin/captura.sh
 bind = ALT, F4, exec, jugoo action session
+bind = , F6, exec, /usr/local/bin/aidycos-cajon
 # Super+Left/Right snap is owned by jugoo_ventanas.conf (Windows-like).
 bind = SUPER, Y, workspace, +1
 bind = SUPER SHIFT, U, exec, aidycos-update --check
 exec-once = dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE DISPLAY
 exec-once = /usr/local/bin/aidycos-prefer-external-display
 exec-once = /usr/local/bin/aidycos-numlock
+exec-once = /usr/local/bin/aidycos-cajon watch
 exec-once = /usr/bin/thunar --daemon
 exec-once = /usr/local/bin/aidycos-download-dir ensure
 exec-once = /usr/local/bin/aidycos-download-dir watch
@@ -1437,6 +1439,12 @@ fi
 if [[ -f "${ROOT}/scripts/apply-hypr-keymap.py" ]]; then
   if ! python3 "${ROOT}/scripts/apply-hypr-keymap.py" "${HYPR_DIR}"; then
     echo "Aviso: no se pudo mapear KP_Enter a Enter." >&2
+  fi
+fi
+# F6 abre el cajón. El vigilante lo abre al terminar una factura en XPRINTER.
+if [[ -f "${ROOT}/scripts/aidycos-cajon" && -n "${HYPR_AIDYCOS_CONF:-}" ]]; then
+  if ! python3 "${ROOT}/scripts/aidycos-cajon" install-session "${HYPR_AIDYCOS_CONF}"; then
+    echo "Aviso: no se pudo dejar F6 ni el vigilante del cajón." >&2
   fi
 fi
 
