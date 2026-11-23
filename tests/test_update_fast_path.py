@@ -21,6 +21,16 @@ class UpdateFastPathTests(unittest.TestCase):
         self.assertIn("INVOCATION_ID", text)
         self.assertLess(text.index("INVOCATION_ID"), text.index("Ya está actualizado"))
 
+    def test_updater_asks_password_without_a_console(self) -> None:
+        text = UPDATER.read_text(encoding="utf-8")
+        self.assertIn("SUDO_ASKPASS", text)
+        self.assertIn("zenity --password", text)
+        self.assertIn("setsid bash", text)
+        self.assertIn("segundo plano", text)
+        self.assertNotIn("find_terminal", text)
+        self.assertNotIn("hyprctl dispatch exec", text)
+        self.assertNotIn("Pulsa Enter para cerrar", text)
+
     def test_installer_skips_repeated_apt_and_deploys(self) -> None:
         text = INSTALLER.read_text(encoding="utf-8")
         self.assertIn("PROFILE_REFRESH", text)

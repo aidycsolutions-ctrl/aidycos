@@ -95,72 +95,6 @@ notify_info() {
   fi
 }
 
-find_terminal() {
-  local name path
-  for name in foot kitty alacritty gnome-terminal kgx xfce4-terminal x-terminal-emulator xterm; do
-    path="$(command -v "${name}" 2>/dev/null || true)"
-    if [[ -n "${path}" ]]; then
-      printf '%s\n' "${path}"
-      return 0
-    fi
-  done
-  return 1
-}
-
-# Open the password terminal immediately. Never download before this returns.
-# Important: pass a single executable path to hyprctl. Shell-quoted command
-# strings from printf %q look like success but foot never starts.
-run_in_terminal() {
-  local terminal="$1"
-  local script_path="$2"
-  local launcher="$3"
-  local started=0
-
-  ensure_session_env
-
-  cat >"${launcher}" <<EOF
-#!/usr/bin/env bash
-exec $(printf '%q' "${terminal}") bash $(printf '%q' "${script_path}")
-EOF
-  chmod 700 "${launcher}"
-
-  # 1) Ask Hyprland to spawn a real window in the live session.
-  if command -v hyprctl >/dev/null 2>&1; then
-    if hyprctl dispatch exec -- "${launcher}" >/dev/null 2>&1; then
-      started=1
-    fi
-  fi
-
-  # 2) Direct spawn when this process already has a graphical session.
-  if [[ "${started}" != 1 ]] && gui_available; then
-    nohup "${launcher}" >/dev/null 2>&1 &
-    disown || true
-    started=1
-  fi
-
-  if [[ "${started}" != 1 ]]; then
-    return 1
-  fi
-
-  # hyprctl returns success when the dispatch is queued, even if the binary
-  # fails later. Confirm a child is actually running the apply script.
-  local i
-  for i in 1 2 3 4 5 6 7 8; do
-    if pgrep -u "$(id -u)" -f "bash ${script_path}" >/dev/null 2>&1 \
-      || pgrep -u "$(id -u)" -f "${script_path}" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 0.25
-  done
-
-  # Last resort only when this process already owns a visible TTY.
-  if [[ -t 0 && -t 1 ]]; then
-    bash "${script_path}"
-    return 0
-  fi
-  return 1
-}
-
 mkdir -p "$(dirname "${LOCK}")"
 exec 9>"${LOCK}"
 if ! flock -n 9; then
@@ -212,10 +146,12 @@ fi
 
 message="Hay una actualización de AidyCOS disponible (${latest:0:8})."
 [[ -z "${subject}" ]] || message+=$'\n\n'"${subject}"
-message+=$'\n\n'"¿Quieres descargarla y aplicar el perfil ahora? Se abrirá una terminal para la contraseña de administrador."
+message+=$'\n\n'"¿Quieres descargarla y aplicar el perfil ahora?"
 accept=0
 if command -v zenity >/dev/null 2>&1 && gui_available; then
-  zenity --question --title="Actualización de AidyCOS" --text="${message}" --width=460 && accept=1 || true
+  zenity --question --title="Actualización de AidyCOS" \
+    --text="${message}"$'\n\n'"Solo se pedirá la contraseña; la descarga y la instalación siguen en segundo plano." \
+    --width=460 && accept=1 || true
 elif [[ -t 0 ]]; then
   printf '%s\n' "${message}" "Escribe S para actualizar: "
   read -r answer
@@ -235,79 +171,188 @@ if [[ "${accept}" != 1 ]]; then
   exit 0
 fi
 
-# Open feedback immediately: write a tiny runner and spawn the terminal BEFORE
-# any tarball download. The slow curl lives inside that window.
+# Ask for the password with a dialog, then download and apply out of sight.
+# A real TTY without a graphical session still runs inline in that terminal.
 apply_dir="$(mktemp -d "${TMPDIR:-/tmp}/aidycos-update.XXXXXX")"
 apply_script="${apply_dir}/apply.sh"
-terminal_launcher="${apply_dir}/launch-terminal.sh"
+askpass="${apply_dir}/askpass.sh"
+pass_file="${apply_dir}/sudo-pass"
+sudo_wrap_dir="${apply_dir}/bin"
+log_file="${DATA_HOME}/aidycos/update.log"
+gui_apply=0
+if gui_available && [[ "${AIDYCOS_UPDATE_INLINE:-}" != 1 ]]; then
+  gui_apply=1
+fi
+
+mkdir -p "${sudo_wrap_dir}" "$(dirname "${log_file}")"
+real_sudo="$(command -v sudo || true)"
+cat >"${askpass}" <<EOF
+#!/bin/sh
+# Replay the password already confirmed in the dialog. One prompt for the whole update.
+if [ -s $(printf '%q' "${pass_file}") ]; then
+  cat $(printf '%q' "${pass_file}")
+  exit 0
+fi
+exec zenity --password \\
+  --title="Actualizar AidyCOS" \\
+  --text="Contraseña de administrador. La actualización sigue en segundo plano."
+EOF
+cat >"${sudo_wrap_dir}/sudo" <<EOF
+#!/bin/sh
+exec $(printf '%q' "${real_sudo:-/usr/bin/sudo}") -A "\$@"
+EOF
+chmod 700 "${askpass}" "${sudo_wrap_dir}/sudo"
+
 cat >"${apply_script}" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+trap '' HUP
 REPO=$(printf '%q' "${REPO}")
 LATEST=$(printf '%q' "${latest}")
 MARKER=$(printf '%q' "${MARKER}")
 WORKDIR=$(printf '%q' "${apply_dir}")
+LOCK=$(printf '%q' "${LOCK}")
+LOG=$(printf '%q' "${log_file}")
+ASKPASS=$(printf '%q' "${askpass}")
+PASSFILE=$(printf '%q' "${pass_file}")
+SUDO_WRAP=$(printf '%q' "${sudo_wrap_dir}")
+GUI_APPLY=$(printf '%q' "${gui_apply}")
+REAL_SUDO=$(printf '%q' "${real_sudo}")
 
+refresh_pid=""
 cleanup() {
+  if [[ -n "\${refresh_pid}" ]]; then
+    kill "\${refresh_pid}" 2>/dev/null || true
+    wait "\${refresh_pid}" 2>/dev/null || true
+  fi
   rm -rf "\${WORKDIR}"
 }
 trap cleanup EXIT
 
-echo "Actualización de AidyCOS"
-echo "========================"
-echo "Descargando revisión \${LATEST:0:8}…"
-archive="\${WORKDIR}/aidycos.tar.gz"
-curl --fail --show-error --location \
-  --connect-timeout 10 --max-time 180 \
-  "https://codeload.github.com/\${REPO}/tar.gz/\${LATEST}" -o "\${archive}"
-echo "Descarga terminada. Preparando instalador…"
-tar -xzf "\${archive}" -C "\${WORKDIR}"
-source_dir="\$(find "\${WORKDIR}" -mindepth 1 -maxdepth 1 -type d -print -quit)"
-installer="\${source_dir}/scripts/install-debian-profile.sh"
-if [[ ! -x "\${installer}" ]]; then
-  echo "La revisión descargada no contiene el instalador del perfil." >&2
-  echo
-  read -r -p "Pulsa Enter para cerrar esta ventana…" _
-  exit 1
+report_failure() {
+  local text="\$1"
+  echo "\${text}" >&2
+  if [[ "\${GUI_APPLY}" == 1 ]] && command -v zenity >/dev/null 2>&1; then
+    local detail
+    detail="\$(tail -n 12 "\${LOG}" 2>/dev/null || true)"
+    if [[ -n "\${detail}" ]]; then
+      text+=\$'\n\n'"\${detail}"
+    fi
+    zenity --error --title="AidyCOS" --text="\${text}" --width=480 || true
+  elif command -v notify-send >/dev/null 2>&1; then
+    notify-send -a AidyCOS "AidyCOS" "\${text}" || true
+  fi
+}
+
+exec 9>"\${LOCK}"
+if ! flock -n 9; then
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send -a AidyCOS "AidyCOS" "Ya hay una actualización en curso." || true
+  fi
+  exit 0
 fi
 
-echo "Aplicando el perfil. Escribe tu contraseña cuando se pida…"
-bash "\${installer}" --no-reboot
-mkdir -p "\$(dirname "\${MARKER}")"
-printf '%s\\n' "\${LATEST}" >"\${MARKER}"
-echo
-echo "AidyCOS quedó actualizado."
+run_update() {
+  echo "Actualización de AidyCOS"
+  echo "Descargando revisión \${LATEST:0:8}…"
+  local archive source_dir installer
+  archive="\${WORKDIR}/aidycos.tar.gz"
+  curl --fail --show-error --location \
+    --connect-timeout 10 --max-time 180 \
+    "https://codeload.github.com/\${REPO}/tar.gz/\${LATEST}" -o "\${archive}" || return 1
+  echo "Descarga terminada. Preparando instalador…"
+  tar -xzf "\${archive}" -C "\${WORKDIR}" || return 1
+  source_dir="\$(find "\${WORKDIR}" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+  installer="\${source_dir}/scripts/install-debian-profile.sh"
+  if [[ ! -x "\${installer}" ]]; then
+    echo "La revisión descargada no contiene el instalador del perfil." >&2
+    return 1
+  fi
+  echo "Aplicando el perfil…"
+  bash "\${installer}" --no-reboot || return 1
+  mkdir -p "\$(dirname "\${MARKER}")"
+  printf '%s\\n' "\${LATEST}" >"\${MARKER}"
+  echo "AidyCOS quedó actualizado."
+}
+
+if [[ "\${GUI_APPLY}" == 1 ]]; then
+  if [[ -z "\${REAL_SUDO}" || ! -x "\${ASKPASS}" ]]; then
+    report_failure "No se pudo preparar el diálogo de contraseña."
+    exit 1
+  fi
+  if ! command -v zenity >/dev/null 2>&1; then
+    report_failure "Hace falta zenity para pedir la contraseña sin abrir una consola."
+    exit 1
+  fi
+  export DEBIAN_FRONTEND=noninteractive
+  export NEEDRESTART_MODE=a
+  export APT_LISTCHANGES_FRONTEND=none
+  # One dialog. The ticket covers later sudo calls; the saved password covers
+  # the ones that do not see that ticket because there is no terminal.
+  if ! "\${REAL_SUDO}" -n true 2>/dev/null; then
+    confirmed=0
+    for _attempt in 1 2 3; do
+      password="\$(zenity --password --title="Actualizar AidyCOS" --text="Contraseña de administrador. La actualización sigue en segundo plano.")" || {
+        if command -v notify-send >/dev/null 2>&1; then
+          notify-send -a AidyCOS "AidyCOS" "Actualización cancelada." || true
+        fi
+        exit 1
+      }
+      if printf '%s\\n' "\${password}" | "\${REAL_SUDO}" -S -p '' -v >/dev/null 2>&1; then
+        confirmed=1
+        break
+      fi
+      zenity --warning --title="AidyCOS" --text="Contraseña incorrecta." --width=360 || true
+    done
+    if [[ "\${confirmed}" != 1 ]]; then
+      if command -v notify-send >/dev/null 2>&1; then
+        notify-send -a AidyCOS "AidyCOS" "No se confirmó la contraseña. Actualización cancelada." || true
+      fi
+      exit 1
+    fi
+    umask 077
+    printf '%s\\n' "\${password}" >"\${PASSFILE}"
+    chmod 600 "\${PASSFILE}"
+    unset password
+  fi
+  export SUDO_ASKPASS="\${ASKPASS}"
+  export PATH="\${SUDO_WRAP}:\${PATH}"
+  ( while true; do sleep 60; "\${REAL_SUDO}" -n -v 2>/dev/null || exit 0; done ) &
+  refresh_pid=\$!
+  : >"\${LOG}"
+  if ! run_update >>"\${LOG}" 2>&1; then
+    report_failure "No se pudo actualizar AidyCOS."
+    exit 1
+  fi
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send -a AidyCOS "AidyCOS" "AidyCOS quedó actualizado. Si algún atajo no cambia, cierra sesión una vez." || true
+  fi
+  exit 0
+fi
+
+run_update
 echo "Atajos y Alt+Tab se recargan en caliente; si algo de la sesión no cambia, cierra sesión una vez."
-echo
-read -r -p "Pulsa Enter para cerrar esta ventana…" _
 EOF
 chmod 700 "${apply_script}"
 
-# Manual interactive shell: reuse this TTY. GUI/menu/timer always open a window.
-if [[ -t 0 && -t 1 && -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]]; then
-  bash "${apply_script}"
-  exit 0
-fi
-if [[ -t 0 && -t 1 && "${AIDYCOS_UPDATE_INLINE:-}" == 1 ]]; then
+if [[ "${gui_apply}" != 1 ]]; then
   bash "${apply_script}"
   exit 0
 fi
 
-terminal="$(find_terminal || true)"
-if [[ -z "${terminal}" ]]; then
-  notify_error "No hay una terminal instalada para pedir la contraseña. Instala foot (o kitty/alacritty) y vuelve a ejecutar aidycos-update."
+if ! command -v zenity >/dev/null 2>&1; then
+  notify_error "Hace falta zenity para pedir la contraseña sin abrir una consola."
   rm -rf "${apply_dir}"
   exit 1
 fi
 
-# Release the flock before handing off so later checks are not blocked.
+# The background job takes the lock. Release it here so that job can start.
 exec 9>&-
-
-if ! run_in_terminal "${terminal}" "${apply_script}" "${terminal_launcher}"; then
-  notify_error "No se pudo abrir la terminal para pedir la contraseña. Abre foot y ejecuta: aidycos-update"
-  rm -rf "${apply_dir}"
-  exit 1
+if command -v setsid >/dev/null 2>&1; then
+  setsid bash "${apply_script}" </dev/null >/dev/null 2>&1 &
+else
+  nohup bash "${apply_script}" </dev/null >/dev/null 2>&1 &
 fi
-
-notify_info "Terminal abierta: la descarga y la contraseña van ahí."
+disown || true
+notify_info "Actualizando AidyCOS en segundo plano. Si hace falta, escribe la contraseña en la ventana que aparece."
 exit 0
