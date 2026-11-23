@@ -97,20 +97,51 @@ class DrawerCommandTests(unittest.TestCase):
             ]
         )
         jobs = cajon.parse_completed_jobs(sample)
-        self.assertEqual([title for _key, title in jobs], ["Factura-E", "Open Drawer", "Página de prueba"])
+        self.assertEqual(
+            [title for _key, _size, title in jobs],
+            ["Factura-E", "Open Drawer", "Página de prueba"],
+        )
         seen, fresh = cajon.kicks_for_new_jobs(None, jobs)
         self.assertEqual(fresh, [])
         seen, fresh = cajon.kicks_for_new_jobs(seen, jobs)
         self.assertEqual(fresh, [])
         extra = jobs + [
-            ("XPRINTER-7  caja  400  lun 23 nov 2026 12:01:00", "Ticket"),
+            ("XPRINTER-7  caja  400  lun 23 nov 2026 12:01:00", 400, "Ticket"),
+            ("XPRINTER-8  caja  5  lun 23 nov 2026 12:01:01", 5, ""),
         ]
         seen, fresh = cajon.kicks_for_new_jobs(seen, extra)
-        self.assertEqual([title for _key, title in fresh], ["Ticket"])
-        self.assertTrue(cajon.should_open_after_print("Factura-E"))
-        self.assertFalse(cajon.should_open_after_print("Open Drawer"))
-        self.assertFalse(cajon.should_open_after_print("Test Page"))
-        self.assertFalse(cajon.should_open_after_print("Página de prueba"))
+        self.assertEqual([title for _key, _size, title in fresh], ["Ticket"])
+        self.assertTrue(cajon.should_open_after_print("Factura-E", 512))
+        self.assertFalse(cajon.should_open_after_print("Open Drawer", 5))
+        self.assertFalse(cajon.should_open_after_print("", 5))
+        self.assertFalse(cajon.should_open_after_print("Test Page", 800))
+        self.assertFalse(cajon.should_open_after_print("Página de prueba", 80))
+
+    def test_clear_removes_stuck_open_drawer_jobs_shown_as_zero(self) -> None:
+        cajon = _load()
+        sample = "\n".join(
+            [
+                "XPRINTER-359  Desconocido  0  lun 23 nov 2026 13:12:00",
+                "\tOpen Drawer",
+                "XPRINTER-360  Desconocido  0  lun 23 nov 2026 13:12:01",
+                "\tOpen Drawer",
+                "XPRINTER-361  caja  800  lun 23 nov 2026 13:12:02",
+                "\tFactura-E",
+            ]
+        )
+        calls: list[list[str]] = []
+
+        def fake_run(argv, **_kwargs):
+            calls.append(list(argv))
+            if str(argv[0]).endswith("lpstat"):
+                return subprocess.CompletedProcess(argv, 0, sample, "")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        removed = cajon.cancel_pulse_jobs("XPRINTER", run=fake_run)
+        self.assertEqual(removed, ["XPRINTER-359", "XPRINTER-360"])
+        cancelled = [cmd for cmd in calls if "cancel" in str(cmd[0])]
+        self.assertEqual(len(cancelled), 2)
+        self.assertTrue(all("-x" in cmd for cmd in cancelled))
 
     def test_session_config_adds_f6_and_watcher_once(self) -> None:
         cajon = _load()

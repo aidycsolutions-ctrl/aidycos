@@ -40,7 +40,10 @@ _BAD_JOB_RE = re.compile(
     r"abort|cancel|held|stopped|abortad|cancelad|retenid",
     re.IGNORECASE,
 )
-_JOB_HEAD_RE = re.compile(r"^(\S+-\d+)\s+\S+")
+# Un pulso son 5 bytes. Una factura es mucho más grande. Por debajo de esto
+# no es un ticket: es el propio cajón, y volver a abrirlo atasca la cola.
+PULSE_JOB_MAX = 64
+_JOB_HEAD_RE = re.compile(r"^(\S+-\d+)\s+\S+\s+(\d+)\b")
 _META_LINE_RE = re.compile(
     r"^(?:alerts|alertas|status|estado|queued for|en cola para)\b",
     re.IGNORECASE,
@@ -162,6 +165,12 @@ def open_drawer(
         logger.info("Prueba en seco: no se abre el cajón de %s", target)
         return True, f"dry-run {target}"
     sender = run or subprocess.run
+    if run is None:
+        # F6 no se mete delante del ticket: espera a que la cola suelte la factura.
+        cancel_pulse_jobs(target)
+        deadline = time.time() + 20
+        while time.time() < deadline and not queue_is_idle(target):
+            time.sleep(0.2)
     try:
         completed = sender(
             [cups_tool("lp"), "-d", target, "-o", "raw", "-t", "Open Drawer"],
@@ -195,14 +204,15 @@ def open_drawer(
     return True, job_id
 
 
-def parse_completed_jobs(text: str) -> list[tuple[str, str]]:
-    """Lee ``lpstat -W completed -l``. Cada item es (línea de id, título)."""
-    jobs: list[tuple[str, str]] = []
+def parse_completed_jobs(text: str) -> list[tuple[str, int, str]]:
+    """Lee ``lpstat``. Cada item es (línea de id, bytes, título)."""
+    jobs: list[tuple[str, int, str]] = []
     header = ""
+    size = 0
     extras: list[str] = []
 
     def flush() -> None:
-        nonlocal header, extras
+        nonlocal header, size, extras
         if header:
             title = ""
             for line in extras:
@@ -210,8 +220,9 @@ def parse_completed_jobs(text: str) -> list[tuple[str, str]]:
                     continue
                 title = line
                 break
-            jobs.append((header, title))
+            jobs.append((header, size, title))
         header = ""
+        size = 0
         extras = []
 
     for raw in text.splitlines():
@@ -221,50 +232,122 @@ def parse_completed_jobs(text: str) -> list[tuple[str, str]]:
             continue
         flush()
         stripped = raw.strip()
-        if _JOB_HEAD_RE.match(stripped):
+        match = _JOB_HEAD_RE.match(stripped)
+        if match:
             header = stripped
+            size = int(match.group(2))
     flush()
     return jobs
 
 
-def should_open_after_print(title: str) -> bool:
+def should_open_after_print(title: str, size: int = PULSE_JOB_MAX + 1) -> bool:
     """Una factura sí abre el cajón. El pulso y la página de prueba, no."""
+    if size <= PULSE_JOB_MAX:
+        return False
     return _SKIP_TITLE_RE.search(str(title or "").strip()) is None
 
 
 def kicks_for_new_jobs(
     seen: set[str] | None,
-    jobs: list[tuple[str, str]],
-) -> tuple[set[str], list[tuple[str, str]]]:
+    jobs: list[tuple[str, int, str]],
+) -> tuple[set[str], list[tuple[str, int, str]]]:
     """La primera lectura solo recuerda trabajos ya impresos."""
-    keys = {key for key, _title in jobs}
+    keys = {key for key, _size, _title in jobs}
     if seen is None:
         return keys, []
     fresh = [
-        (key, title)
-        for key, title in jobs
-        if key not in seen and should_open_after_print(title)
+        (key, size, title)
+        for key, size, title in jobs
+        if key not in seen and should_open_after_print(title, size)
     ]
     return seen | keys, fresh
 
 
-def completed_jobs_text(queue: str = DRAWER_QUEUE) -> str:
+def _lpstat(queue: str, *extra: str, run=None) -> str:
+    sender = run or subprocess.run
     try:
-        result = subprocess.run(
-            [cups_tool("lpstat"), "-W", "completed", "-l", "-o", queue],
+        result = sender(
+            [cups_tool("lpstat"), *extra, "-o", queue],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=8,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
-        logger.error("No se pudieron leer los trabajos de %s: %s", queue, error)
+        logger.error("No se pudo consultar %s: %s", queue, error)
         return ""
     return result.stdout or ""
 
 
-def watch_prints(queue: str = DRAWER_QUEUE, *, interval: float = 1.0) -> int:
-    """Tras cada factura en la XPRINTER, abre el cajón una vez."""
+def completed_jobs_text(queue: str = DRAWER_QUEUE, *, run=None) -> str:
+    # Sin -l: no pide el detalle de todo el historial en cada vuelta.
+    return _lpstat(queue, "-W", "completed", run=run)
+
+
+def queue_is_idle(queue: str, *, run=None) -> bool:
+    """True cuando no hay una factura ocupando la XPRINTER."""
+    return not _lpstat(queue, run=run).strip()
+
+
+def is_pulse_job(title: str, size: int) -> bool:
+    """El trabajo de la captura: «Open Drawer», en proceso o pendiente, a veces con 0k."""
+    if re.search(r"open drawer|caj[oó]n", str(title or ""), re.IGNORECASE):
+        return True
+    return 0 < size <= PULSE_JOB_MAX
+
+
+def cancel_pulse_jobs(queue: str, *, run=None) -> list[str]:
+    """Quita los Open Drawer ya encolados, también si CUPS los muestra en 0k."""
+    sender = run or subprocess.run
+    pending = parse_completed_jobs(_lpstat(queue, "-l", run=run))
+    removed: list[str] = []
+    for header, size, title in pending:
+        if not is_pulse_job(title, size):
+            continue
+        job_id = header.split()[0]
+        try:
+            sender(
+                [cups_tool("cancel"), "-x", job_id],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            logger.error("No se pudo cancelar %s: %s", job_id, error)
+            continue
+        removed.append(job_id)
+        logger.info("Se quitó el pulso encolado %s para no frenar la impresión", job_id)
+    if removed and run is None:
+        try:
+            subprocess.run(
+                [cups_tool("cupsenable"), queue],
+                capture_output=True,
+                text=True,
+                timeout=8,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            logger.error("No se pudo reactivar %s: %s", queue, error)
+    return removed
+
+
+def submit_pulse(queue: str) -> None:
+    """Encola el pulso y vuelve al momento. No espera a que la impresora lo termine."""
+    process = subprocess.Popen(
+        [cups_tool("lp"), "-d", queue, "-o", "raw", "-t", "Open Drawer"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    assert process.stdin is not None
+    process.stdin.write(DRAWER_PULSE)
+    process.stdin.close()
+
+
+def watch_prints(queue: str = DRAWER_QUEUE, *, interval: float = 0.4) -> int:
+    """Abre el cajón cuando la factura ya salió y la cola está libre."""
     lock_path = Path.home() / ".local" / "share" / "aidycos" / "cajon-watch.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_file = lock_path.open("a+", encoding="utf-8")
@@ -273,30 +356,33 @@ def watch_prints(queue: str = DRAWER_QUEUE, *, interval: float = 1.0) -> int:
     except BlockingIOError:
         logger.info("El vigilante del cajón ya está corriendo")
         return 0
+    cancel_pulse_jobs(queue)
     seen: set[str] | None = None
-    logger.info("Vigilando impresiones de %s", queue)
+    pending = False
+    last_pulse = 0.0
+    logger.info("Vigilando impresiones de %s sin interrumpir la cola", queue)
     while True:
         seen, fresh = kicks_for_new_jobs(seen, parse_completed_jobs(completed_jobs_text(queue)))
         if fresh:
-            opened, detail = open_drawer(queue)
-            logger.info("Tras imprimir %s: %s", fresh[-1][1] or fresh[-1][0], detail)
-            if not opened:
-                logger.error("No se abrió el cajón tras imprimir: %s", detail)
+            pending = True
+        if pending and queue_is_idle(queue) and (time.time() - last_pulse) > 1.5:
+            submit_pulse(queue)
+            pending = False
+            last_pulse = time.time()
+            logger.info("Cajón abierto después de imprimir")
         time.sleep(interval)
 
 
 def command_path() -> Path:
-    """Ruta sin espacios: la de /usr/local/bin o una copia en ~/.local/bin."""
-    system = Path("/usr/local/bin/aidycos-cajon")
-    if system.is_file() and os.access(system, os.X_OK):
-        return system
-    target = Path.home() / ".local" / "bin" / "aidycos-cajon"
+    """Copia este archivo a ~/.local/bin para no seguir ejecutando una versión vieja."""
     source = Path(__file__).resolve()
-    if source != target.resolve():
+    target = Path.home() / ".local" / "bin" / "aidycos-cajon"
+    if source != target:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
         target.chmod(0o755)
-    return target
+        return target
+    return source
 
 
 def ensure_session_config(text: str, command: str) -> str:
@@ -331,6 +417,9 @@ def install_session(conf_path: Path | None = None) -> int:
         conf.write_text(updated, encoding="utf-8")
     if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") and shutil.which("hyprctl"):
         subprocess.run(["hyprctl", "reload"], check=False, timeout=5)
+    # El vigilante viejo sigue encolando pulsos. Hay que pararlo antes de arrancar este.
+    subprocess.run(["pkill", "-f", "aidycos-cajon watch"], check=False)
+    time.sleep(0.3)
     subprocess.Popen(
         [command, "watch"],
         start_new_session=True,
@@ -352,12 +441,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "action",
         nargs="?",
-        choices=("watch", "install-session"),
-        help="watch: abrir tras cada factura. install-session: atajo F6 y vigilante.",
+        choices=("watch", "install-session", "clear"),
+        help="watch: abrir tras cada factura. clear: borrar Open Drawer atascados. install-session: atajo F6.",
     )
     parser.add_argument("conf", nargs="?", help="hyprland aidycos.conf, solo con install-session.")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    if args.action == "clear":
+        removed = cancel_pulse_jobs(args.printer or DRAWER_QUEUE)
+        print("quitados=" + (",".join(removed) if removed else "-"))
+        return 0
     if args.action == "watch":
         return watch_prints(args.printer or DRAWER_QUEUE)
     if args.action == "install-session":
