@@ -235,3 +235,32 @@ class JugooDeploymentTests(unittest.TestCase):
             self.assertIn("pinned_apps", layout_text)
             self.assertIn("applications-menu-button", style.read_text(encoding="utf-8"))
             self.assertTrue((root / "shell/widgets/barra/applications.py").is_file())
+            self.assertEqual(app_text.count("self.layout.left.add(self.applications_menu_widget)"), 1)
+
+            # Hostname between the button and the dock must not add a second grid.
+            app.write_text(
+                app_text.replace(
+                    "        self.layout.left.add(self.applications_menu_widget)\n"
+                    "        self.pinned_apps_widget = PinnedAppsWidget(self.event_bus, self)\n",
+                    "        self.layout.left.add(self.applications_menu_widget)\n"
+                    "        self.host_identity_widget = HostIdentityWidget()\n"
+                    "        self.layout.left.add(self.host_identity_widget)\n"
+                    "        self.applications_menu_widget = ApplicationsMenuWidget(self.toggle_launcher)\n"
+                    "        self.layout.left.add(self.applications_menu_widget)\n"
+                    "        self.pinned_apps_widget = PinnedAppsWidget(self.event_bus, self)\n",
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            overlay.install_applications_menu(root)
+            repaired = app.read_text(encoding="utf-8")
+            self.assertEqual(repaired.count("self.layout.left.add(self.applications_menu_widget)"), 1)
+            self.assertIn("self.host_identity_widget = HostIdentityWidget()", repaired)
+            self.assertLess(
+                repaired.index("self.layout.left.add(self.applications_menu_widget)"),
+                repaired.index("self.layout.left.add(self.host_identity_widget)"),
+            )
+            self.assertLess(
+                repaired.index("self.layout.left.add(self.host_identity_widget)"),
+                repaired.index("self.layout.left.add(self.pinned_apps_widget)"),
+            )

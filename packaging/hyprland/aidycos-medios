@@ -1,0 +1,115 @@
+#!/bin/sh
+# System volume and screen brightness for Hyprland media keys.
+# Fn+F1…F5 is emitted by the keyboard as XF86* keys; Super+F1…F5 is the fallback.
+set -u
+
+step_pct=5
+
+volume_up() {
+  if command -v wpctl >/dev/null 2>&1; then
+    wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 >/dev/null 2>&1 || true
+    wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ "${step_pct}%+" && return 0
+  fi
+  if command -v pactl >/dev/null 2>&1; then
+    pactl set-sink-mute @DEFAULT_SINK@ 0 >/dev/null 2>&1 || true
+    pactl set-sink-volume @DEFAULT_SINK@ "+${step_pct}%" && return 0
+  fi
+  return 1
+}
+
+volume_down() {
+  if command -v wpctl >/dev/null 2>&1; then
+    wpctl set-volume @DEFAULT_AUDIO_SINK@ "${step_pct}%-" && return 0
+  fi
+  if command -v pactl >/dev/null 2>&1; then
+    pactl set-sink-volume @DEFAULT_SINK@ "-${step_pct}%" && return 0
+  fi
+  return 1
+}
+
+volume_mute() {
+  if command -v wpctl >/dev/null 2>&1; then
+    wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle && return 0
+  fi
+  if command -v pactl >/dev/null 2>&1; then
+    pactl set-sink-mute @DEFAULT_SINK@ toggle && return 0
+  fi
+  return 1
+}
+
+brightness_target() {
+  bl=$1
+  direction=$2
+  max=$(cat "$bl/max_brightness" 2>/dev/null) || return 1
+  cur=$(cat "$bl/brightness" 2>/dev/null) || return 1
+  case "$max" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  case "$cur" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  step=$((max * step_pct / 100))
+  if [ "$step" -lt 1 ]; then
+    step=1
+  fi
+  if [ "$direction" = up ]; then
+    next=$((cur + step))
+    if [ "$next" -gt "$max" ]; then
+      next=$max
+    fi
+  else
+    next=$((cur - step))
+    if [ "$next" -lt 1 ]; then
+      next=1
+    fi
+  fi
+  printf '%s\n' "$next"
+}
+
+brightness_apply() {
+  bl=$1
+  next=$2
+  name=$(basename "$bl")
+  if [ -w "$bl/brightness" ] && printf '%s\n' "$next" >"$bl/brightness"; then
+    return 0
+  fi
+  if command -v busctl >/dev/null 2>&1; then
+    busctl call org.freedesktop.login1 /org/freedesktop/login1/session/auto \
+      org.freedesktop.login1.Session SetBrightness ssu backlight "$name" "$next" \
+      >/dev/null 2>&1 && return 0
+  fi
+  return 1
+}
+
+brightness_shift() {
+  direction=$1
+  if command -v brightnessctl >/dev/null 2>&1; then
+    if [ "$direction" = up ]; then
+      brightnessctl --quiet set "${step_pct}%+" && return 0
+    fi
+    brightnessctl --quiet set "${step_pct}%-" && return 0
+  fi
+  ok=1
+  for bl in /sys/class/backlight/*; do
+    [ -e "$bl/brightness" ] || continue
+    next=$(brightness_target "$bl" "$direction") || continue
+    if brightness_apply "$bl" "$next"; then
+      ok=0
+      break
+    fi
+  done
+  return "$ok"
+}
+
+action=${1:-}
+case "$action" in
+  volume-up) volume_up ;;
+  volume-down) volume_down ;;
+  mute) volume_mute ;;
+  brightness-up) brightness_shift up ;;
+  brightness-down) brightness_shift down ;;
+  *)
+    echo "Uso: aidycos-medios volume-up|volume-down|mute|brightness-up|brightness-down" >&2
+    exit 2
+    ;;
+esac

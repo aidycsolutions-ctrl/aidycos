@@ -55,8 +55,9 @@ Vista previa del perfil AidyCOS para Debian 13:
   * Ocultar GRUB y los mensajes de arranque; mostrar el logo en Plymouth y SDDM.
   * Retrasar cups-browsed hasta el entorno gráfico.
   * Instalar el gestor de impresoras y Alt+F4 para el menú de apagado.
-  * Crear la cola raw Tickets cuando hay una térmica ESC/POS, para abrir el cajón.
-  * Instalar el comando aidycos-cajon (abre la XPRINTER sin recompilar AidyC).
+  * Crear la cola raw Tickets cuando hay una térmica ESC/POS, para los tickets.
+  * Cargar usblp al arranque, desactivar el autosuspend de la Xprinter 0483:070b y dar al usuario del POS el grupo lp.
+  * Instalar el comando aidycos-cajon (escribe el pulso ESC/POS en /dev/usb/lp0).
   * Mantener usuario, contraseña y autologin actuales; cambiar el gestor de sesión a SDDM y respaldar los ajustes Hyprland tocados.
   * Instalar el comando y acceso de menú «Quitar AidyCOS» para devolver el sistema anterior.
 No se hicieron cambios.
@@ -549,6 +550,37 @@ sudo install -m 0755 "${ROOT}/scripts/aidyc-update" /usr/local/bin/aidyc-update
 sudo install -m 0755 "${ROOT}/scripts/aidycos-onlyoffice" /usr/local/bin/aidycos-onlyoffice
 sudo install -m 0755 "${ROOT}/scripts/aidycos-cajon" /usr/local/bin/aidycos-cajon
 install -D -m 0755 "${ROOT}/scripts/aidycos-cajon" "${HOME}/.local/bin/aidycos-cajon"
+
+# Xprinter STMicro 0483:070b: CUPS/libusb dejan el endpoint en STALL.
+# usblp + sin autosuspend permite escribir ESC/POS en /dev/usb/lp* sin sudo.
+install_xprinter_cash_drawer() {
+  local pos_user="${USER}"
+  local modules_file=/etc/modules-load.d/usblp.conf
+  local udev_file=/etc/udev/rules.d/99-xprinter-nosuspend.rules
+  local rule='ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="0483", ATTR{idProduct}=="070b", MODE="0666", TEST=="power/control", ATTR{power/control}="on"'
+
+  if [[ ! -f "${modules_file}" ]] || ! grep -qx 'usblp' "${modules_file}"; then
+    printf '%s\n' 'usblp' | sudo tee "${modules_file}" >/dev/null
+  fi
+  if ! sudo modprobe usblp; then
+    echo "Aviso: no se pudo cargar el módulo usblp." >&2
+  fi
+  if [[ ! -f "${udev_file}" ]] || ! grep -qxF "${rule}" "${udev_file}"; then
+    printf '%s\n' "${rule}" | sudo tee "${udev_file}" >/dev/null
+  fi
+  if ! sudo udevadm control --reload-rules || ! sudo udevadm trigger; then
+    echo "Aviso: no se pudieron recargar las reglas udev de la Xprinter." >&2
+  fi
+  if getent group lp >/dev/null 2>&1; then
+    if ! id -nG "${pos_user}" 2>/dev/null | tr ' ' '\n' | grep -qx lp; then
+      sudo usermod -aG lp "${pos_user}"
+      echo "Usuario ${pos_user} añadido al grupo lp (cierra sesión para escribir /dev/usb/lp0)."
+    fi
+  else
+    echo "Aviso: el grupo lp no existe; el cajón no podrá abrirse sin permisos." >&2
+  fi
+}
+install_xprinter_cash_drawer
 sudo install -m 0755 "${ROOT}/scripts/uninstall-debian-profile.sh" /usr/local/bin/aidycos-uninstall
 install -D -m 0755 "${ROOT}/scripts/uninstall-debian-profile.sh" \
   "${HOME}/.local/bin/aidycos-uninstall"
@@ -1447,6 +1479,13 @@ fi
 if [[ -f "${ROOT}/scripts/apply-hypr-keymap.py" ]]; then
   if ! python3 "${ROOT}/scripts/apply-hypr-keymap.py" "${HYPR_DIR}"; then
     echo "Aviso: no se pudo mapear KP_Enter a Enter." >&2
+  fi
+fi
+# Volumen (teclas dedicadas o Super+F1/F2/F3) y brillo (Super+F4/F5).
+# Fn+Fx lo traduce el teclado a XF86*; el mismo script atiende esas teclas.
+if [[ -f "${ROOT}/scripts/apply-hypr-medios.py" ]]; then
+  if ! python3 "${ROOT}/scripts/apply-hypr-medios.py" "${HYPR_DIR}"; then
+    echo "Aviso: no se pudieron instalar las teclas de volumen y brillo." >&2
   fi
 fi
 # F6 abre el cajón. El vigilante lo abre al terminar una factura en XPRINTER.

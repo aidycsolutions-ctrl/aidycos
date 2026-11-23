@@ -18,6 +18,7 @@ from ...servicios.bluetooth.service import (
     BluetoothService,
     bluetooth_bar_icon_name,
     bluetooth_bar_tooltip,
+    bluetooth_bar_visual_state,
 )
 from ...ui import ShellModule
 
@@ -35,6 +36,7 @@ class BluetoothWidget(ShellModule):
         self._event_bus = event_bus
         self._service = bluetooth_service
         self._snapshot = bluetooth_service.snapshot
+        self._visual_state = ""
 
         self._button = Gtk.Button(relief=Gtk.ReliefStyle.NONE)
         self._button.get_style_context().add_class("bluetooth-button")
@@ -67,8 +69,21 @@ class BluetoothWidget(ShellModule):
         self._icon.set_from_icon_name(bluetooth_bar_icon_name(snapshot), Gtk.IconSize.MENU)
         self._icon.set_pixel_size(NETWORK_ICON_SIZE)
         self._button.set_tooltip_text(bluetooth_bar_tooltip(snapshot))
+        self._apply_visual_state(bluetooth_bar_visual_state(snapshot))
         self.show_all()
         return False
+
+    def _apply_visual_state(self, state: str) -> None:
+        next_state = state or ""
+        if next_state == self._visual_state:
+            return
+        for widget in (self._button, self._icon):
+            style = widget.get_style_context()
+            if self._visual_state:
+                style.remove_class(f"bluetooth-state-{self._visual_state}")
+            if next_state:
+                style.add_class(f"bluetooth-state-{next_state}")
+        self._visual_state = next_state
 
     def _on_button_press(self, _widget: Gtk.Widget, event: Gdk.EventButton) -> bool:
         if event.button == 1:

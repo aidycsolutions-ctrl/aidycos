@@ -584,6 +584,12 @@ remove_misc_system() {
   # Leave sudoers rule: removing it can lock out a user that only gained sudo via AidyCOS.
   # Documented; do not delete "${sudoers}" by default.
   :
+  remove_path "$(sys /etc/udev/rules.d/99-xprinter-nosuspend.rules)"
+  remove_path "$(sys /etc/modules-load.d/usblp.conf)"
+  if [[ -z "${SYSROOT}" && "${DRY_RUN}" != 1 ]]; then
+    run_root udevadm control --reload-rules >/dev/null 2>&1 || true
+    run_root udevadm trigger >/dev/null 2>&1 || true
+  fi
   remove_path "$(sys /var/lib/aidycos/legacy-aidyc-cleaned)"
   remove_path "$(sys /var/lib/aidycos/previous-display-manager)"
   remove_path "$(sys /var/lib/aidycos/profile-installed)"

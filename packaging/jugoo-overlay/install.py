@@ -70,6 +70,32 @@ def replace_desktop_icons_editor(root: Path, overlay: Path) -> None:
             stream.write("\n\n" + editor.rstrip() + "\n")
 
 
+_APPLICATIONS_MENU_BLOCK = (
+    "        self.applications_menu_widget = ApplicationsMenuWidget(self.toggle_launcher)\n"
+    "        self.layout.left.add(self.applications_menu_widget)\n"
+)
+
+
+def _collapse_duplicate_applications_menu(app: Path) -> None:
+    """Keep a single Aplicaciones button on the bar.
+
+    The hostname patch sits between the button and the dock, so a later pass
+    no longer sees the button as already installed and adds a second one.
+    """
+    if not app.is_file():
+        return
+    text = app.read_text(encoding="utf-8")
+    if text.count(_APPLICATIONS_MENU_BLOCK) <= 1:
+        return
+    first = text.find(_APPLICATIONS_MENU_BLOCK)
+    head = text[: first + len(_APPLICATIONS_MENU_BLOCK)]
+    tail = text[first + len(_APPLICATIONS_MENU_BLOCK) :].replace(_APPLICATIONS_MENU_BLOCK, "")
+    backup = app.with_suffix(app.suffix + ".aidycos-backup")
+    if not backup.exists():
+        shutil.copy2(app, backup)
+    app.write_text(head + tail, encoding="utf-8")
+
+
 def install_applications_menu(root: Path) -> None:
     """Bar button that opens the launcher; keep the pinned dock beside it."""
     overlay = Path(__file__).parent / "shell"
@@ -96,6 +122,7 @@ def install_applications_menu(root: Path) -> None:
         )
 
     app = root / "shell/app.py"
+    _collapse_duplicate_applications_menu(app)
     try_replace_once(
         app,
         "from .widgets.barra.pinned_apps import PinnedAppsWidget\n",
@@ -104,16 +131,19 @@ def install_applications_menu(root: Path) -> None:
         "importar botón de aplicaciones",
     )
     # Apps grid + keep the pinned dock (pin from launcher, show on the bar).
-    try_replace_once(
-        app,
-        "        self.pinned_apps_widget = PinnedAppsWidget(self.event_bus, self)\n"
-        "        self.layout.left.add(self.pinned_apps_widget)\n",
-        "        self.applications_menu_widget = ApplicationsMenuWidget(self.toggle_launcher)\n"
-        "        self.layout.left.add(self.applications_menu_widget)\n"
-        "        self.pinned_apps_widget = PinnedAppsWidget(self.event_bus, self)\n"
-        "        self.layout.left.add(self.pinned_apps_widget)\n",
-        "mostrar botón de aplicaciones junto al dock",
-    )
+    # Skip when the button already exists: after the hostname is inserted it
+    # is no longer adjacent to the dock, and replacing the dock block again
+    # would paint a second grid icon.
+    if app.is_file() and _APPLICATIONS_MENU_BLOCK not in app.read_text(encoding="utf-8"):
+        try_replace_once(
+            app,
+            "        self.pinned_apps_widget = PinnedAppsWidget(self.event_bus, self)\n"
+            "        self.layout.left.add(self.pinned_apps_widget)\n",
+            _APPLICATIONS_MENU_BLOCK
+            + "        self.pinned_apps_widget = PinnedAppsWidget(self.event_bus, self)\n"
+            "        self.layout.left.add(self.pinned_apps_widget)\n",
+            "mostrar botón de aplicaciones junto al dock",
+        )
     # If a previous AidyCOS pass removed the dock from the layout, put it back.
     try_replace_once(
         app,
@@ -1203,6 +1233,21 @@ def install_bluetooth(root: Path) -> None:
         if not backup.exists():
             shutil.copy2(style, backup)
         style.write_text(style_text.rstrip() + css, encoding="utf-8")
+        style_text = style.read_text(encoding="utf-8")
+
+    if "bluetooth-state-connected" not in style_text:
+        connected_css = (
+            "\n/* AidyCOS: Bluetooth bar icon turns blue while a device is connected. */\n"
+            "box.bluetooth-widget button.bluetooth-button.bluetooth-state-connected,\n"
+            "box.bluetooth-widget button.bluetooth-button.bluetooth-state-connected image.bluetooth-icon,\n"
+            "image.bluetooth-device-connected {\n"
+            "    color: #4da3ff;\n"
+            "}\n"
+        )
+        backup = style.with_suffix(style.suffix + ".aidycos-backup")
+        if not backup.exists():
+            shutil.copy2(style, backup)
+        style.write_text(style_text.rstrip() + connected_css, encoding="utf-8")
 
 
 def install_printers(root: Path) -> None:

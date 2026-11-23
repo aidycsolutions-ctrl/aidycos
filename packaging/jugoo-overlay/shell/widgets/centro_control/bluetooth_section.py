@@ -165,6 +165,8 @@ class ControlCenterBluetoothSection(ShellModule):
             # BlueZ icon names are often already symbolic-friendly enough.
             icon_name = device.icon if device.icon.endswith("-symbolic") else f"{device.icon}-symbolic"
         image = Gtk.Image.new_from_icon_name(icon_name, Gtk.IconSize.MENU)
+        if device.connected:
+            image.get_style_context().add_class("bluetooth-device-connected")
         box.pack_start(image, False, False, 0)
 
         text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)

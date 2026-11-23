@@ -1,9 +1,10 @@
-"""El comando de AidyCOS abre la XPRINTER y no dispara el cajón en una prueba."""
+"""El comando de AidyCOS abre la XPRINTER por usblp y no dispara el cajón en una prueba."""
 from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -23,9 +24,10 @@ def _load():
 
 
 class DrawerCommandTests(unittest.TestCase):
-    def test_pulse_matches_the_working_printf(self) -> None:
+    def test_pulse_matches_the_usblp_sequence(self) -> None:
         cajon = _load()
-        self.assertEqual(cajon.DRAWER_PULSE, bytes([27, 112, 1, 37, 250]))
+        self.assertEqual(cajon.DRAWER_PULSE, bytes([0x1B, 0x70, 0x00, 0x19, 0xFA]))
+        self.assertTrue(hasattr(cajon, "openCashDrawer"))
 
     def test_hp_is_never_selected(self) -> None:
         cajon = _load()
@@ -48,38 +50,81 @@ class DrawerCommandTests(unittest.TestCase):
         self.assertIn("dry-run", detail)
         run.assert_not_called()
 
-    def test_open_sends_raw_pulse_and_confirms_the_job(self) -> None:
+    def test_open_writes_escpos_without_lp(self) -> None:
         cajon = _load()
-        seen: dict[str, object] = {}
+        with tempfile.TemporaryDirectory() as temp:
+            port = Path(temp) / "lp0"
+            port.write_bytes(b"")
+            with mock.patch.object(cajon.subprocess, "run") as run:
+                opened, detail = cajon.openCashDrawer(device=str(port), timeout=0.5)
+            run.assert_not_called()
+            self.assertTrue(opened)
+            self.assertEqual(detail, str(port))
+            self.assertEqual(port.read_bytes(), bytes([0x1B, 0x70, 0x00, 0x19, 0xFA]))
 
-        def fake_run(argv, **kwargs):
-            tool = str(argv[0])
-            if tool.endswith("/lp") or tool == "lp":
-                seen["argv"] = list(argv)
-                seen["payload"] = kwargs.get("input")
-                return subprocess.CompletedProcess(
-                    argv, 0, "request id is XPRINTER-4 (1 file(s))\n", ""
-                )
-            return subprocess.CompletedProcess(argv, 0, "", "")
-
-        opened, detail = cajon.open_drawer(available=["HP_Smart_Tank_WiFi", "XPRINTER"], run=fake_run)
-        self.assertTrue(opened)
-        self.assertEqual(detail, "XPRINTER-4")
-        self.assertEqual(seen["payload"], bytes([27, 112, 1, 37, 250]))
-        argv = seen["argv"]
-        assert isinstance(argv, list)
-        self.assertEqual(argv[1:5], ["-d", "XPRINTER", "-o", "raw"])
-
-    def test_rejected_job_is_reported(self) -> None:
+    def test_open_drawer_delegates_to_the_port(self) -> None:
         cajon = _load()
+        with tempfile.TemporaryDirectory() as temp:
+            port = Path(temp) / "lp0"
+            port.write_bytes(b"")
+            opened, detail = cajon.open_drawer(
+                available=["HP_Smart_Tank_WiFi", "XPRINTER"],
+                device=str(port),
+            )
+            self.assertTrue(opened)
+            self.assertEqual(detail, str(port))
+            self.assertEqual(port.read_bytes(), cajon.DRAWER_PULSE)
 
-        def fake_run(argv, **_kwargs):
-            return subprocess.CompletedProcess(argv, 1, "", "lp: The printer or class does not exist.")
+    def test_falls_back_to_the_next_usblp_node(self) -> None:
+        cajon = _load()
+        with tempfile.TemporaryDirectory() as temp:
+            lp1 = Path(temp) / "lp1"
+            lp1.write_bytes(b"")
+            devices = ("/dev/usb/lp0", str(lp1))
 
+            def exists(path: str) -> bool:
+                return path == str(lp1)
+
+            with (
+                mock.patch.object(cajon, "DRAWER_DEVICES", devices),
+                mock.patch.object(cajon.os.path, "exists", side_effect=exists),
+                mock.patch.object(cajon.glob, "glob", return_value=[]),
+            ):
+                opened, detail = cajon.openCashDrawer(timeout=0.5)
+            self.assertTrue(opened)
+            self.assertEqual(detail, str(lp1))
+            self.assertEqual(lp1.read_bytes(), cajon.DRAWER_PULSE)
+
+    def test_timeout_is_logged_and_does_not_raise(self) -> None:
+        cajon = _load()
+        with tempfile.TemporaryDirectory() as temp:
+            port = Path(temp) / "lp0"
+            port.write_bytes(b"")
+            with mock.patch.object(cajon.select, "select", return_value=([], [], [])):
+                with self.assertLogs("aidycos.cajon", level="ERROR"):
+                    opened, detail = cajon.openCashDrawer(device=str(port), timeout=0.05)
+            self.assertFalse(opened)
+            self.assertIn("no aceptó", detail)
+            self.assertEqual(port.read_bytes(), b"")
+
+    def test_missing_port_is_logged(self) -> None:
+        cajon = _load()
+        missing = "/dev/usb/does-not-exist-aidycos"
         with self.assertLogs("aidycos.cajon", level="ERROR"):
-            opened, detail = cajon.open_drawer(available=["XPRINTER"], run=fake_run)
+            opened, detail = cajon.openCashDrawer(device=missing, timeout=0.05)
         self.assertFalse(opened)
-        self.assertIn("does not exist", detail)
+        self.assertIn(missing, detail)
+
+    def test_write_error_is_logged_not_raised(self) -> None:
+        cajon = _load()
+        with tempfile.TemporaryDirectory() as temp:
+            port = Path(temp) / "lp0"
+            port.write_bytes(b"")
+            with mock.patch.object(cajon.os, "write", side_effect=OSError(5, "Input/output error")):
+                with self.assertLogs("aidycos.cajon", level="ERROR"):
+                    opened, detail = cajon.openCashDrawer(device=str(port), timeout=0.5)
+        self.assertFalse(opened)
+        self.assertIn("Input/output error", detail)
 
     def test_factura_opens_once_and_test_pages_do_not(self) -> None:
         cajon = _load()
@@ -158,6 +203,19 @@ class DrawerCommandTests(unittest.TestCase):
         self.assertIn("aidycos-cajon.desktop", text)
         self.assertIn("bind = , F6, exec, /usr/local/bin/aidycos-cajon", text)
         self.assertIn("aidycos-cajon watch", text)
+        self.assertIn("/etc/modules-load.d/usblp.conf", text)
+        self.assertIn("modprobe usblp", text)
+        self.assertIn("/etc/udev/rules.d/99-xprinter-nosuspend.rules", text)
+        self.assertIn(
+            'ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="0483", ATTR{idProduct}=="070b", MODE="0666", TEST=="power/control", ATTR{power/control}="on"',
+            text,
+        )
+        self.assertIn("udevadm control --reload-rules", text)
+        self.assertIn("udevadm trigger", text)
+        self.assertIn("usermod -aG lp", text)
+        uninstall = (ROOT / "scripts" / "uninstall-debian-profile.sh").read_text(encoding="utf-8")
+        self.assertIn("99-xprinter-nosuspend.rules", uninstall)
+        self.assertIn("usblp.conf", uninstall)
 
 
 if __name__ == "__main__":

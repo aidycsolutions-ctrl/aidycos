@@ -5,19 +5,23 @@
     python3 scripts/aidycos-cajon
     python3 scripts/aidycos-cajon --dry-run
 
-Manda el pulso que ya abrió el cajón en Debian::
+Escribe el pulso ESC/POS directo en el nodo del kernel ``usblp``
+(``/dev/usb/lp0``, o ``/dev/usb/lp1`` si el puerto cambia)::
 
-    printf '\\033\\160\\001\\045\\372' | lp -d XPRINTER -o raw
+    1B 70 00 19 FA
 
-No toca la cola de las facturas ni la HP Smart Tank. ``--dry-run`` no envía nada.
+No usa ``lp``, ``sudo`` ni libusb: en el chip STMicroelectronics 0483:070b
+esas vías dejan el endpoint en STALL. ``--dry-run`` no envía nada.
 """
 from __future__ import annotations
 
 import argparse
 import fcntl
+import glob
 import logging
 import os
 import re
+import select
 import shutil
 import subprocess
 import sys
@@ -27,19 +31,14 @@ from pathlib import Path
 logger = logging.getLogger("aidycos.cajon")
 
 DRAWER_QUEUE = "XPRINTER"
-DRAWER_PIN = 1
-# printf '\033\160\001\045\372' → ESC p, pin 1, pulso 37, reposo 250.
-DRAWER_PULSE = bytes((27, 112, DRAWER_PIN, 0o045, 0o372))
+DRAWER_PIN = 0
+# ESC p m t1 t2: pin 2 (m=0), 25×2 ms activo, 250×2 ms en reposo.
+# Pulso estable en la Xprinter 0483:070b por /dev/usb/lp*.
+DRAWER_PULSE = bytes((0x1B, 0x70, 0x00, 0x19, 0xFA))
+DRAWER_DEVICES = ("/dev/usb/lp0", "/dev/usb/lp1")
+DRAWER_WRITE_TIMEOUT = 0.4
 _CUPS_BIN_DIRS = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
 _OFFICE_PRINTER_RE = re.compile(r"hp[_\- ]?smart[_\- ]?tank|hewlett", re.IGNORECASE)
-_JOB_ID_RE = re.compile(
-    r"(?:request id is|id de solicitud es|identificador de solicitud es)\s+(\S+)",
-    re.IGNORECASE,
-)
-_BAD_JOB_RE = re.compile(
-    r"abort|cancel|held|stopped|abortad|cancelad|retenid",
-    re.IGNORECASE,
-)
 # Un pulso son 5 bytes. Una factura es mucho más grande. Por debajo de esto
 # no es un ticket: es el propio cajón, y volver a abrirlo atasca la cola.
 PULSE_JOB_MAX = 64
@@ -111,40 +110,99 @@ def list_printers() -> list[str]:
     return names
 
 
-def confirm_cups_job(
-    printer_name: str,
-    completed: subprocess.CompletedProcess[str],
-    *,
-    run=None,
-) -> str:
-    output = f"{completed.stdout or ''}\n{completed.stderr or ''}"
-    if completed.returncode != 0:
-        raise RuntimeError(output.strip() or f"lp terminó con código {completed.returncode}")
-    match = _JOB_ID_RE.search(output)
-    if not match:
-        raise RuntimeError(f"CUPS no confirmó el trabajo: {output.strip()}")
-    job_id = match.group(1).strip("().,")
-    queue = job_id.rsplit("-", 1)[0]
-    if queue.lower() != printer_name.lower():
-        raise RuntimeError(f"CUPS aceptó {job_id} en lugar de {printer_name}")
-    if is_office_printer(queue):
-        raise RuntimeError(f"El trabajo cayó en la impresora de oficina {queue}")
-    sender = run or subprocess.run
+def drawer_device_candidates(device: str | None = None) -> list[str]:
+    """Puerto pedido, o lp0 y si no aparece lp1 (u otro ``/dev/usb/lp*``)."""
+    requested = device if device is not None else os.environ.get("AIDYCOS_CASH_DRAWER_DEVICE", "")
+    requested = str(requested or "").strip()
+    if requested:
+        return [requested]
+    ordered: list[str] = []
+    for path in (*DRAWER_DEVICES, *sorted(glob.glob("/dev/usb/lp*"))):
+        if path not in ordered:
+            ordered.append(path)
+    present = [path for path in ordered if os.path.exists(path)]
+    return present or list(DRAWER_DEVICES)
+
+
+def _write_pulse(path: str, payload: bytes, timeout: float) -> tuple[bool, str]:
+    """Abre el nodo, escribe y cierra. No bloquea más de ``timeout`` segundos."""
+    fd = -1
     try:
-        status = sender(
-            [cups_tool("lpstat"), "-W", "not-completed", "-l", "-o", job_id],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        logger.warning("No se pudo consultar %s: %s", job_id, error)
-        return job_id
-    detail = f"{status.stdout or ''}\n{status.stderr or ''}"
-    if _BAD_JOB_RE.search(detail):
-        raise RuntimeError(f"Trabajo {job_id} no completó: {detail.strip()}")
-    return job_id
+        fd = os.open(path, os.O_WRONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return False, f"{path} no existe"
+    except OSError as error:
+        return False, f"{path}: {error.strerror or error}"
+    try:
+        remaining = timeout
+        offset = 0
+        while offset < len(payload):
+            if remaining <= 0:
+                return False, f"{path} no aceptó el pulso en {timeout:.2f}s"
+            started = time.monotonic()
+            try:
+                _readable, writable, exceptional = select.select([], [fd], [fd], remaining)
+            except (OSError, ValueError) as error:
+                return False, f"{path}: {error}"
+            remaining -= time.monotonic() - started
+            if exceptional and not writable:
+                return False, f"{path} no está listo"
+            if not writable:
+                return False, f"{path} no aceptó el pulso en {timeout:.2f}s"
+            try:
+                written = os.write(fd, payload[offset:])
+            except BlockingIOError:
+                remaining -= 0.01
+                time.sleep(0.01)
+                continue
+            except OSError as error:
+                return False, f"{path}: {error.strerror or error}"
+            if written <= 0:
+                return False, f"{path} no escribió el pulso"
+            offset += written
+        return True, path
+    finally:
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except OSError as error:
+                logger.error("No se pudo cerrar %s: %s", path, error)
+
+
+def openCashDrawer(
+    device: str | None = None,
+    *,
+    timeout: float = DRAWER_WRITE_TIMEOUT,
+    dry_run: bool = False,
+    pulse: bytes | None = None,
+) -> tuple[bool, str]:
+    """Escribe el pulso ESC/POS en ``/dev/usb/lp*``.
+
+    Un puerto apagado, ausente o en STALL se registra y devuelve ``False``.
+    No lanza: la venta puede seguir.
+    """
+    try:
+        payload = DRAWER_PULSE if pulse is None else pulse
+        candidates = drawer_device_candidates(device)
+        target = candidates[0] if candidates else DRAWER_DEVICES[0]
+        if dry_run:
+            logger.info("Prueba en seco: no se abre el cajón en %s", target)
+            return True, f"dry-run {target}"
+        errors: list[str] = []
+        for index, path in enumerate(candidates):
+            opened, detail = _write_pulse(path, payload, timeout)
+            if opened:
+                logger.info("Cajón abierto puerto=%s pin=%s", path, DRAWER_PIN)
+                return True, path
+            errors.append(detail)
+            if index + 1 < len(candidates):
+                logger.warning("Cajón: %s; se prueba otro puerto", detail)
+        message = "; ".join(errors) or "no hay puerto usblp"
+        logger.error("No se pudo abrir el cajón: %s", message)
+        return False, message
+    except Exception as error:
+        logger.exception("No se pudo abrir el cajón")
+        return False, str(error)
 
 
 def open_drawer(
@@ -152,56 +210,21 @@ def open_drawer(
     *,
     available: list[str] | None = None,
     dry_run: bool = False,
+    device: str | None = None,
+    timeout: float = DRAWER_WRITE_TIMEOUT,
     run=None,
 ) -> tuple[bool, str]:
-    """Envía el pulso. Con ``dry_run`` no llama a CUPS (sirve para pruebas)."""
-    names = list_printers() if available is None else list(available)
-    target = resolve_drawer_printer(printer_name, names)
-    if is_office_printer(target):
-        message = f"Se rechazó {target}; el cajón solo sale por {DRAWER_QUEUE}"
+    """Abre el cajón por usblp. No llama a ``lp`` ni a ``sudo``.
+
+    ``printer_name``, ``available`` y ``run`` se conservan para quien ya
+    llamaba esta función; el pulso ya no entra a una cola CUPS.
+    """
+    del available, run
+    if printer_name and is_office_printer(printer_name):
+        message = f"Se rechazó {printer_name}; el cajón sale por {DRAWER_DEVICES[0]}"
         logger.error(message)
         return False, message
-    if dry_run:
-        logger.info("Prueba en seco: no se abre el cajón de %s", target)
-        return True, f"dry-run {target}"
-    sender = run or subprocess.run
-    if run is None:
-        # F6 no se mete delante del ticket: espera a que la cola suelte la factura.
-        cancel_pulse_jobs(target)
-        deadline = time.time() + 20
-        while time.time() < deadline and not queue_is_idle(target):
-            time.sleep(0.2)
-    try:
-        completed = sender(
-            [cups_tool("lp"), "-d", target, "-o", "raw", "-t", "Open Drawer"],
-            input=DRAWER_PULSE,
-            capture_output=True,
-            timeout=60,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        logger.error("No se pudo ejecutar lp: %s", error)
-        return False, str(error)
-    if not isinstance(completed.stdout, str):
-        completed = subprocess.CompletedProcess(
-            args=getattr(completed, "args", ()),
-            returncode=completed.returncode,
-            stdout=(completed.stdout or b"").decode("utf-8", "replace"),
-            stderr=(completed.stderr or b"").decode("utf-8", "replace"),
-        )
-    try:
-        job_id = confirm_cups_job(target, completed, run=sender)
-    except RuntimeError as error:
-        logger.error(
-            "Cajón rechazado printer=%s rc=%s stdout=%s stderr=%s",
-            target,
-            completed.returncode,
-            (completed.stdout or "").strip(),
-            (completed.stderr or "").strip(),
-        )
-        return False, str(error)
-    logger.info("Cajón abierto cola=%s pin=%s trabajo=%s", target, DRAWER_PIN, job_id)
-    return True, job_id
+    return openCashDrawer(device=device, timeout=timeout, dry_run=dry_run)
 
 
 def parse_completed_jobs(text: str) -> list[tuple[str, int, str]]:
@@ -332,18 +355,12 @@ def cancel_pulse_jobs(queue: str, *, run=None) -> list[str]:
     return removed
 
 
-def submit_pulse(queue: str) -> None:
-    """Encola el pulso y vuelve al momento. No espera a que la impresora lo termine."""
-    process = subprocess.Popen(
-        [cups_tool("lp"), "-d", queue, "-o", "raw", "-t", "Open Drawer"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-    assert process.stdin is not None
-    process.stdin.write(DRAWER_PULSE)
-    process.stdin.close()
+def submit_pulse(queue: str = DRAWER_QUEUE) -> None:
+    """Escribe el pulso en usblp y vuelve. No usa ``lp`` ni espera a CUPS."""
+    del queue
+    opened, detail = openCashDrawer()
+    if not opened:
+        logger.error("El pulso tras imprimir no salió: %s", detail)
 
 
 def watch_prints(queue: str = DRAWER_QUEUE, *, interval: float = 0.4) -> int:
@@ -431,8 +448,17 @@ def install_session(conf_path: Path | None = None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Abre el cajón de la XPRINTER por CUPS raw.")
-    parser.add_argument("--printer", default="", help="Cola CUPS. Por defecto XPRINTER.")
+    parser = argparse.ArgumentParser(description="Abre el cajón de la XPRINTER por /dev/usb/lp*.")
+    parser.add_argument(
+        "--printer",
+        default="",
+        help="Nombre legado. Si es una impresora de oficina, el pulso se rechaza.",
+    )
+    parser.add_argument(
+        "--device",
+        default="",
+        help="Nodo usblp. Por defecto /dev/usb/lp0 y, si no está, /dev/usb/lp1.",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -456,7 +482,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "install-session":
         conf = Path(args.conf).expanduser() if args.conf else None
         return install_session(conf)
-    opened, detail = open_drawer(args.printer or None, dry_run=args.dry_run)
+    opened, detail = open_drawer(
+        args.printer or None,
+        dry_run=args.dry_run,
+        device=args.device or None,
+    )
     print(detail)
     return 0 if opened else 1
 

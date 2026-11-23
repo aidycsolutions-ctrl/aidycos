@@ -101,7 +101,83 @@ class BluetoothHelperTests(unittest.TestCase):
             status_message="",
         )
         self.assertEqual(mod.bluetooth_bar_icon_name(connected), "bluetooth-active-symbolic")
+        self.assertEqual(mod.bluetooth_bar_visual_state(connected), "connected")
+        self.assertEqual(mod.bluetooth_bar_visual_state(off), "off")
         self.assertIn("Auriculares", mod.bluetooth_bar_tooltip(connected))
+        powered = Snap(available=True, powered=True, devices=(), status_message="")
+        self.assertEqual(mod.bluetooth_bar_visual_state(powered), "on")
+
+    def test_autoconnect_picks_closest_paired_device_in_range(self) -> None:
+        mod = _load_service_helpers()
+        Presence = mod.BluetoothPresence
+        headphones = Presence("/h", paired=True, connected=False, blocked=False, rssi=-40)
+        speaker = Presence("/s", paired=True, connected=False, blocked=False, rssi=-70)
+        unseen = Presence("/u", paired=True, connected=False, blocked=False, rssi=None)
+        stranger = Presence("/n", paired=False, connected=False, blocked=False, rssi=-30)
+        chosen = mod.paired_device_to_autoconnect(
+            (speaker, unseen, stranger, headphones),
+            retry_after={},
+            busy=set(),
+            now=100.0,
+        )
+        self.assertEqual(chosen, "/h")
+        self.assertIsNone(
+            mod.paired_device_to_autoconnect(
+                (headphones,),
+                retry_after={"/h": 160.0},
+                busy=set(),
+                now=100.0,
+            )
+        )
+        self.assertIsNone(
+            mod.paired_device_to_autoconnect(
+                (headphones,),
+                retry_after={},
+                busy={"/other"},
+                now=100.0,
+            )
+        )
+        self.assertEqual(
+            mod.paired_device_to_page(
+                (unseen, headphones, stranger),
+                retry_after={},
+                busy=set(),
+                now=100.0,
+            ),
+            "/u",
+        )
+        self.assertIsNone(
+            mod.paired_device_to_page(
+                (unseen,),
+                retry_after={"/u": 130.0},
+                busy=set(),
+                now=100.0,
+            )
+        )
+        self.assertFalse(
+            mod.should_start_presence_scan(
+                powered=True,
+                discovering=False,
+                user_discovery=False,
+                presence_scan_active=False,
+                busy=False,
+                now=100.0,
+                last_presence_scan_at=90.0,
+                has_pending_paired=True,
+            )
+        )
+        self.assertTrue(
+            mod.should_start_presence_scan(
+                powered=True,
+                discovering=False,
+                user_discovery=False,
+                presence_scan_active=False,
+                busy=False,
+                now=100.0,
+                last_presence_scan_at=80.0,
+                has_pending_paired=True,
+            )
+        )
 
 
 class BluetoothOverlayInstallTests(unittest.TestCase):
@@ -160,6 +236,9 @@ class BluetoothOverlayInstallTests(unittest.TestCase):
             self.assertTrue((shell / "servicios/bluetooth/service.py").is_file())
             self.assertTrue((shell / "widgets/barra/bluetooth.py").is_file())
             self.assertTrue((shell / "widgets/centro_control/bluetooth_section.py").is_file())
+            style = (shell / "style.css").read_text(encoding="utf-8")
+            self.assertIn("bluetooth-state-connected", style)
+            self.assertIn("#4da3ff", style)
 
 
 class InstallerBluetoothPackageTests(unittest.TestCase):
