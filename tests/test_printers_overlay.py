@@ -380,5 +380,114 @@ class PrintersOverlayTests(unittest.TestCase):
         self.assertEqual(entries[0].device_uri, portable)
 
 
+class EscposQueueTests(unittest.TestCase):
+    def test_parse_lpinfo_skips_backend_names_and_placeholders(self) -> None:
+        service = _load_service()
+        text = "\n".join(
+            [
+                "network socket",
+                "network ipp",
+                "direct usb://Xprinter/XP-58?serial=ABC",
+                "network socket://IP-DE-LA-TERMICA:9100",
+                "direct usb://…",
+            ]
+        )
+        self.assertEqual(
+            service.parse_lpinfo_uris(text),
+            ("usb://Xprinter/XP-58?serial=ABC",),
+        )
+
+    def test_choose_named_thermal_over_office_usb(self) -> None:
+        service = _load_service()
+        chosen = service.choose_escpos_uri(
+            (
+                "usb://Hewlett-Packard/Smart%20Tank",
+                "usb://EPSON/TM-T20II?serial=1",
+            )
+        )
+        self.assertEqual(chosen, "usb://EPSON/TM-T20II?serial=1")
+
+    def test_choose_single_unknown_usb(self) -> None:
+        service = _load_service()
+        self.assertEqual(
+            service.choose_escpos_uri(("usb://Unknown/Printer",)),
+            "usb://Unknown/Printer",
+        )
+        self.assertIsNone(
+            service.choose_escpos_uri(
+                ("usb://Unknown/Printer", "usb://Generic/Other")
+            )
+        )
+        self.assertIsNone(
+            service.choose_escpos_uri(("usb://Hewlett-Packard/DeskJet",))
+        )
+
+    def test_choose_rejects_sample_uri(self) -> None:
+        service = _load_service()
+        with self.assertRaises(service.PrintersError):
+            service.choose_escpos_uri((), explicit="socket://IP-DE-LA-TERMICA:9100")
+
+    def test_ensure_creates_raw_queue_and_sets_default(self) -> None:
+        service = _load_service()
+        recorded: list[tuple[str, ...]] = []
+
+        def fake_run(argv, **_kwargs):
+            recorded.append(tuple(argv))
+
+        service._run = fake_run
+        service.list_printers = lambda: service.PrintersSnapshot(
+            printers=(
+                service.PrinterInfo(
+                    name="Tickets",
+                    enabled=True,
+                    accepting=True,
+                    is_default=False,
+                    state_text="idle",
+                    device_uri="socket://IP-DE-LA-TERMICA:9100",
+                ),
+            ),
+            default_name=None,
+        )
+        service.set_printer_enabled = lambda *_args, **_kwargs: None
+        service.set_default_printer = lambda name: recorded.append(("default", name))
+        result = service.ensure_escpos_printer(
+            service.EscposConfig(queue="Tickets", set_default=True),
+            device_uris=("usb://Xprinter/XP-58",),
+        )
+        self.assertTrue(result.applied)
+        self.assertTrue(result.default_set)
+        self.assertEqual(result.device_uri, "usb://Xprinter/XP-58")
+        raw = [cmd for cmd in recorded if "-m" in cmd]
+        self.assertEqual(len(raw), 1)
+        self.assertIn("raw", raw[0])
+        self.assertIn("usb://Xprinter/XP-58", raw[0])
+        self.assertIn(("default", "Tickets"), recorded)
+
+    def test_ensure_removes_placeholder_when_nothing_is_plugged_in(self) -> None:
+        service = _load_service()
+        recorded: list[tuple[str, ...]] = []
+        service._run = lambda argv, **_kwargs: recorded.append(tuple(argv))
+        service.list_printers = lambda: service.PrintersSnapshot(
+            printers=(
+                service.PrinterInfo(
+                    name="Tickets",
+                    enabled=True,
+                    accepting=False,
+                    is_default=False,
+                    state_text="idle",
+                    device_uri="socket://IP-DE-LA-TERMICA:9100",
+                ),
+            ),
+            default_name=None,
+        )
+        result = service.ensure_escpos_printer(
+            service.EscposConfig(),
+            device_uris=(),
+        )
+        self.assertFalse(result.applied)
+        self.assertTrue(result.removed_placeholder)
+        self.assertTrue(any(cmd[-2:] == ("-x", "Tickets") for cmd in recorded), recorded)
+
+
 if __name__ == "__main__":
     unittest.main()

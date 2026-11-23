@@ -153,6 +153,18 @@ class AidyChatBridge:
             },
         )
 
+    def delete_message(self, message_id: int) -> dict[str, Any]:
+        """Remove one message the signed-in user sent.
+
+        AidyChat's ``for_me`` mode deletes that row. The other person loses it
+        the next time they reload the conversation.
+        """
+        return self._request(
+            "DELETE",
+            f"/api/messages/{int(message_id)}",
+            query={"mode": "for_me"},
+        )
+
     def upload_media(self, path: Path, *, file_type: str) -> dict[str, Any]:
         """Upload a user-selected attachment through AidyChat's 50 MB endpoint."""
         path = Path(path)

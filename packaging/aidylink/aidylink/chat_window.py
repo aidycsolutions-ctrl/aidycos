@@ -18,6 +18,7 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
 
+from .chat_history import ChatHideStore, plan_message_batch
 from .cloud import AidyChatBridge
 try:
     from .calls import NativeCall
@@ -92,6 +93,9 @@ class AidyChatWindow(Gtk.Window):
         self._chats: list[dict[str, Any]] = []
         self._active_chat: dict[str, Any] | None = None
         self._last_id: dict[int, int] = {}
+        self._pending: list[dict[str, Any]] = []
+        self._send_seq = 0
+        self._hide_store = ChatHideStore(data_dir() / "hidden-messages.json")
         self._inflight = 0
         self._load_gen = 0
         self._local_devices_window: Gtk.Window | None = None
@@ -343,6 +347,10 @@ class AidyChatWindow(Gtk.Window):
         self.hangup_button.connect("clicked", lambda *_: self.call_engine and self.call_engine.hangup())
         self.hangup_button.set_sensitive(False)
         header.pack_start(self.hangup_button, False, False, 0)
+        clear_chat = Gtk.Button.new_from_icon_name("user-trash-symbolic", Gtk.IconSize.BUTTON)
+        clear_chat.set_tooltip_text("Eliminar todos los mensajes")
+        clear_chat.connect("clicked", lambda *_: self._clear_conversation())
+        header.pack_start(clear_chat, False, False, 0)
         self.conversation.pack_start(header, False, False, 0)
 
         self.message_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -367,6 +375,7 @@ class AidyChatWindow(Gtk.Window):
         composer.pack_start(self.record_button, False, False, 0)
         self.entry = Gtk.Entry()
         self.entry.set_placeholder_text("Escribe un mensaje")
+        self.entry.set_activates_default(False)
         self.entry.connect("activate", lambda *_: self._send_text())
         composer.pack_start(self.entry, True, True, 0)
         send = Gtk.Button(label="Enviar")
@@ -420,36 +429,70 @@ class AidyChatWindow(Gtk.Window):
             # Resolve once in background without blocking the bubble render.
             self._call(self.bridge.refresh_self_id, lambda *_: None)
             my_id = int(self.cfg.cloud.peer_user_ids.get("self") or 0)
-        added = 0
-        for msg in messages:
-            if not isinstance(msg, dict):
-                continue
-            mid = int(msg.get("id") or 0)
-            if mid <= self._last_id.get(chat_id, 0) and not initial:
-                continue
-            if mid:
-                self._last_id[chat_id] = max(mid, self._last_id.get(chat_id, 0))
+        steps, cursor, forgotten = plan_message_batch(
+            messages,
+            pending=self._pending,
+            my_id=my_id,
+            chat_id=chat_id,
+            hidden=self._hide_store.hidden_ids(chat_id),
+            cleared_before=self._hide_store.cleared_before(chat_id),
+            last_id=0 if initial else self._last_id.get(chat_id, 0),
+            initial=initial,
+        )
+        self._last_id[chat_id] = cursor
+        for mid, purge in forgotten:
+            self._hide_store.hide(chat_id, mid)
+            if purge:
+                self._purge_remote(mid)
+        shown = 0
+        fresh = 0
+        for action, msg, pending_item in steps:
+            if action == "replace":
+                row = (pending_item or {}).get("row")
+                if row is not None and row.get_parent() is not None:
+                    self._adopt_message(row, msg)
+                    shown += 1
+                    continue
             self._append_message(msg, my_id)
-            added += 1
+            shown += 1
+            fresh += 1
         name = str(self._active_chat.get("username") or "chat")
         if initial:
             self.sidebar_status.set_text(
-                f"{name} · {len(messages)} mensaje(s)" if messages else f"{name} · sin mensajes aún"
+                f"{name} · {shown} mensaje(s)" if shown else f"{name} · sin mensajes aún"
             )
-        elif added:
-            self.sidebar_status.set_text(f"{name} · {added} nuevo(s)")
-        GLib.idle_add(self._scroll_to_end)
+        elif fresh:
+            self.sidebar_status.set_text(f"{name} · {fresh} nuevo(s)")
+        if shown or initial:
+            GLib.idle_add(self._scroll_to_end)
 
-    def _append_message(self, msg: dict[str, Any], my_id: int) -> None:
+    def _adopt_message(self, row: Gtk.Widget, msg: dict[str, Any]) -> None:
+        """Keep the optimistic bubble and attach the server id to it."""
+        mid = int(msg.get("id") or 0)
+        stored = getattr(row, "aidy_msg", None)
+        if isinstance(stored, dict):
+            stored["id"] = mid
+            if msg.get("sender_id") is not None:
+                stored["sender_id"] = msg.get("sender_id")
+            if msg.get("created_at"):
+                stored["created_at"] = msg.get("created_at")
+        else:
+            row.aidy_msg = dict(msg)
+        row.aidy_message_id = mid
+
+    def _append_message(self, msg: dict[str, Any], my_id: int) -> Gtk.Widget:
         mine = int(msg.get("sender_id") or -1) == my_id
         align = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         align.set_halign(Gtk.Align.END if mine else Gtk.Align.START)
+        align.aidy_msg = msg
+        align.aidy_message_id = int(msg.get("id") or 0)
         bubble = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
-        bubble.set_margin_start(20)
-        bubble.set_margin_end(20)
-        bubble.set_margin_top(2)
-        bubble.set_margin_bottom(2)
-        bubble.get_style_context().add_class("link-message-out" if mine else "link-message-in")
+        hit = Gtk.EventBox()
+        hit.set_margin_start(20)
+        hit.set_margin_end(20)
+        hit.set_margin_top(2)
+        hit.set_margin_bottom(2)
+        hit.get_style_context().add_class("link-message-out" if mine else "link-message-in")
         kind = str(msg.get("message_type") or "text")
         content = str(msg.get("content") or "")
         media_url = str(msg.get("media_url") or "")
@@ -461,7 +504,7 @@ class AidyChatWindow(Gtk.Window):
             label.set_selectable(True)
             label.connect(
                 "button-press-event",
-                lambda _w, event, text=content: self._on_message_press(event, text),
+                lambda _w, event, row=align: self._on_message_press(event, row),
             )
             bubble.pack_start(label, False, False, 0)
         if media_url:
@@ -496,17 +539,31 @@ class AidyChatWindow(Gtk.Window):
             meta = Gtk.Label(label=stamp, xalign=1)
             meta.get_style_context().add_class("link-muted")
             bubble.pack_start(meta, False, False, 0)
-        align.pack_start(bubble, False, False, 0)
+        hit.add(bubble)
+        hit.connect(
+            "button-press-event",
+            lambda _w, event, row=align: self._on_message_press(event, row),
+        )
+        align.pack_start(hit, False, False, 0)
         self.message_box.pack_start(align, False, False, 0)
         align.show_all()
+        return align
 
-    def _on_message_press(self, event: Gdk.EventButton, text: str) -> bool:
+    def _on_message_press(self, event: Gdk.EventButton, row: Gtk.Widget) -> bool:
         if event.type != Gdk.EventType.BUTTON_PRESS or event.button != 3:
             return False
+        msg = getattr(row, "aidy_msg", None)
+        if not isinstance(msg, dict):
+            return False
+        text = str(msg.get("content") or "")
         menu = Gtk.Menu()
-        copy_item = Gtk.MenuItem(label="Copiar mensaje")
-        copy_item.connect("activate", lambda *_: self._copy_text(text))
-        menu.append(copy_item)
+        if text.strip():
+            copy_item = Gtk.MenuItem(label="Copiar mensaje")
+            copy_item.connect("activate", lambda *_args, value=text: self._copy_text(value))
+            menu.append(copy_item)
+        delete_item = Gtk.MenuItem(label="Borrar mensaje")
+        delete_item.connect("activate", lambda *_args, target=row: self._delete_message(target))
+        menu.append(delete_item)
         menu.show_all()
         menu.popup_at_pointer(event)
         return True
@@ -713,10 +770,13 @@ class AidyChatWindow(Gtk.Window):
             return
         chat_id = int(self._active_chat.get("chat_id") or 0)
         my_id = int(self.cfg.cloud.peer_user_ids.get("self") or 0)
-        # Optimistic bubble — WhatsApp-feel while the POST is in flight.
         self.entry.set_text("")
-        if hasattr(self, "message_box"):
-            self._append_message(
+        self._send_seq += 1
+        token = self._send_seq
+        # Optimistic bubble while the POST is in flight. The server copy
+        # replaces this row instead of painting a second one.
+        if my_id and hasattr(self, "message_box"):
+            row = self._append_message(
                 {
                     "id": 0,
                     "sender_id": my_id,
@@ -726,22 +786,130 @@ class AidyChatWindow(Gtk.Window):
                 },
                 my_id,
             )
+            self._pending.append(
+                {
+                    "token": token,
+                    "chat_id": chat_id,
+                    "content": text,
+                    "kind": "text",
+                    "row": row,
+                    "dropped": False,
+                    "purge": False,
+                }
+            )
             GLib.idle_add(self._scroll_to_end)
         self._call(
             lambda: self.bridge.send_chat_message(chat_id, text),
-            lambda _data, error: self._message_sent(error, clear=False),
+            lambda _data, error, sent_token=token, sent_text=text: self._message_sent(
+                error, token=sent_token, text=sent_text
+            ),
         )
 
-    def _message_sent(self, error: Exception | None, *, clear: bool) -> None:
+    def _message_sent(self, error: Exception | None, *, token: int, text: str) -> None:
         if hasattr(self, "entry"):
             self.entry.set_sensitive(True)
-            if clear and not error:
-                self.entry.set_text("")
         if error:
+            self._drop_pending(token, remove_row=True)
+            if hasattr(self, "entry") and not (self.entry.get_text() or "").strip():
+                self.entry.set_text(text)
             self.sidebar_status.set_text(f"No se pudo enviar: {error}")
             return
-        # Pull server ids in background; don't also refresh the whole sidebar.
+        # Pull the server id in the background. The optimistic row stays.
         self._load_messages()
+
+    def _drop_pending(self, token: int, *, remove_row: bool) -> None:
+        kept: list[dict[str, Any]] = []
+        for item in self._pending:
+            if int(item.get("token") or 0) != token:
+                kept.append(item)
+                continue
+            row = item.get("row")
+            if remove_row and row is not None and row.get_parent() is not None:
+                row.get_parent().remove(row)
+        self._pending = kept
+
+    def _delete_message(self, row: Gtk.Widget) -> None:
+        msg = getattr(row, "aidy_msg", None)
+        if not isinstance(msg, dict) or not self._active_chat:
+            return
+        if not self._confirm(
+            "¿Borrar este mensaje?",
+            "Se quita de esta conversación. Si lo enviaste tú, también se borra en el servidor y el otro contacto lo pierde al reabrir el chat.",
+        ):
+            return
+        chat_id = int(self._active_chat.get("chat_id") or 0)
+        mid = int(msg.get("id") or 0)
+        my_id = int(self.cfg.cloud.peer_user_ids.get("self") or 0)
+        mine = int(msg.get("sender_id") or -1) == my_id and my_id != 0
+        if mid:
+            self._hide_store.hide(chat_id, mid)
+            if mine:
+                self._purge_remote(mid)
+        else:
+            for item in self._pending:
+                if item.get("row") is row:
+                    item["dropped"] = True
+                    item["purge"] = mine or my_id != 0
+                    break
+        parent = row.get_parent()
+        if parent is not None:
+            parent.remove(row)
+        self.sidebar_status.set_text("Mensaje eliminado")
+
+    def _purge_remote(self, message_id: int) -> None:
+        self._call(
+            lambda: self.bridge.delete_message(message_id),
+            lambda _data, error, mid=message_id: self._purge_done(mid, error),
+        )
+
+    def _purge_done(self, message_id: int, error: Exception | None) -> None:
+        if error:
+            self.sidebar_status.set_text(f"Oculto aquí. El servidor no borró {message_id}: {error}")
+
+    def _clear_conversation(self) -> None:
+        if not self._active_chat or not hasattr(self, "message_box"):
+            return
+        chat_id = int(self._active_chat.get("chat_id") or 0)
+        if not chat_id:
+            return
+        visible = max(
+            (int(getattr(child, "aidy_message_id", 0) or 0) for child in self.message_box.get_children()),
+            default=0,
+        )
+        watermark = max(self._last_id.get(chat_id, 0), visible)
+        pending = any(int(item.get("chat_id") or 0) == chat_id for item in self._pending)
+        if watermark <= 0 and not pending and not self.message_box.get_children():
+            self.sidebar_status.set_text("No hay mensajes para eliminar")
+            return
+        if not self._confirm(
+            "¿Eliminar todos los mensajes de esta conversación?",
+            "Se ocultan en este AidyChat. La otra persona conserva los que ya recibió.",
+        ):
+            return
+        if watermark > 0:
+            self._hide_store.clear_through(chat_id, watermark)
+        for item in self._pending:
+            if int(item.get("chat_id") or 0) == chat_id:
+                item["dropped"] = True
+                item["purge"] = False
+        for child in list(self.message_box.get_children()):
+            self.message_box.remove(child)
+        self.sidebar_status.set_text("Conversación limpia")
+
+    def _confirm(self, text: str, secondary: str) -> bool:
+        dialog = Gtk.MessageDialog(
+            transient_for=self,
+            modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.NONE,
+            text=text,
+        )
+        dialog.format_secondary_text(secondary)
+        dialog.add_button("Cancelar", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Eliminar", Gtk.ResponseType.OK)
+        response = dialog.run()
+        dialog.destroy()
+        return response == Gtk.ResponseType.OK
 
     def _choose_attachment(self) -> None:
         if not self._active_chat:

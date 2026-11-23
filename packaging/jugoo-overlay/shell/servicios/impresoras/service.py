@@ -8,6 +8,7 @@ import re
 import shutil
 import socket
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,6 +56,48 @@ _HP_NET_URI_RE = re.compile(r"^hp:/net/", re.IGNORECASE)
 
 CATALOG_VERSION = 1
 CATALOG_FILENAME = "shared-printers.json"
+ESCPOS_QUEUE = "Tickets"
+ESCPOS_FILENAME = "escpos.json"
+
+# lpinfo lines that are still the sample text from the docs, not a device.
+_PLACEHOLDER_URI_RE = re.compile(
+    r"IP-DE-LA-TERMICA|PEGAR-URI|usb://…|usb://\.\.\.",
+    re.IGNORECASE,
+)
+# Thermal / POS printers that speak ESC/POS and own the cash-drawer kick port.
+_RECEIPT_NAME_RE = re.compile(
+    r"epson|xprinter|star|bixolon|gprinter|rongta|hprt|"
+    r"pos-?58|pos-?80|thermal|ticket|tm-t|3nstar|zjiang|sam4s|cashino|snbc",
+    re.IGNORECASE,
+)
+# Office inkjets must stay on their normal driver, never on a raw queue.
+_OFFICE_PRINTER_RE = re.compile(
+    r"hewlett|smart[-_ %]?tank|\bhp\b|canon|brother|lexmark|xerox|kyocera|ricoh",
+    re.IGNORECASE,
+)
+_ESCPOS_PPD = """*PPD-Adobe: "4.3"
+*FormatVersion: "4.3"
+*FileVersion: "1.0"
+*LanguageVersion: English
+*LanguageEncoding: ISOLatin1
+*PCFileName: "ESCPOS.PPD"
+*Manufacturer: "Generic"
+*Product: "(ESC/POS Raw)"
+*ModelName: "ESC/POS Raw"
+*ShortNickName: "ESC/POS Raw"
+*NickName: "ESC/POS Raw"
+*PSVersion: "(3010.000) 0"
+*LanguageLevel: "3"
+*ColorDevice: False
+*DefaultColorSpace: Gray
+*FileSystem: False
+*Throughput: "1"
+*LandscapeOrientation: Plus90
+*TTRasterizer: Type42
+*cupsFilter: "application/vnd.cups-raw 0 -"
+*cupsVersion: 2.4
+*cupsManualCopies: True
+"""
 
 
 @dataclass(frozen=True)
@@ -96,6 +139,26 @@ class ImportResult:
     updated: tuple[str, ...]
     skipped: tuple[str, ...]
     default_set: str | None = None
+
+
+@dataclass(frozen=True)
+class EscposConfig:
+    """Local raw queue for an ESC/POS ticket printer (cash drawer)."""
+
+    queue: str = ESCPOS_QUEUE
+    set_default: bool = True
+    device_uri: str = ""
+    auto_single_usb: bool = True
+
+
+@dataclass(frozen=True)
+class EscposApplyResult:
+    queue: str
+    device_uri: str
+    applied: bool
+    default_set: bool
+    removed_placeholder: bool
+    message: str
 
 
 class PrintersError(RuntimeError):
@@ -667,6 +730,226 @@ def add_or_update_printer(name: str, device_uri: str) -> None:
         )
 
 
+def parse_lpinfo_uris(text: str) -> tuple[str, ...]:
+    """Pull real device URIs out of ``lpinfo -v`` (skip bare backend names)."""
+    found: list[str] = []
+    for raw in text.splitlines():
+        parts = raw.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        uri = parts[1].strip()
+        if "://" not in uri or is_placeholder_uri(uri):
+            continue
+        found.append(uri)
+    return tuple(found)
+
+
+def is_placeholder_uri(uri: str) -> bool:
+    """True for the sample URIs in the docs, which are not devices."""
+    text = str(uri or "").strip()
+    if not text:
+        return False
+    if _PLACEHOLDER_URI_RE.search(text):
+        return True
+    return text.rstrip("/") in {"usb://", "socket://", "parallel://"}
+
+
+def choose_escpos_uri(
+    uris: Sequence[str],
+    *,
+    explicit: str = "",
+    auto_single_usb: bool = True,
+) -> str | None:
+    """Pick the ticket printer that must receive raw ESC/POS bytes.
+
+    An explicit URI wins. Otherwise a named thermal printer wins. If this PC
+    has exactly one USB printer and it is not an office inkjet, that USB
+    device is the cashier's ticket printer. Network office queues are ignored.
+    """
+    chosen = str(explicit or "").strip()
+    if chosen:
+        if is_placeholder_uri(chosen):
+            raise PrintersError(
+                f"La URI «{chosen}» es un ejemplo. Usa la línea que imprime lpinfo -v."
+            )
+        return chosen
+    real = [uri.strip() for uri in uris if uri and str(uri).strip() and not is_placeholder_uri(uri)]
+    named = [
+        uri
+        for uri in real
+        if _RECEIPT_NAME_RE.search(uri) and not _OFFICE_PRINTER_RE.search(uri)
+    ]
+    if named:
+        return named[0]
+    usb = [
+        uri
+        for uri in real
+        if uri.lower().startswith("usb://") and not _OFFICE_PRINTER_RE.search(uri)
+    ]
+    if auto_single_usb and len(usb) == 1:
+        return usb[0]
+    return None
+
+
+def load_escpos_config(*paths: Path | str | None) -> EscposConfig:
+    """Merge ESC/POS queue settings. Later files win, except a blank URI."""
+    data: dict[str, Any] = {}
+    for raw_path in paths:
+        if not raw_path:
+            continue
+        path = Path(raw_path)
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        previous_uri = str(data.get("device_uri") or "").strip()
+        data.update(payload)
+        if not str(data.get("device_uri") or "").strip() and previous_uri:
+            data["device_uri"] = previous_uri
+    queue = sanitize_printer_name(str(data.get("queue") or ESCPOS_QUEUE)) or ESCPOS_QUEUE
+    return EscposConfig(
+        queue=queue,
+        set_default=bool(data.get("set_default", True)),
+        device_uri=str(data.get("device_uri") or "").strip(),
+        auto_single_usb=bool(data.get("auto_single_usb", True)),
+    )
+
+
+def list_lpinfo_uris() -> tuple[str, ...]:
+    try:
+        completed = subprocess.run(
+            [cups_bin("lpinfo"), "-v"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20.0,
+        )
+    except (OSError, subprocess.TimeoutExpired, PrintersError) as error:
+        raise PrintersError(f"No se pudo listar dispositivos de impresión: {error}") from error
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise PrintersError(detail or "lpinfo -v falló")
+    return parse_lpinfo_uris(completed.stdout or "")
+
+
+def add_raw_printer(name: str, device_uri: str) -> None:
+    """Create a CUPS queue that forwards bytes unchanged (ESC/POS drawer kick)."""
+    target = sanitize_printer_name(name)
+    uri = str(device_uri or "").strip()
+    if not target:
+        raise PrintersError("Falta el nombre de la cola ESC/POS")
+    if not uri or is_placeholder_uri(uri):
+        raise PrintersError(f"URI no válida para la cola raw: {uri or '(vacía)'}")
+    lpadmin = cups_bin("lpadmin")
+    try:
+        _run_admin(
+            [lpadmin, "-p", target, "-v", uri, "-m", "raw", "-E"],
+            label=f"crear cola raw «{target}»",
+        )
+    except PrintersError:
+        ppd = _write_escpos_ppd()
+        _run_admin(
+            [lpadmin, "-p", target, "-v", uri, "-P", str(ppd), "-E"],
+            label=f"crear cola raw «{target}»",
+        )
+    try:
+        set_printer_enabled(target, True)
+    except PrintersError:
+        pass
+    try:
+        _run_admin([cups_bin("cupsaccept"), target], label=f"aceptar trabajos en «{target}»")
+    except PrintersError:
+        pass
+
+
+def remove_printer(name: str) -> None:
+    target = sanitize_printer_name(name)
+    if not target:
+        return
+    _run_admin([cups_bin("lpadmin"), "-x", target], label=f"quitar cola «{target}»")
+
+
+def ensure_escpos_printer(
+    config: EscposConfig | None = None,
+    *,
+    device_uris: Sequence[str] | None = None,
+) -> EscposApplyResult:
+    """Point a raw queue at the local ticket printer so ESC p opens the drawer.
+
+    IPP Everywhere (the shared HP queue) filters those bytes. This queue does
+    not. When a ticket printer is found it becomes the user default, because
+    the cash-drawer helper prints to the default printer.
+    """
+    cfg = config or EscposConfig()
+    uris = tuple(device_uris) if device_uris is not None else list_lpinfo_uris()
+    current = {item.name: item for item in list_printers().printers}.get(cfg.queue)
+    try:
+        uri = choose_escpos_uri(
+            uris,
+            explicit=cfg.device_uri,
+            auto_single_usb=cfg.auto_single_usb,
+        )
+    except PrintersError:
+        if current is not None and is_placeholder_uri(current.device_uri):
+            remove_printer(cfg.queue)
+            return EscposApplyResult(
+                queue=cfg.queue,
+                device_uri="",
+                applied=False,
+                default_set=False,
+                removed_placeholder=True,
+                message=f"Se quitó la cola «{cfg.queue}» porque apuntaba a una URI de ejemplo.",
+            )
+        raise
+    if uri is None:
+        if current is not None and is_placeholder_uri(current.device_uri):
+            remove_printer(cfg.queue)
+            return EscposApplyResult(
+                queue=cfg.queue,
+                device_uri="",
+                applied=False,
+                default_set=False,
+                removed_placeholder=True,
+                message=(
+                    f"Se quitó la cola «{cfg.queue}» (URI de ejemplo) "
+                    "y no hay una térmica conectada."
+                ),
+            )
+        return EscposApplyResult(
+            queue=cfg.queue,
+            device_uri="",
+            applied=False,
+            default_set=False,
+            removed_placeholder=False,
+            message=(
+                "No hay impresora de tickets en este equipo. La impresora de red sigue igual. "
+                "Conecta la térmica y vuelve a aplicar el perfil, o escribe su URI en "
+                "~/.local/share/aidycos/escpos.json (device_uri)."
+            ),
+        )
+    add_raw_printer(cfg.queue, uri)
+    default_set = False
+    if cfg.set_default:
+        set_default_printer(cfg.queue)
+        default_set = True
+    return EscposApplyResult(
+        queue=cfg.queue,
+        device_uri=uri,
+        applied=True,
+        default_set=default_set,
+        removed_placeholder=bool(current and is_placeholder_uri(current.device_uri)),
+        message=(
+            f"Cola raw «{cfg.queue}» lista en {uri}. "
+            "El comando ESC p del cajón sale sin filtro IPP."
+            + (" Quedó como impresora predeterminada." if default_set else "")
+        ),
+    )
+
+
 def enable_lan_sharing(*, share_printers: Sequence[str] | None = None) -> None:
     """Allow other LAN hosts to use printers attached to this PC."""
     _cupsctl_share_printers(True)
@@ -803,6 +1086,49 @@ def _run(argv: Sequence[str], *, label: str) -> None:
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout or "").strip()
         raise PrintersError(detail or f"No se pudo {label}")
+
+
+def _run_admin(argv: Sequence[str], *, label: str) -> None:
+    """Run a CUPS admin tool, retrying with passwordless sudo when needed."""
+    try:
+        _run(argv, label=label)
+        return
+    except PrintersError:
+        if not _sudo_noninteractive_ok():
+            raise
+    _run(["sudo", "-n", *list(argv)], label=label)
+
+
+def _sudo_noninteractive_ok() -> bool:
+    if os.geteuid() == 0:
+        return False
+    sudo = shutil.which("sudo")
+    if not sudo:
+        return False
+    try:
+        completed = subprocess.run(
+            [sudo, "-n", "true"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
+def _write_escpos_ppd() -> Path:
+    handle = tempfile.NamedTemporaryFile(
+        prefix="aidycos-escpos-",
+        suffix=".ppd",
+        delete=False,
+        mode="w",
+        encoding="utf-8",
+    )
+    with handle:
+        handle.write(_ESCPOS_PPD)
+    return Path(handle.name)
 
 
 def _spawn(argv: Sequence[str]) -> None:
