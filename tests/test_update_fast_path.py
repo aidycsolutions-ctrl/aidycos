@@ -39,6 +39,43 @@ class UpdateFastPathTests(unittest.TestCase):
         self.assertLess(text.index("self.hold()"), text.index("dialog.choose"))
         self.assertIn("Pulsa Enter para actualizar", text)
 
+    def test_finished_update_does_not_keep_the_lock(self) -> None:
+        text = UPDATER.read_text(encoding="utf-8")
+        self.assertIn("FD_CLOEXEC", text)
+        self.assertIn("update_lock_is_live", text)
+        self.assertLess(text.index("lock_fd_cloexec 9"), text.index("flock -n 9"))
+        start = text.index("lock_fd_cloexec()")
+        end = text.index("# end lock-helpers\n")
+        helpers = text[start:end]
+        script = (
+            "set -euo pipefail\n"
+            + helpers
+            + """
+LOCK="$(mktemp)"
+python3 - "$LOCK" <<'PY' &
+import fcntl, os, sys, time
+fd = os.open(sys.argv[1], os.O_RDWR)
+fcntl.flock(fd, fcntl.LOCK_EX)
+time.sleep(30)
+PY
+holder=$!
+sleep 0.2
+if acquire_update_lock; then
+  echo recovered
+else
+  echo blocked
+fi
+kill "$holder" 2>/dev/null || true
+wait "$holder" 2>/dev/null || true
+rm -f "$LOCK"
+"""
+        )
+        import subprocess
+        result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("recovered", result.stdout)
+        self.assertNotIn("blocked", result.stdout)
+
     def test_installer_skips_repeated_apt_and_deploys(self) -> None:
         text = INSTALLER.read_text(encoding="utf-8")
         self.assertIn("PROFILE_REFRESH", text)

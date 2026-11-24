@@ -155,12 +155,49 @@ PY
   return 127
 }
 
-mkdir -p "$(dirname "${LOCK}")"
-exec 9>"${LOCK}"
-if ! flock -n 9; then
+# The window daemon is restarted at the end of an update. Without CLOEXEC it
+# inherits this fd and holds the flock forever, so later updates only say
+# "ya hay una en curso" even though nothing is updating.
+# lock-helpers
+lock_fd_cloexec() {
+  python3 -c 'import fcntl,sys; fd=int(sys.argv[1]); fcntl.fcntl(fd, fcntl.F_SETFD, fcntl.fcntl(fd, fcntl.F_GETFD) | fcntl.FD_CLOEXEC)' "$1"
+}
+
+update_lock_is_live() {
+  local pid
+  # flock(1) records a pid that exits immediately, so /proc/locks is not a
+  # reliable owner. A real update is the script that is still running.
+  while read -r pid; do
+    [[ -n "${pid}" && "${pid}" != "$$" ]] || continue
+    return 0
+  done < <(pgrep -f '[a]idycos-update|install-debian-profile[.]sh|/apply[.]sh' || true)
+  return 1
+}
+
+acquire_update_lock() {
+  mkdir -p "$(dirname "${LOCK}")"
+  exec 9>"${LOCK}"
+  lock_fd_cloexec 9 || true
+  if flock -n 9; then
+    return 0
+  fi
+  if update_lock_is_live; then
+    return 1
+  fi
+  # A daemon kept the old inode. Replace the file so a finished update
+  # does not block the next one.
+  exec 9>&-
+  rm -f "${LOCK}"
+  exec 9>"${LOCK}"
+  lock_fd_cloexec 9 || true
+  flock -n 9
+}
+# end lock-helpers
+
+if ! acquire_update_lock; then
   echo "Ya hay una comprobación o actualización de AidyCOS en curso."
   if command -v notify-send >/dev/null 2>&1; then
-    notify-send -a AidyCOS "AidyCOS" "Ya hay una actualización en curso." || true
+    notify-send -a AidyCOS "AidyCOS" "La actualización sigue en segundo plano. Avisa cuando termine." || true
   fi
   exit 0
 fi
@@ -292,6 +329,7 @@ REAL_SUDO=$(printf '%q' "${real_sudo}")
 
 refresh_pid=""
 cleanup() {
+  cd "\${HOME:-/}" 2>/dev/null || cd / || true
   if [[ -n "\${refresh_pid}" ]]; then
     kill "\${refresh_pid}" 2>/dev/null || true
     wait "\${refresh_pid}" 2>/dev/null || true
@@ -315,10 +353,10 @@ report_failure() {
   fi
 }
 
-exec 9>"\${LOCK}"
-if ! flock -n 9; then
+cd "\${HOME:-/}" 2>/dev/null || cd / || true
+if ! acquire_update_lock; then
   if command -v notify-send >/dev/null 2>&1; then
-    notify-send -a AidyCOS "AidyCOS" "Ya hay una actualización en curso." || true
+    notify-send -a AidyCOS "AidyCOS" "La actualización sigue en segundo plano. Avisa cuando termine." || true
   fi
   exit 0
 fi
@@ -396,7 +434,7 @@ if [[ "\${GUI_APPLY}" == 1 ]]; then
     exit 1
   fi
   if command -v notify-send >/dev/null 2>&1; then
-    notify-send -a AidyCOS "AidyCOS" "AidyCOS quedó actualizado. Si algún atajo no cambia, cierra sesión una vez." || true
+    notify-send -a AidyCOS "AidyCOS" "La actualización terminó. Si algún atajo no cambia, cierra sesión una vez." || true
   fi
   exit 0
 fi
@@ -405,6 +443,22 @@ run_update
 echo "Atajos y Alt+Tab se recargan en caliente; si algo de la sesión no cambia, cierra sesión una vez."
 EOF
 chmod 700 "${apply_script}"
+# The apply script is a new shell, so copy the lock helpers in before it runs.
+python3 - "${apply_script}" "${BASH_SOURCE[0]}" <<'PY'
+import pathlib, sys
+apply = pathlib.Path(sys.argv[1])
+updater = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
+start = updater.index("lock_fd_cloexec()")
+end = updater.index("# end lock-helpers\n")
+helpers = updater[start:end]
+text = apply.read_text(encoding="utf-8")
+needle = "if ! acquire_update_lock; then"
+if needle not in text:
+    raise SystemExit("el aplicador no toma el bloqueo de la actualización")
+if "lock_fd_cloexec()" not in text:
+    text = text.replace(needle, helpers + "\n" + needle, 1)
+    apply.write_text(text, encoding="utf-8")
+PY
 
 if [[ "${gui_apply}" != 1 ]]; then
   bash "${apply_script}"

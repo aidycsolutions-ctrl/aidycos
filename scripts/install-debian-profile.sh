@@ -1309,7 +1309,15 @@ reload_hypr_windows() {
   # exec-once does not re-run on reload; start the daemon if Hyprland is up.
   if [[ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" || -n "${WAYLAND_DISPLAY:-}" ]]; then
     if ! kill -0 "$(tr -d '[:space:]' <"${pidfile}" 2>/dev/null || true)" 2>/dev/null; then
-      nohup python3 "${HYPR_DIR}/scripts/ventanas.py" daemon >/dev/null 2>&1 &
+      # Drop inherited fds (the updater flock) so this daemon cannot pin the lock.
+      nohup python3 -c 'import os,sys
+for fd in range(3, 256):
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+os.execvp("python3", ["python3", sys.argv[1], "daemon"])' \
+        "${HYPR_DIR}/scripts/ventanas.py" >/dev/null 2>&1 &
       disown || true
     fi
     echo "Hyprland recargado y daemon de ventanas reiniciado (Alt+Tab listo sin cerrar sesión)."
