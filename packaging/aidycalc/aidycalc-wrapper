@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+if [ -d /opt/aidyc/aidycalc ]; then
+  ROOT=/opt/aidyc/aidycalc
+elif [ -d "${HOME}/.local/share/aidycalc" ]; then
+  ROOT="${HOME}/.local/share/aidycalc"
+else
+  echo "Calculadora no está instalada." >&2
+  exit 1
+fi
+export PYTHONPATH="${ROOT}${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m aidycalc "$@"

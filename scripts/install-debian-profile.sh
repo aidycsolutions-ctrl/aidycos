@@ -35,11 +35,12 @@ Vista previa del perfil AidyCOS para Debian 13:
   * Instalar AidyChat nativo, icono/acceso de escritorio y daemon de usuario para notificaciones.
   * Instalar AidyShip (commit/push GitHub con gh por usuario), icono de menú y atajo Super+G.
   * Instalar AidyShare (respaldo a AidyCShare del negocio con login AidyC).
+  * Instalar Calculadora (aritmética, porcentajes, memoria, historial y científicas) y el atajo Super+K.
   * Habilitar NetworkManager, UPower y BlueZ para Wi-Fi, batería y Bluetooth de Jugoo.
   * Migrar Wi-Fi de ifupdown (instalador Debian) a NetworkManager para que Jugoo no lo vea como LAN.
   * Instalar librsvg2-common para que los iconos symbolic SVG de Adwaita no salgan como rectángulos.
   * Instalar los ajustes de Jugoo para volumen, fondo de escritorio, iconos y atajos.
-  * Sembrar fondo AidyCOS e iconos del escritorio (AidyChat, Firefox, Archivos, Terminal, paquetes, OnlyOffice).
+  * Sembrar fondo AidyCOS e iconos del escritorio (AidyChat, Firefox, Archivos, Terminal, Calculadora, paquetes, OnlyOffice).
   * Instalar Firefox ESR como navegador por defecto del perfil.
   * Instalar Synaptic, Flatpak/Flathub y el agente Polkit para descargar OnlyOffice u otras apps.
   * Instalar udisks2/gvfs/gvfs-fuse/thunar-volman, activar automount y thunar --daemon para USB.
@@ -974,6 +975,51 @@ install_aidyshare() {
 }
 install_aidyshare
 
+install_aidycalc() {
+  local aidycalc_dir=/opt/aidyc/aidycalc
+  local desktop_dir="${HOME}/.local/share/applications"
+  local desktop_entry="${ROOT}/packaging/aidycalc/aidycalc.desktop"
+  local icon_size
+  if ! dpkg-query -W -f='${db:Status-Status}' python3-gi 2>/dev/null | grep -qx 'installed'; then
+    sudo apt-get install -y --no-install-recommends python3-gi gir1.2-gtk-3.0
+  fi
+  sudo install -d -m 0755 "${aidycalc_dir}/aidycalc" /usr/local/bin /usr/share/applications
+  sudo install -m 0644 "${ROOT}/packaging/aidycalc/aidycalc/"*.py "${aidycalc_dir}/aidycalc/"
+  sudo install -m 0644 "${ROOT}/packaging/aidycalc/README.md" "${aidycalc_dir}/README.md"
+  if [[ -f "${ROOT}/packaging/aidycalc/aidycalc.png" ]]; then
+    sudo install -D -m 0644 "${ROOT}/packaging/aidycalc/aidycalc.png" "${aidycalc_dir}/aidycalc.png"
+    sudo install -D -m 0644 "${ROOT}/packaging/aidycalc/aidycalc.png" /usr/share/pixmaps/aidycalc.png
+  fi
+  sudo install -m 0755 "${ROOT}/packaging/aidycalc/aidycalc-wrapper" /usr/local/bin/aidycalc
+  sudo install -m 0644 "${desktop_entry}" /usr/share/applications/aidycalc.desktop
+  for icon_size in 16 24 32 48 64 128 256 512; do
+    if [[ -f "${ROOT}/packaging/aidycalc/icons/aidycalc-${icon_size}.png" ]]; then
+      sudo install -D -m 0644 \
+        "${ROOT}/packaging/aidycalc/icons/aidycalc-${icon_size}.png" \
+        "/usr/share/icons/hicolor/${icon_size}x${icon_size}/apps/aidycalc.png"
+    fi
+  done
+  install -d "${desktop_dir}" "${HOME}/.local/share/icons/hicolor"
+  install -m 0644 "${desktop_entry}" "${desktop_dir}/aidycalc.desktop"
+  for icon_size in 16 24 32 48 64 128 256 512; do
+    if [[ -f "${ROOT}/packaging/aidycalc/icons/aidycalc-${icon_size}.png" ]]; then
+      install -D -m 0644 \
+        "${ROOT}/packaging/aidycalc/icons/aidycalc-${icon_size}.png" \
+        "${HOME}/.local/share/icons/hicolor/${icon_size}x${icon_size}/apps/aidycalc.png"
+    fi
+  done
+  refresh_icon_cache sudo /usr/share/icons/hicolor
+  refresh_icon_cache user "${HOME}/.local/share/icons/hicolor"
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    sudo update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+    update-desktop-database "${desktop_dir}" >/dev/null 2>&1 || true
+  fi
+  if [[ "${PROFILE_REFRESH}" != 1 ]]; then
+    echo "Calculadora instalada. Ábrela desde el menú o con Super+K."
+  fi
+}
+install_aidycalc
+
 CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
 HYPR_DIR="${CONFIG_HOME}/hypr"
 HYPR_CONF="${HYPR_DIR}/hyprland.conf"
@@ -1049,8 +1095,10 @@ input {
 bind = SUPER, SPACE, exec, jugoo action launcher
 bind = SUPER, E, exec, /usr/bin/env GDK_BACKEND=wayland /usr/bin/thunar
 bind = SUPER, G, exec, aidyship ui
+bind = SUPER, K, exec, aidycalc ui
 bind = , Print, exec, ~/.local/bin/captura.sh
 bind = ALT, F4, exec, jugoo action session
+bind = SUPER ALT, F4, exec, ~/.config/hypr/scripts/confirmar-apagar
 bind = , F6, exec, /usr/local/bin/aidycos-cajon
 # Super+Left/Right snap is owned by jugoo_ventanas.conf (Windows-like).
 bind = SUPER, Y, workspace, +1
@@ -1111,6 +1159,7 @@ else
   grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*(hyprpolkitagent|polkit-mate-authentication-agent-1)' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qF 'bind = SUPER SHIFT, U, exec, aidycos-update --check' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qF 'bind = SUPER, G, exec, aidyship ui' "${HYPR_AIDYCOS_CONF}" || missing=1
+  grep -qE 'bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*K,[[:space:]]*exec,.*aidycalc' "${HYPR_AIDYCOS_CONF}" || missing=1
   grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*dbus-update-activation-environment' "${HYPR_AIDYCOS_CONF}" \
     || grep -qE '^[[:space:]]*exec-once[[:space:]]*=.*dbus-update-activation-environment' "${HYPR_CONF}" 2>/dev/null \
     || missing=1
@@ -1184,6 +1233,9 @@ EOF
     fi
     if ! grep -qF 'bind = SUPER, G, exec, aidyship ui' "${HYPR_AIDYCOS_CONF}"; then
       printf 'bind = SUPER, G, exec, aidyship ui\n' >>"${HYPR_AIDYCOS_CONF}"
+    fi
+    if ! grep -qE 'bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*K,[[:space:]]*exec,.*aidycalc' "${HYPR_AIDYCOS_CONF}"; then
+      printf 'bind = SUPER, K, exec, aidycalc ui\n' >>"${HYPR_AIDYCOS_CONF}"
     fi
     if ! grep -qE '^[[:space:]]*env[[:space:]]*=[[:space:]]*XDG_CURRENT_DESKTOP,' "${HYPR_AIDYCOS_CONF}" \
        && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*env[[:space:]]*=[[:space:]]*XDG_CURRENT_DESKTOP,' "${HYPR_CONF}"; }; then
@@ -1494,6 +1546,12 @@ fi
 if [[ -f "${ROOT}/scripts/apply-hypr-medios.py" ]]; then
   if ! python3 "${ROOT}/scripts/apply-hypr-medios.py" "${HYPR_DIR}"; then
     echo "Aviso: no se pudieron instalar las teclas de volumen y brillo." >&2
+  fi
+fi
+# Super+Alt+F4 apaga. Enter confirma, Escape cancela.
+if [[ -f "${ROOT}/scripts/apply-hypr-apagar.py" ]]; then
+  if ! python3 "${ROOT}/scripts/apply-hypr-apagar.py" "${HYPR_DIR}"; then
+    echo "Aviso: no se pudo instalar el atajo Super+Alt+F4 de apagado." >&2
   fi
 fi
 # F6 abre el cajón. El vigilante lo abre al terminar una factura en XPRINTER.

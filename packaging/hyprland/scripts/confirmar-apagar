@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""Apagar: Enter confirma, Escape cancela.
+
+GTK 4 cuando el equipo lo tiene (zenity 4). Si no, GTK 3, que es lo que
+instala el perfil AidyCOS.
+"""
+
+import subprocess
+import sys
+
+import gi
+
+
+def _apagar(pedido: list[bool], quit_app) -> None:
+    if pedido[0]:
+        return
+    pedido[0] = True
+    subprocess.Popen(
+        ["systemctl", "poweroff"],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    quit_app()
+
+
+def _run_gtk4() -> int:
+    gi.require_version("Gdk", "4.0")
+    gi.require_version("Gtk", "4.0")
+    from gi.repository import Gdk, Gtk
+
+    class Apagar(Gtk.Application):
+        def __init__(self) -> None:
+            super().__init__(application_id="org.aidycos.Apagar")
+            self._pedido = [False]
+
+        def do_activate(self) -> None:
+            win = Gtk.ApplicationWindow(application=self, title="Apagar")
+            win.set_resizable(False)
+            win.set_default_size(420, 148)
+
+            caja = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+            caja.set_margin_top(22)
+            caja.set_margin_bottom(18)
+            caja.set_margin_start(22)
+            caja.set_margin_end(22)
+
+            titulo = Gtk.Label(label="¿Apagar el equipo?")
+            titulo.set_halign(Gtk.Align.START)
+            titulo.add_css_class("title-2")
+            pista = Gtk.Label(label="Enter apaga. Escape cancela.")
+            pista.set_halign(Gtk.Align.START)
+            pista.add_css_class("dim-label")
+
+            botones = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            botones.set_halign(Gtk.Align.END)
+            cancelar = Gtk.Button(label="Cancelar")
+            cancelar.connect("clicked", lambda *_: self.quit())
+            apagar = Gtk.Button(label="Apagar")
+            apagar.add_css_class("destructive-action")
+            apagar.connect("clicked", lambda *_: _apagar(self._pedido, self.quit))
+            botones.append(cancelar)
+            botones.append(apagar)
+
+            caja.append(titulo)
+            caja.append(pista)
+            caja.append(botones)
+            win.set_child(caja)
+            win.set_default_widget(apagar)
+
+            teclas = Gtk.EventControllerKey()
+            teclas.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+            teclas.connect("key-pressed", self._tecla)
+            win.add_controller(teclas)
+            win.connect("close-request", self._cerrar)
+            win.present()
+            apagar.grab_focus()
+
+        def _tecla(self, _control, keyval, _codigo, _estado) -> bool:
+            if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+                _apagar(self._pedido, self.quit)
+                return True
+            if keyval == Gdk.KEY_Escape:
+                self.quit()
+                return True
+            return False
+
+        def _cerrar(self, _win) -> bool:
+            self.quit()
+            return False
+
+    return Apagar().run(sys.argv)
+
+
+def _run_gtk3() -> int:
+    gi.require_version("Gdk", "3.0")
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import Gdk, Gtk
+
+    class Apagar(Gtk.Application):
+        def __init__(self) -> None:
+            super().__init__(application_id="org.aidycos.Apagar")
+            self._pedido = [False]
+
+        def do_activate(self) -> None:
+            dialog = Gtk.MessageDialog(
+                message_type=Gtk.MessageType.QUESTION,
+                buttons=Gtk.ButtonsType.NONE,
+                text="¿Apagar el equipo?",
+            )
+            dialog.format_secondary_text("Enter apaga. Escape cancela.")
+            dialog.set_title("Apagar")
+            dialog.add_button("Cancelar", Gtk.ResponseType.CANCEL)
+            apagar = dialog.add_button("Apagar", Gtk.ResponseType.OK)
+            apagar.get_style_context().add_class("destructive-action")
+            dialog.set_default_response(Gtk.ResponseType.OK)
+            dialog.connect("key-press-event", self._tecla)
+            dialog.connect("response", self._respuesta)
+            dialog.connect("delete-event", self._cerrar)
+            self.add_window(dialog)
+            dialog.show_all()
+            apagar.grab_focus()
+
+        def _tecla(self, _dialog, event) -> bool:
+            if event.keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+                _apagar(self._pedido, self.quit)
+                return True
+            if event.keyval == Gdk.KEY_Escape:
+                self.quit()
+                return True
+            return False
+
+        def _respuesta(self, _dialog, response) -> None:
+            if response == Gtk.ResponseType.OK:
+                _apagar(self._pedido, self.quit)
+            else:
+                self.quit()
+
+        def _cerrar(self, *_args) -> bool:
+            self.quit()
+            return True
+
+    return Apagar().run(sys.argv)
+
+
+def main() -> int:
+    try:
+        gi.require_version("Gtk", "4.0")
+    except ValueError:
+        return _run_gtk3()
+    return _run_gtk4()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

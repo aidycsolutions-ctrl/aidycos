@@ -44,6 +44,7 @@ _FORCE_HYPRBARS_CLASS = frozenset(
         "aidylink",
         "aidyc",
         "aidyship",
+        "aidycalc",
         "foot",
         "thunar",
         "xfce4-terminal",

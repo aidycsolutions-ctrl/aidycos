@@ -1543,6 +1543,15 @@ def install_persistent_workspaces(root: Path) -> None:
     )
 
 
+def install_stats_fan_tooltip(root: Path) -> None:
+    """Bar shows only the fan; CPU and RAM appear in its hover text."""
+    overlay = Path(__file__).parent / "shell"
+    install_overlay_file(
+        overlay / "widgets/barra/stats.py",
+        root / "shell/widgets/barra/stats.py",
+    )
+
+
 def install_host_identity(root: Path) -> None:
     """Discreet hostname on the left of the bar (tooltip user@host)."""
     overlay = Path(__file__).parent / "shell"
@@ -2227,6 +2236,98 @@ def install_quiet_theme_reload(root: Path) -> None:
     )
 
 
+# 8 GB sticks report a little under 8 GiB. Above this, a local model can load
+# without pushing the desktop and the POS app into swap at login.
+_LOW_RAM_MACHINE_BYTES = 9 * 1024 * 1024 * 1024
+_LARGE_MODEL_BYTES = 512 * 1024 * 1024
+
+
+def install_low_ram_startup(root: Path) -> None:
+    """Keep an 8 GB PC from loading the local model while the session starts.
+
+    The briefing used to ignore a tight VRAM reading and launch llama anyway.
+    On an 8 GB machine that maps a multi-gigabyte GGUF into RAM, the desktop
+    sits there swapping. The measurement is the gate again, and a large model
+    stays unloaded when the machine itself only has about 8 GB.
+    """
+    briefing = root / "shell/servicios/tareas/briefing.py"
+    if briefing.is_file():
+        try_replace_once(
+            briefing,
+            (
+                "        suffix = f\" ({', '.join(details)})\" if details else \"\"\n"
+                "\n"
+                "        # Startup briefing: the VRAM gate uses a conservative full-model estimate\n"
+                "        # on an 8\u202fGiB card that often sits a few hundred MiB below the estimate\n"
+                "        # while llama-cli still runs fine. Soft-pass any pure `vram` reject and\n"
+                "        # let the real llama call (timeout / empty / error) decide fallback.\n"
+                "        if viability.reason == \"vram\":\n"
+                "            free = viability.available_vram_bytes\n"
+                "            est = viability.estimated_vram_bytes\n"
+                "            _briefing_diag(\n"
+                "                \"ai_viable: soft-pass vram attempt \"\n"
+                "                f\"(est={None if est is None else est // (1024 * 1024)} MiB, \"\n"
+                "                f\"free={None if free is None else free // (1024 * 1024)} MiB)\"\n"
+                "            )\n"
+                "            return True, \"ok_vram_soft_attempt\"\n"
+                "\n"
+                "        return False, f\"{viability.reason}{suffix}\"\n"
+            ),
+            (
+                "        suffix = f\" ({', '.join(details)})\" if details else \"\"\n"
+                "        # Tight VRAM means the model would spill into RAM. Do not launch it.\n"
+                "        return False, f\"{viability.reason}{suffix}\"\n"
+            ),
+            "no cargar el modelo si la VRAM no alcanza",
+        )
+
+    recursos = root / "shell/servicios/tareas/vigilancia/recursos.py"
+    if not recursos.is_file():
+        return
+    try_replace_once(
+        recursos,
+        "def evaluate_ai_viability(\n",
+        (
+            "def machine_cannot_spare_ram_for_model(\n"
+            "    model_path: Path,\n"
+            "    ram_total_bytes: int | None,\n"
+            ") -> bool:\n"
+            '    """True when login must not map a large local model.\n'
+            "\n"
+            "    An 8 GB PC reports a little under 8 GiB. Loading a multi-gigabyte\n"
+            "    GGUF then swaps the desktop, so startup feels stuck.\n"
+            '    """\n'
+            f"    if ram_total_bytes is None or ram_total_bytes > {_LOW_RAM_MACHINE_BYTES}:\n"
+            "        return False\n"
+            "    try:\n"
+            "        size = model_path.stat().st_size\n"
+            "    except OSError:\n"
+            "        return True\n"
+            f"    return size >= {_LARGE_MODEL_BYTES}\n"
+            "\n"
+            "\n"
+            "def evaluate_ai_viability(\n"
+        ),
+        "no cargar un modelo grande en un PC de 8 GB",
+    )
+    try_replace_once(
+        recursos,
+        (
+            "    if not path.is_file():\n"
+            '        return AiViability(False, "model_missing")\n'
+            "    if not resources.gpu_memory_reliable:\n"
+        ),
+        (
+            "    if not path.is_file():\n"
+            '        return AiViability(False, "model_missing")\n'
+            "    if machine_cannot_spare_ram_for_model(path, resources.ram_total_bytes):\n"
+            '        return AiViability(False, "ram")\n'
+            "    if not resources.gpu_memory_reliable:\n"
+        ),
+        "usar la medición de RAM antes de lanzar el modelo",
+    )
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("Uso: install.py RUTA_DE_JUGOO")
@@ -2248,6 +2349,7 @@ def main() -> None:
     install_applications_menu(root)
     install_keyboard_cat(root)
     install_host_identity(root)
+    install_stats_fan_tooltip(root)
     install_bar_position(root)
     # Keep the Jugoo bar visible: do not retract under maximized floating windows.
     config = root / "shell/config.py"
@@ -2318,6 +2420,7 @@ def main() -> None:
             ),
             "ocultar briefing vacío sin tareas",
         )
+    install_low_ram_startup(root)
 
     overlay_shell = Path(__file__).parent / "shell"
     for relative in (

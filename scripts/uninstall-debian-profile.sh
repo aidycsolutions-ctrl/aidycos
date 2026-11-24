@@ -370,6 +370,7 @@ remove_system_binaries() {
     /usr/local/bin/aidyc-update \
     /usr/local/bin/aidylink \
     /usr/local/bin/aidyship \
+    /usr/local/bin/aidycalc \
     /usr/local/bin/aidycos-onlyoffice \
     /usr/local/bin/aidycos-cajon \
     /usr/local/bin/aidycos-download-dir \
@@ -385,14 +386,17 @@ remove_system_binaries() {
   remove_path "$(sys /usr/local/libexec/aidycos)"
   remove_path "$(sys /usr/share/applications/aidychat.desktop)"
   remove_path "$(sys /usr/share/applications/aidyship.desktop)"
+  remove_path "$(sys /usr/share/applications/aidycalc.desktop)"
   remove_path "$(sys /usr/share/pixmaps/aidyc.png)"
   remove_path "$(sys /usr/share/pixmaps/aidychat.png)"
   remove_path "$(sys /usr/share/pixmaps/aidyship.png)"
+  remove_path "$(sys /usr/share/pixmaps/aidycalc.png)"
   local size
   for size in 16 24 32 48 64 128 256 512; do
     remove_path "$(sys /usr/share/icons/hicolor/${size}x${size}/apps/aidyc.png)"
     remove_path "$(sys /usr/share/icons/hicolor/${size}x${size}/apps/aidychat.png)"
     remove_path "$(sys /usr/share/icons/hicolor/${size}x${size}/apps/aidyship.png)"
+    remove_path "$(sys /usr/share/icons/hicolor/${size}x${size}/apps/aidycalc.png)"
   done
 }
 
@@ -413,6 +417,7 @@ restore_or_remove_jugoo() {
   fi
   remove_path "$(sys /opt/aidyc/aidylink)"
   remove_path "$(sys /opt/aidyc/aidyship)"
+  remove_path "$(sys /opt/aidyc/aidycalc)"
   # Keep /opt/aidyc if AidyC or other apps remain.
   if [[ -d "$(sys /opt/aidyc)" ]]; then
     if [[ -z "$(find "$(sys /opt/aidyc)" -mindepth 1 -maxdepth 1 2>/dev/null | head -n1)" ]]; then
@@ -464,6 +469,7 @@ restore_hyprland_user() {
   remove_path "${hypr_dir}/scripts/ventanas"
   remove_path "${hypr_dir}/scripts/ventanas.py"
   remove_path "${hypr_dir}/scripts/decoraciones.py"
+  remove_path "${hypr_dir}/scripts/confirmar-apagar"
 }
 
 remove_user_bits() {
@@ -505,6 +511,7 @@ remove_user_bits() {
     aidyc.desktop \
     aidychat.desktop \
     aidyship.desktop \
+    aidycalc.desktop \
     aidylink.desktop
   do
     remove_path "${apps}/${name}"
@@ -518,6 +525,7 @@ remove_user_bits() {
     remove_path "${icons}/${size}x${size}/apps/aidyc.png"
     remove_path "${icons}/${size}x${size}/apps/aidychat.png"
     remove_path "${icons}/${size}x${size}/apps/aidyship.png"
+    remove_path "${icons}/${size}x${size}/apps/aidycalc.png"
   done
 
   for name in \
@@ -527,7 +535,8 @@ remove_user_bits() {
     aidycos-update \
     aidycos-uninstall \
     aidylink \
-    aidyship
+    aidyship \
+    aidycalc
   do
     # Prefer restoring user jugoo backup if present.
     if [[ "${name}" == jugoo && -e "${bin_dir}/jugoo.aidycos-backup" ]]; then

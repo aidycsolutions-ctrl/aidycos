@@ -1264,7 +1264,7 @@ def is_aidyc_window(window: dict[str, Any]) -> bool:
     app_class = str(window.get("class") or "").casefold().strip()
     initial = str(window.get("initialClass") or "").casefold().strip()
     for candidate in (app_class, initial):
-        if candidate.startswith(("aidychat", "aidycai", "aidyship")):
+        if candidate.startswith(("aidychat", "aidycai", "aidyship", "aidyshare", "aidycalc")):
             return False
         if _AIDYC_BROWSER_CLASS.match(candidate):
             return False

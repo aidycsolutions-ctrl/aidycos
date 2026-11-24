@@ -25,6 +25,7 @@ KNOWN_APPLICATION_NAMES = {
     "aidyc": "AidyC",
     "aidycai": "AIDYCAI",
     "aidychat": "AidyChat",
+    "aidycalc": "Calculadora",
     "aidycos-onlyoffice": "OnlyOffice",
     "onlyoffice": "OnlyOffice",
     "org.onlyoffice.desktopeditors": "OnlyOffice",
@@ -397,7 +398,7 @@ def _aidyc_application(window: Window) -> ApplicationInfo | None:
 def _is_aidyc_window(window: Window) -> bool:
     app_class = (window.app_class or "").casefold().strip()
     # Never treat AidyChat / AIDYCAI as the AidyC IDE.
-    if app_class.startswith("aidychat") or app_class.startswith("aidycai") or app_class.startswith("aidyship"):
+    if app_class.startswith(("aidychat", "aidycai", "aidyship", "aidyshare", "aidycalc")):
         return False
     if app_class in {"aidyc", "com.aidyc.aidyc"}:
         return True

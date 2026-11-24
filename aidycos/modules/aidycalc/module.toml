@@ -1,0 +1,9 @@
+name = "aidycalc"
+description = "Calculadora: aritmética, porcentajes, memoria e historial"
+depends_on = ["desktop-runtime"]
+
+[packages]
+apt = [
+  "python3-gi",
+  "gir1.2-gtk-3.0",
+]

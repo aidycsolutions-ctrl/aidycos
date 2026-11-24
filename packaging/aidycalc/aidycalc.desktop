@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Calculadora
+GenericName=Calculadora
+Comment=Calculadora de AidyCOS: aritmética, porcentajes, memoria y científicas
+Exec=aidycalc ui
+TryExec=aidycalc
+Icon=aidycalc
+Terminal=false
+Categories=Utility;Calculator;
+StartupNotify=true
+Keywords=calculadora;calculator;calc;porcentaje;científica;aidycalc;
+StartupWMClass=aidycalc

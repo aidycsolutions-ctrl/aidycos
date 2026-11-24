@@ -87,6 +87,7 @@ def default_icons(home: Path) -> list[dict[str, object]]:
         ("Firefox", "application", "firefox-esr", "firefox-esr"),
         ("Archivos", "directory", str(home), "user-home"),
         ("Terminal", "application", "foot", "utilities-terminal"),
+        ("Calculadora", "application", "aidycalc", "aidycalc"),
         ("Instalar paquetes", "application", "aidycos-paquetes", "system-software-install"),
         ("OnlyOffice", "application", "aidycos-onlyoffice", "x-office-document"),
     ]
