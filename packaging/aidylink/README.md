@@ -35,9 +35,22 @@ nombre visible del computador; después puedes elegir un equipo cercano en una
 tarjeta o iniciar sesión con Google. El inicio de sesión ocurre en el navegador
 del sistema y vuelve automáticamente a AidyChat.
 
-La ventana puede cerrarse y el daemon continúa consultando mensajes y enviando
-notificaciones del escritorio. Al pulsar **Abrir AidyChat** en una notificación,
-se vuelve a abrir la ventana.
+AidyCOS instala un timer de usuario que inicia el daemon 20 segundos después
+de que la sesión gráfica esté lista. Las actualizaciones de AidyCOS actualizan
+el código en `/opt/aidyc/aidylink`, migran el servicio de inicio inmediato al
+timer diferido y conservan la identidad y configuración de cada usuario. La
+ventana puede cerrarse y el daemon sigue consultando mensajes y mostrando
+notificaciones. Si la red falla, el siguiente ciclo vuelve a consultar AidyChat.
+Al cerrar la sesión o apagar el equipo, systemd detiene el proceso. Al pulsar
+**Abrir AidyChat** en una notificación, se vuelve a abrir la ventana.
+
+Verifica el inicio automático y el servicio con:
+
+```bash
+systemctl --user list-timers aidylink.timer
+systemctl --user status aidylink.service
+journalctl --user -u aidylink.service -b
+```
 
 Con una cuenta AidyChat vinculada, `aidylink ui` abre la nueva ventana nativa
 GTK: conversaciones a la izquierda, mensajes, búsqueda, adjuntos e imágenes en

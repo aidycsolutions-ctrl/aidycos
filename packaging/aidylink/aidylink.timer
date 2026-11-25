@@ -1,0 +1,12 @@
+[Unit]
+Description=Start AidyLink 20 seconds after desktop session startup
+Wants=graphical-session.target
+After=graphical-session.target
+
+[Timer]
+OnActiveSec=20s
+AccuracySec=1s
+Unit=aidylink.service
+
+[Install]
+WantedBy=default.target

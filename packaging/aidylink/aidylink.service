@@ -1,14 +1,13 @@
 [Unit]
 Description=AidyLink — intercom LAN + AidyChat relay
-After=graphical-session.target network-online.target
-Wants=network-online.target
+After=graphical-session.target
+PartOf=default.target
 
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/aidylink daemon
 Restart=on-failure
-RestartSec=3
+RestartSec=5s
+TimeoutStopSec=15s
+KillSignal=SIGTERM
 Environment=PYTHONUNBUFFERED=1
-
-[Install]
-WantedBy=default.target

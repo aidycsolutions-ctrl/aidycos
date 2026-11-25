@@ -820,6 +820,7 @@ install_aidylink() {
   local desktop_entry="${ROOT}/packaging/aidylink/aidylink.desktop"
   local user_desktop=""
   local service_dir="${config_home}/systemd/user"
+  local wants_dir="${service_dir}/default.target.wants"
   sudo install -d -m 0755 "${aidylink_dir}/aidylink" /usr/local/bin /usr/share/applications
   sudo install -m 0644 "${ROOT}/packaging/aidylink/aidylink/"*.py "${aidylink_dir}/aidylink/"
   sudo install -m 0644 "${ROOT}/packaging/aidylink/README.md" "${aidylink_dir}/README.md"
@@ -840,7 +841,7 @@ install_aidylink() {
   if [[ -f "${ROOT}/packaging/aidylink/aidychat.png" ]]; then
     sudo install -D -m 0644 "${ROOT}/packaging/aidylink/aidychat.png" /usr/share/pixmaps/aidychat.png
   fi
-  install -d "${desktop_dir}" "${service_dir}"
+  install -d "${desktop_dir}" "${service_dir}" "${wants_dir}"
   install -m 0644 "${desktop_entry}" "${desktop_dir}/aidychat.desktop"
   rm -f "${desktop_dir}/aidylink.desktop"
   mkdir -p "${HOME}/.local/share/icons/hicolor"
@@ -853,6 +854,10 @@ install_aidylink() {
     fi
   done
   install -m 0644 "${ROOT}/packaging/aidylink/aidylink.service" "${service_dir}/aidylink.service"
+  install -m 0644 "${ROOT}/packaging/aidylink/aidylink.timer" "${service_dir}/aidylink.timer"
+  # Migrate existing installs away from the old immediate-start service link.
+  rm -f "${wants_dir}/aidylink.service"
+  ln -sfn "${service_dir}/aidylink.timer" "${wants_dir}/aidylink.timer"
   if command -v xdg-user-dir >/dev/null 2>&1; then
     user_desktop="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
   fi
@@ -863,6 +868,10 @@ install_aidylink() {
   install -m 0755 "${desktop_entry}" "${user_desktop}/AidyChat.desktop"
   rm -f "${user_desktop}/AidyLink.desktop" "${user_desktop}/aidylink.desktop"
   systemctl --user daemon-reload >/dev/null 2>&1 || true
+  systemctl --user enable --now aidylink.timer >/dev/null 2>&1 || true
+  if systemctl --user is-active --quiet aidylink.service; then
+    systemctl --user restart aidylink.service >/dev/null 2>&1 || true
+  fi
   refresh_icon_cache sudo /usr/share/icons/hicolor
   refresh_icon_cache user "${HOME}/.local/share/icons/hicolor"
   if command -v update-desktop-database >/dev/null 2>&1; then
