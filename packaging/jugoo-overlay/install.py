@@ -2432,6 +2432,7 @@ def main() -> None:
         # Keep the modern network_bar_icon_name widget (not the old "always LAN"
         # ethernet-only indicator) so Wi-Fi shows correctly after overlay.
         Path("icons.py"),
+        Path("user_icon_paths.py"),
         Path("widgets/barra/ethernet.py"),
         Path("widgets/barra/volume.py"),
         Path("widgets/audio/volume_slider.py"),
