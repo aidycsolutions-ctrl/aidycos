@@ -1,6 +1,6 @@
 name = "aidyc-desktop"
 description = "Perfil base de escritorio AidyCOS para Debian: Wayland, audio, SDDM, utilidades y Jugoo"
-depends_on = ["desktop-runtime"]
+depends_on = ["desktop-runtime", "aidyc-explorer"]
 
 [packages]
 apt = [

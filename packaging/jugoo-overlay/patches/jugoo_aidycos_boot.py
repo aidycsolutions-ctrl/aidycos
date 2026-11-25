@@ -289,6 +289,21 @@ def _apply_theme_reload_guard() -> None:
     theme_mod.ThemeManager._export_hyprland = _export_hyprland
 
 
+def _append_user_icon_theme_paths() -> None:
+    """Let Gtk resolve app icons installed under the user's XDG data directory."""
+    from gi.repository import Gtk
+
+    from shell.user_icon_paths import append_user_icon_search_paths
+
+    append_user_icon_search_paths(Gtk.IconTheme.get_default())
+
+
+try:
+    _append_user_icon_theme_paths()
+except Exception as error:  # noqa: BLE001
+    print(f"aidycos: user icon paths skipped: {error}", flush=True)
+
+
 try:
     _apply_icons_patch()
 except Exception as error:  # noqa: BLE001

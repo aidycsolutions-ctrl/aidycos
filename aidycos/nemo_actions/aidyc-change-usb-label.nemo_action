@@ -1,0 +1,9 @@
+[Nemo Action]
+Name=Cambiar etiqueta de la USB…
+Comment=Cambia el nombre del volumen seleccionado sin formatearlo
+Exec=<change_usb_label.py %D>
+Selection=s
+Extensions=any;
+Dependencies=python3;zenity;udisksctl;gdbus;lsblk;findmnt;
+Conditions=removable;
+Terminal=false

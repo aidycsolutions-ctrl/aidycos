@@ -18,4 +18,4 @@ aidycos = "aidycos.cli:main"
 packages = ["aidycos", "aidycos.adapters"]
 
 [tool.setuptools.package-data]
-aidycos = ["modules/**/*.toml"]
+aidycos = ["modules/**/*.toml", "nemo_actions/*"]

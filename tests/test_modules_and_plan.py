@@ -15,6 +15,19 @@ class ModuleTests(unittest.TestCase):
         self.assertEqual(plan.packages.count("wtype"), 1)
         self.assertEqual(plan.modules[0].name, "desktop-runtime")
 
+    def test_aidyc_explorer_module_includes_nemo_and_usb_label_tools(self):
+        modules = load_modules()
+        plan = build_plan(["aidyc-explorer"], modules, Distribution("debian", "13"), "apt")
+        self.assertEqual(
+            plan.packages,
+            ("nemo", "udisks2", "dosfstools", "exfatprogs", "ntfs-3g", "libglib2.0-bin", "zenity"),
+        )
+
+    def test_desktop_module_includes_aidyc_explorer(self):
+        modules = load_modules()
+        plan = build_plan(["aidyc-desktop"], modules, Distribution("debian", "13"), "apt")
+        self.assertIn("nemo", plan.packages)
+
     def test_desktop_module_includes_usb_mount_stack(self):
         # --no-install-recommends would otherwise skip Thunar's USB Recommends.
         modules = load_modules()
