@@ -291,6 +291,8 @@ def _apply_theme_reload_guard() -> None:
 
 def _append_user_icon_theme_paths() -> None:
     """Let Gtk resolve app icons installed under the user's XDG data directory."""
+    import gi
+    gi.require_version("Gtk", "3.0")
     from gi.repository import Gtk
 
     from shell.user_icon_paths import append_user_icon_search_paths
