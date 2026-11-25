@@ -26,6 +26,11 @@ from .router import MessageRouter
 LOGGER = logging.getLogger(__name__)
 
 
+def _cloud_chat_id(from_id: str) -> int | None:
+    match = re.fullmatch(r"cloud:(\d+)", str(from_id or ""))
+    return int(match.group(1)) if match else None
+
+
 class AidylinkDaemon:
     def __init__(self, cfg: LinkConfig) -> None:
         self.cfg = cfg
@@ -89,7 +94,12 @@ class AidylinkDaemon:
         preview = message.display_text() or message.filename or "Mensaje"
         # Skip echoes / own outbound so the host does not notify itself.
         if message.from_id != self.cfg.node_id:
-            notify(message.from_name or "AidyChat", preview, kind="message")
+            notify(
+                message.from_name or "AidyChat",
+                preview,
+                kind="message",
+                target=f"lan:{message.from_id}",
+            )
         LOGGER.info("lan msg from %s: %s", message.from_name, preview[:80])
         self._schedule_mobile_fanout(message)
 
@@ -105,19 +115,30 @@ class AidylinkDaemon:
             self._schedule_mobile_fanout(message)
         if not fresh:
             return
-        if len(fresh) == 1:
-            message = fresh[0]
+        by_conversation: dict[str, LinkMessage] = {}
+        for message in fresh:
+            by_conversation[message.from_id] = message
+        if len(by_conversation) == 1:
+            message = next(iter(by_conversation.values()))
             notify(
                 f"{message.from_name} (cloud)",
                 message.display_text() or "Mensaje",
                 kind="message",
+                target=f"cloud:{message.from_id.removeprefix('cloud:')}"
+                if message.from_id.startswith("cloud:")
+                else "",
+                reply_chat_id=_cloud_chat_id(message.from_id),
             )
             return
-        notify(
-            "AidyChat",
-            f"{len(fresh)} mensajes nuevos en la nube",
-            kind="message",
-        )
+        for message in by_conversation.values():
+            chat_id = _cloud_chat_id(message.from_id)
+            notify(
+                f"{message.from_name} (cloud)",
+                message.display_text() or "Mensaje",
+                kind="message",
+                target=f"cloud:{chat_id}" if chat_id else "",
+                reply_chat_id=chat_id,
+            )
 
     def _mobile_peer_list(self) -> list[dict[str, Any]]:
         return [

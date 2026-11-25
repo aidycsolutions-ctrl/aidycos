@@ -447,6 +447,7 @@ class AidylinkWindow(Gtk.Window):
         self._messages: list[dict[str, Any]] = []
         self._connecting = False
         self._pending_ask_dialog: Gtk.Dialog | None = None
+        self._pending_notification_peer = ""
         self._seen_ask_ids: set[str] = set()
         self._previews: dict[str, str] = {}
         self._emoji_popover: Gtk.Popover | None = None
@@ -668,6 +669,25 @@ class AidylinkWindow(Gtk.Window):
             selected_id=selected_id,
             selected_host=selected_host,
         )
+        if self._pending_notification_peer:
+            self._select_notification_peer(self._pending_notification_peer)
+
+    def open_notification_target(self, target: str) -> None:
+        """Select the LAN peer named in a notification and present this window."""
+        if not target.startswith("lan:"):
+            return
+        node_id = target[4:].strip()
+        if node_id:
+            self._pending_notification_peer = node_id
+            self.refresh_peers(silent=True)
+
+    def _select_notification_peer(self, node_id: str) -> None:
+        for row in self.chat_list.get_children():
+            peer = getattr(row, "peer_data", None)
+            if isinstance(peer, dict) and str(peer.get("node_id") or "") == node_id:
+                self._pending_notification_peer = ""
+                self.chat_list.select_row(row)
+                return
 
     def _contact_fingerprint(self) -> str:
         bits = [
@@ -2072,13 +2092,13 @@ class AidylinkWindow(Gtk.Window):
             )
 
 
-def run_ui() -> int:
+def run_ui(*, open_target: str = "") -> int:
     from .notify import claim_ui_instance
 
     if not _first_run_setup():
         return 1
 
-    raise_server = claim_ui_instance()
+    raise_server = claim_ui_instance(open_target)
     if raise_server is None:
         return 0
 
@@ -2104,12 +2124,14 @@ def run_ui() -> int:
         # a linked account opens the richer native conversation interface.
         from .chat_window import run_cloud_chat
 
-        return run_cloud_chat(raise_server=raise_server)
+        return run_cloud_chat(raise_server=raise_server, open_target=open_target)
 
     win = AidylinkWindow()
     raise_server.attach(win)
     win.connect("destroy", lambda *_: raise_server.close())
     win.show_all()
+    if open_target:
+        GLib.idle_add(win.open_notification_target, open_target)
     Gtk.main()
     raise_server.close()
     cfg = load_config()

@@ -40,9 +40,19 @@ de que la sesión gráfica esté lista. Las actualizaciones de AidyCOS actualiza
 el código en `/opt/aidyc/aidylink`, migran el servicio de inicio inmediato al
 timer diferido y conservan la identidad y configuración de cada usuario. La
 ventana puede cerrarse y el daemon sigue consultando mensajes y mostrando
-notificaciones. Si la red falla, el siguiente ciclo vuelve a consultar AidyChat.
-Al cerrar la sesión o apagar el equipo, systemd detiene el proceso. Al pulsar
-**Abrir AidyChat** en una notificación, se vuelve a abrir la ventana.
+notificaciones con el remitente y el texto recibido. Al pulsar la acción de
+abrir, AidyChat enfoca su propia ventana y selecciona la conversación LAN o
+cloud asociada al aviso. En avisos cloud también aparece **Responder**: abre un
+cuadro pequeño para contestar sin cargar la ventana principal. Los avisos LAN
+permiten abrir el chat.
+
+Las acciones dependen de que el servicio de notificaciones del escritorio las
+presente y conserve en el centro de notificaciones. FreeDesktop define botones
+de acción, pero no un campo de texto inline universal; por eso **Responder**
+abre el cuadro compacto de AidyChat. Si el host oculta acciones, la respuesta
+rápida no estará disponible. Al cerrar la sesión o apagar el equipo, systemd
+detiene el proceso. El inicio diferido de 20 segundos se conserva para no
+añadir carga al arranque.
 
 Verifica el inicio automático y el servicio con:
 

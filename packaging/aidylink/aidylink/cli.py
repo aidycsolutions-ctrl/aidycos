@@ -62,7 +62,8 @@ def main(argv: list[str] | None = None) -> int:
     cloud_sub.add_parser("test", help="Probar login Bearer contra el servidor")
 
     sub.add_parser("daemon", help="Correr daemon (discovery + LAN + cloud)")
-    sub.add_parser("ui", help="Abrir ventana gráfica de chat")
+    p_ui = sub.add_parser("ui", help="Abrir ventana gráfica de chat")
+    p_ui.add_argument("--open-target", default="", help=argparse.SUPPRESS)
     sub.add_parser("status", help="Estado del daemon")
     sub.add_parser("peers", help="Pares online en la LAN")
 
@@ -73,6 +74,13 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="node_id, display_name, o nombre mapeado cloud (opcional con --host)",
     )
+
+    p_reply = sub.add_parser(
+        "quick-reply", help="Responder desde un cuadro pequeño sin abrir el chat principal"
+    )
+    p_reply.add_argument("chat_id", type=int)
+    p_reply.add_argument("title", nargs="?", default="AidyChat")
+    p_reply.add_argument("preview", nargs="?", default="")
     p_send.add_argument("text", nargs="+", help="Mensaje")
     p_send.add_argument(
         "--host",
@@ -168,7 +176,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "ui":
         from .ui import run_ui
 
-        return run_ui()
+        return run_ui(open_target=args.open_target)
+
+    if args.cmd == "quick-reply":
+        from .quick_reply import run_quick_reply
+
+        return run_quick_reply(args.chat_id, args.title, args.preview)
 
     if args.cmd == "show-config":
         cfg = load_config()

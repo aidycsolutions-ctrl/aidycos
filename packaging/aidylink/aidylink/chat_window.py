@@ -92,6 +92,7 @@ class AidyChatWindow(Gtk.Window):
         apply_aidychat_branding(self)
         _install_style()
         self._chats: list[dict[str, Any]] = []
+        self._pending_notification_chat_id = 0
         self._active_chat: dict[str, Any] | None = None
         self._last_id: dict[int, int] = {}
         self._pending: list[dict[str, Any]] = []
@@ -278,6 +279,19 @@ class AidyChatWindow(Gtk.Window):
             if chat["chat_id"] == active_id or chat["chat_id"] == previous_id:
                 selected = row
         self.chat_list.show_all()
+        pending_chat_id = self._pending_notification_chat_id
+        if pending_chat_id:
+            pending_row = next(
+                (
+                    row for row in self.chat_list.get_children()
+                    if int(getattr(row, "chat_data", {}).get("chat_id") or 0)
+                    == pending_chat_id
+                ),
+                None,
+            )
+            if pending_row is not None:
+                self._pending_notification_chat_id = 0
+                selected = pending_row
         if selected:
             # Block signal re-entry that would rebuild the conversation.
             self.chat_list.handler_block_by_func(self._on_chat_selected)
@@ -286,7 +300,11 @@ class AidyChatWindow(Gtk.Window):
                 self._active_chat = getattr(selected, "chat_data", self._active_chat)
             finally:
                 self.chat_list.handler_unblock_by_func(self._on_chat_selected)
-        elif self._chats and self._active_chat is None:
+        elif (
+            self._chats
+            and self._active_chat is None
+            and not self._pending_notification_chat_id
+        ):
             self.chat_list.select_row(self.chat_list.get_row_at_index(0))
 
     def _filter_chats(self, *_args: object) -> None:
@@ -295,6 +313,31 @@ class AidyChatWindow(Gtk.Window):
             chat = getattr(row, "chat_data", {})
             name = str(chat.get("username") or "").casefold()
             row.set_visible(not query or query in name)
+
+    def open_notification_target(self, target: str) -> None:
+        """Open the cloud conversation identified by a notification."""
+        if not target.startswith("cloud:"):
+            return
+        try:
+            chat_id = int(target[6:])
+        except ValueError:
+            return
+        if chat_id <= 0:
+            return
+        if self.search.get_text():
+            self.search.set_text("")
+        row = next(
+            (
+                row for row in self.chat_list.get_children()
+                if int(getattr(row, "chat_data", {}).get("chat_id") or 0) == chat_id
+            ),
+            None,
+        )
+        if row is not None:
+            self.chat_list.select_row(row)
+        else:
+            self._pending_notification_chat_id = chat_id
+            self.refresh_chats()
 
     def _on_chat_selected(self, _list: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
         if row is None:
@@ -1520,7 +1563,9 @@ def shutil_which(program: str) -> str | None:
     return None
 
 
-def run_cloud_chat(*, raise_server: object | None = None) -> int:
+def run_cloud_chat(
+    *, raise_server: object | None = None, open_target: str = ""
+) -> int:
     from .notify import claim_ui_instance
 
     cfg = load_config()
@@ -1540,6 +1585,8 @@ def run_cloud_chat(*, raise_server: object | None = None) -> int:
     if callable(close):
         win.connect("destroy", lambda *_: close())
     win.show_all()
+    if open_target:
+        GLib.idle_add(win.open_notification_target, open_target)
     Gtk.main()
     if callable(close):
         close()

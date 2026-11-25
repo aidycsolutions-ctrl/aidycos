@@ -33,6 +33,8 @@ def notify(
     *,
     urgency: str = "normal",
     kind: str = "message",
+    target: str = "",
+    reply_chat_id: int | None = None,
 ) -> None:
     """Show a desktop notification with throttling.
 
@@ -66,8 +68,8 @@ def notify(
             _LAST_KEY = key
             _LAST_AT = now
 
-    # Chat alerts use replace-id (no --wait). Pairing keeps an Abrir action
-    # that focuses the existing window instead of spawning another process.
+    # User actions are handled by notify-send's ActionInvoked result and routed
+    # through the single-instance UI socket when an AidyChat window is open.
     printed_id = _notify_send(
         title,
         body,
@@ -75,10 +77,14 @@ def notify(
         replace_id=replace_id,
         with_action=(kind == "important"),
         action_label="Abrir AidyChat",
+        target=target,
+        reply_chat_id=reply_chat_id,
     )
     if printed_id:
         with _LOCK:
-            _REPLACE_ID = printed_id
+            # -1 means notify-send accepted the action notification but cannot
+            # return its notification id until the user closes/clicks it.
+            _REPLACE_ID = printed_id if printed_id > 0 else 0
             _LAST_KEY = key
             _LAST_AT = now
         return
@@ -87,20 +93,20 @@ def notify(
     LOGGER.info("notify: %s — %s", title, body)
 
 
-def raise_or_open_ui() -> bool:
+def raise_or_open_ui(target: str = "") -> bool:
     """Focus an existing AidyChat window; only launch a new one if needed."""
-    if _raise_existing_ui():
+    if _raise_existing_ui(target):
         return True
-    return _spawn_ui()
+    return _spawn_ui(target)
 
 
-def claim_ui_instance() -> "UiRaiseServer | None":
+def claim_ui_instance(open_target: str = "") -> "UiRaiseServer | None":
     """Claim the single UI raise socket.
 
     Returns a server to ``attach(window)`` when this process owns the UI.
     Returns ``None`` when another AidyChat window was raised (exit early).
     """
-    if _raise_existing_ui():
+    if _raise_existing_ui(open_target):
         return None
     server = UiRaiseServer()
     if not server.bind():
@@ -180,11 +186,14 @@ class UiRaiseServer:
                 with conn:
                     conn.settimeout(0.5)
                     try:
-                        data = conn.recv(64)
+                        data = conn.recv(512)
                     except OSError:
                         data = b""
-                    if b"raise" in data:
+                    request = data.decode("utf-8", errors="replace").strip()
+                    if request == "raise":
                         self._request_raise()
+                    elif request.startswith("open "):
+                        self._request_raise(request[5:].strip())
                     try:
                         conn.sendall(b"ok\n")
                     except OSError:
@@ -192,7 +201,7 @@ class UiRaiseServer:
             except OSError:
                 continue
 
-    def _request_raise(self) -> None:
+    def _request_raise(self, target: str = "") -> None:
         window = self._window
         if window is None:
             return
@@ -201,6 +210,9 @@ class UiRaiseServer:
 
             def _present() -> bool:
                 try:
+                    open_target = getattr(window, "open_notification_target", None)
+                    if target and callable(open_target):
+                        open_target(target)
                     present = getattr(window, "present", None)
                     if callable(present):
                         present()
@@ -216,15 +228,16 @@ class UiRaiseServer:
             LOGGER.debug("GLib raise failed", exc_info=True)
 
 
-def _raise_existing_ui() -> bool:
+def _raise_existing_ui(target: str = "") -> bool:
     sock_path = ui_raise_socket_path()
     if not sock_path.exists():
-        return _raise_via_wm()
+        return _raise_via_wm() if not target else False
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(0.6)
             sock.connect(str(sock_path))
-            sock.sendall(b"raise\n")
+            request = f"open {target}\n" if target else "raise\n"
+            sock.sendall(request.encode("utf-8"))
             try:
                 reply = sock.recv(16)
             except OSError:
@@ -239,7 +252,7 @@ def _raise_existing_ui() -> bool:
         sock_path.unlink(missing_ok=True)
     except OSError:
         pass
-    return _raise_via_wm()
+    return _raise_via_wm() if not target else False
 
 
 def _focus_command_found_window(completed: subprocess.CompletedProcess[str]) -> bool:
@@ -313,11 +326,14 @@ def _aidylink_bin() -> str:
     return "/usr/local/bin/aidylink"
 
 
-def _spawn_ui() -> bool:
+def _spawn_ui(target: str = "") -> bool:
     binary = _aidylink_bin()
+    command = [binary, "ui"]
+    if target:
+        command.extend(["--open-target", target])
     try:
         subprocess.Popen(
-            [binary, "ui"],
+            command,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
@@ -337,6 +353,8 @@ def _notify_send(
     replace_id: int = 0,
     with_action: bool = False,
     action_label: str = "Abrir",
+    target: str = "",
+    reply_chat_id: int | None = None,
 ) -> int:
     binary = shutil.which("notify-send")
     if not binary:
@@ -351,20 +369,27 @@ def _notify_send(
         "aidychat",
         "-h",
         "string:desktop-entry:aidychat",
-        "-e",
-        "-t",
-        "5000",
     ]
     if replace_id:
         cmd.extend(["-r", str(replace_id)])
     # -A implies --wait. Click runs raise_or_open_ui (focus existing first).
-    if with_action:
-        cmd.extend(["-A", f"open={action_label}"])
+    has_actions = with_action or bool(target)
+    # Action notifications remain in the desktop's notification center until
+    # invoked or dismissed. Transient notifications and short expiry prevent
+    # a reply action from being available when the user returns later.
+    cmd.extend(["-t", "0" if has_actions else "5000"])
+    if has_actions:
+        default_label = "Ver conversación" if target else action_label
+        cmd.extend(["-A", f"default={default_label}"])
+        if with_action:
+            cmd.extend(["-A", f"open={action_label}"])
+        if reply_chat_id:
+            cmd.extend(["-A", "reply=Responder"])
     else:
         cmd.append("-p")
     cmd.extend([title, body])
     try:
-        if with_action:
+        if has_actions:
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -373,11 +398,11 @@ def _notify_send(
             )
             threading.Thread(
                 target=_open_on_action,
-                args=(proc,),
+                args=(proc, target, reply_chat_id, title, body),
                 daemon=True,
                 name="aidychat-notify-action",
             ).start()
-            return replace_id or 1
+            return replace_id or -1
         out = subprocess.check_output(
             cmd,
             stderr=subprocess.DEVNULL,
@@ -389,17 +414,42 @@ def _notify_send(
         return 0
 
 
-def _open_on_action(proc: subprocess.Popen[bytes]) -> None:
+def _open_on_action(
+    proc: subprocess.Popen[bytes],
+    target: str = "",
+    reply_chat_id: int | None = None,
+    title: str = "AidyChat",
+    body: str = "",
+) -> None:
     try:
-        raw = proc.communicate(timeout=120)[0] or b""
+        raw = proc.communicate(timeout=86400)[0] or b""
     except (OSError, subprocess.TimeoutExpired):
         try:
             proc.kill()
         except OSError:
             pass
         return
-    if raw.strip() == b"open":
-        raise_or_open_ui()
+    action = raw.decode("utf-8", errors="replace").strip()
+    if action in {"default", "open"}:
+        raise_or_open_ui(target)
+    elif action == "reply" and reply_chat_id:
+        _spawn_quick_reply(reply_chat_id, title, body)
+
+
+def _spawn_quick_reply(chat_id: int, title: str, body: str) -> bool:
+    binary = _aidylink_bin()
+    try:
+        subprocess.Popen(
+            [binary, "quick-reply", "--", str(int(chat_id)), title, body],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            env=os.environ.copy(),
+        )
+        return True
+    except OSError:
+        LOGGER.debug("could not start quick reply", exc_info=True)
+        return False
 
 
 def _gdbus(title: str, body: str, *, replace_id: int = 0) -> bool:
