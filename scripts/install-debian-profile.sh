@@ -28,6 +28,7 @@ Vista previa del perfil AidyCOS para Debian 13:
   * Preparar sudo/curl en instalaciones mínimas (sin escritorio) si hace falta.
   * Verificar fuentes oficiales de Debian y añadir trixie-backports si faltan paquetes.
   * Instalar el conjunto de paquetes del perfil Hyprland/SDDM/Wayland/Jugoo.
+  * Instalar AidyC Explorer con Nemo, su icono en GTK y la acción segura para etiquetar USB.
   * Instalar la CLI AidyCOS y Jugoo para el usuario actual.
   * Configurar el comprobador diario de actualizaciones de AidyCOS, con confirmación antes de aplicar.
   * Instalar el comando y acceso de menú para buscar actualizaciones Linux de AidyC.
@@ -332,6 +333,8 @@ if [[ "${PROFILE_REFRESH}" == 1 ]] && desktop_packages_present; then
 else
   "${HOME}/.local/bin/aidycos" install aidyc-desktop --apply
 fi
+# Keep the per-user launcher/action present on clean installs and AidyCOS updates.
+"${ROOT}/scripts/install-aidyc-explorer.sh" --preserve-modified
 apt_install_missing -t trixie-backports \
   hyprland xdg-desktop-portal-hyprland hyprland-guiutils hyprpolkitagent
 apt_install_missing plymouth plymouth-themes

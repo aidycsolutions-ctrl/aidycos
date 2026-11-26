@@ -1,0 +1,13 @@
+name = "aidyc-explorer"
+description = "AidyC Explorer: gestor de archivos Nemo con soporte de almacenamiento USB"
+
+[packages]
+apt = [
+  "nemo",
+  "udisks2",
+  "dosfstools",
+  "exfatprogs",
+  "ntfs-3g",
+  "libglib2.0-bin",
+  "zenity",
+]
