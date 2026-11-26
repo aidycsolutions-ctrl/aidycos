@@ -21,6 +21,14 @@ class UpdateFastPathTests(unittest.TestCase):
         self.assertIn("INVOCATION_ID", text)
         self.assertLess(text.index("INVOCATION_ID"), text.index("Ya está actualizado"))
 
+    def test_updater_retries_transient_github_timeouts(self) -> None:
+        text = UPDATER.read_text(encoding="utf-8")
+        # Both the metadata check and the archive download hit GitHub; a single
+        # slow connect (curl 28) used to abort the whole update.
+        self.assertEqual(text.count("--retry 3"), 2)
+        self.assertIn("api.github.com", text)
+        self.assertIn("codeload.github.com", text)
+
     def test_updater_asks_password_without_a_console(self) -> None:
         text = UPDATER.read_text(encoding="utf-8")
         self.assertIn("SUDO_ASKPASS", text)

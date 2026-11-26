@@ -9,9 +9,10 @@ LEGACY_ICON_SHA256="3ef41ea2c06d988f26b327c046a22a64ac63bfa3e0daafd2fe4b1508a538
 FILES=(
   "${DATA_HOME}/nemo/actions/aidyc-change-usb-label.nemo_action|${SOURCE_DIR}/aidyc-change-usb-label.nemo_action"
   "${DATA_HOME}/nemo/actions/change_usb_label.py|${SOURCE_DIR}/change_usb_label.py"
-  "${DATA_HOME}/applications/aidyc-explorer.desktop|${SOURCE_DIR}/aidyc-explorer.desktop"
   "${DATA_HOME}/icons/hicolor/512x512/apps/aidyc-explorer.png|${SOURCE_DIR}/aidyc-explorer.png"
 )
+# Lanzador de Nemo que duplicaba AidyCExplorer en versiones anteriores.
+DUPLICATE_LAUNCHER="${DATA_HOME}/applications/aidyc-explorer.desktop"
 removed=0
 
 for item in "${FILES[@]}"; do
@@ -25,6 +26,13 @@ for item in "${FILES[@]}"; do
     fi
   fi
 done
+
+if [[ -f "${DUPLICATE_LAUNCHER}" ]] \
+  && grep -qx 'Name=AidyC Explorer' "${DUPLICATE_LAUNCHER}" \
+  && grep -qx 'Exec=nemo %U' "${DUPLICATE_LAUNCHER}"; then
+  rm -- "${DUPLICATE_LAUNCHER}"
+  removed=1
+fi
 
 if [[ -f "${LEGACY_ICON}" ]]; then
   current_hash="$(sha256sum "${LEGACY_ICON}" | cut -d' ' -f1)"

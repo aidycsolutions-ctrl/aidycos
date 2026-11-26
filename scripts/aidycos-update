@@ -215,7 +215,7 @@ if gui_available && command -v notify-send >/dev/null 2>&1; then
 fi
 
 release_json="$(curl --fail --silent --show-error --location \
-  --connect-timeout 10 --max-time 30 \
+  --connect-timeout 20 --max-time 30 --retry 3 --retry-delay 3 \
   -H 'Accept: application/vnd.github+json' \
   -H 'User-Agent: AidyCOS-updater' \
   "https://api.github.com/repos/${REPO}/commits/${BRANCH}")" || {
@@ -367,7 +367,7 @@ run_update() {
   local archive source_dir installer
   archive="\${WORKDIR}/aidycos.tar.gz"
   curl --fail --show-error --location \
-    --connect-timeout 10 --max-time 180 \
+    --connect-timeout 20 --max-time 180 --retry 3 --retry-delay 5 \
     "https://codeload.github.com/\${REPO}/tar.gz/\${LATEST}" -o "\${archive}" || return 1
   echo "Descarga terminada. Preparando instalador…"
   tar -xzf "\${archive}" -C "\${WORKDIR}" || return 1

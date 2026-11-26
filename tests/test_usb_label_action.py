@@ -15,12 +15,13 @@ class UsbLabelActionTests(unittest.TestCase):
         action.read(Path(__file__).parents[1] / "aidycos/nemo_actions/aidyc-change-usb-label.nemo_action")
         self.assertEqual(action["Nemo Action"]["Exec"], "<change_usb_label.py %D>")
 
-    def test_launcher_is_branded_and_uses_nemo(self):
-        launcher = ConfigParser(interpolation=None)
-        launcher.read(Path(__file__).parents[1] / "aidycos/nemo_actions/aidyc-explorer.desktop")
-        self.assertEqual(launcher["Desktop Entry"]["Name"], "AidyC Explorer")
-        self.assertEqual(launcher["Desktop Entry"]["Exec"], "nemo %U")
-        self.assertEqual(launcher["Desktop Entry"]["Icon"], "aidyc-explorer")
+    def test_nemo_launcher_is_not_installed_as_second_explorer(self):
+        # AidyCExplorer is the only explorer in the menu; the Nemo launcher duplicated it.
+        root = Path(__file__).parents[1]
+        self.assertFalse((root / "aidycos/nemo_actions/aidyc-explorer.desktop").exists())
+        installer = (root / "scripts/install-aidyc-explorer.sh").read_text(encoding="utf-8")
+        self.assertNotIn("aidyc-explorer.desktop|", installer)
+        self.assertIn("DUPLICATE_LAUNCHER", installer)
 
     def test_brand_icon_is_valid_png(self):
         icon = Path(__file__).parents[1] / "aidycos/nemo_actions/aidyc-explorer.png"

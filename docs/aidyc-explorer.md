@@ -1,6 +1,6 @@
 # AidyC Explorer
 
-AidyC Explorer es la integración de AidyCOS basada en Nemo: el menú muestra un lanzador **AidyC Explorer** con icono propio y Nemo aporta la ventana de archivos. Se incluye en el perfil AidyCOS para Debian 13 y utiliza el escritorio que ya esté instalado.
+La integración de AidyCOS con Nemo añade la acción **Cambiar etiqueta de la USB…** al menú de Nemo. El explorador que aparece en el menú y se abre con `Super+E` es **AidyCExplorer**; esta integración no añade un segundo lanzador. Se incluye en el perfil AidyCOS para Debian 13 y utiliza el escritorio que ya esté instalado.
 
 ## Alcance de esta integración
 
@@ -33,7 +33,7 @@ El perfil de AidyCOS integra el lanzador y la acción de forma reversible en el 
 ./scripts/install-aidyc-explorer.sh
 ```
 
-El instalador copia, solo para el usuario actual, un lanzador con el nombre y el icono de AidyC Explorer, la acción personalizada de Nemo y su ayudante. Abre **AidyC Explorer** desde el menú de aplicaciones. Si Nemo ya estaba abierto, ciérralo y vuelve a iniciarlo para cargar la acción.
+El instalador copia, solo para el usuario actual, la acción personalizada de Nemo, su ayudante y el icono. No instala lanzador propio: si queda el duplicado **AidyC Explorer** de una versión anterior, lo retira. Para abrir archivos usa **AidyCExplorer** (`Super+E`) y, para la etiqueta USB, abre Nemo. Si Nemo ya estaba abierto, ciérralo y vuelve a iniciarlo para cargar la acción.
 
 Conecta y abre la USB. Haz clic derecho sobre un archivo o carpeta que esté dentro de la memoria y elige **Cambiar etiqueta de la USB…**. La acción pregunta el nuevo nombre, pide confirmación, desmonta sin forzar, cambia solo la etiqueta con UDisks2 y vuelve a montar la unidad. Si hay archivos o ventanas abiertas que impiden desmontar, cancela la operación y cierra esos archivos; la acción no fuerza el desmontaje.
 

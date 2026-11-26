@@ -18,10 +18,12 @@ APP_DIR="${DATA_HOME}/applications"
 ICON_DIR="${DATA_HOME}/icons/hicolor/512x512/apps"
 LEGACY_ICON="${DATA_HOME}/icons/hicolor/scalable/apps/aidyc-explorer.svg"
 LEGACY_ICON_SHA256="3ef41ea2c06d988f26b327c046a22a64ac63bfa3e0daafd2fe4b1508a538a4c9"
+# Lanzador de Nemo que duplicaba AidyCExplorer en el menú. Ya no se instala;
+# si quedó de una versión anterior, se retira.
+DUPLICATE_LAUNCHER="${APP_DIR}/aidyc-explorer.desktop"
 FILES=(
   "${ACTION_DIR}/aidyc-change-usb-label.nemo_action|${SOURCE_DIR}/aidyc-change-usb-label.nemo_action|0644"
   "${ACTION_DIR}/change_usb_label.py|${SOURCE_DIR}/change_usb_label.py|0755"
-  "${APP_DIR}/aidyc-explorer.desktop|${SOURCE_DIR}/aidyc-explorer.desktop|0644"
   "${ICON_DIR}/aidyc-explorer.png|${SOURCE_DIR}/aidyc-explorer.png|0644"
 )
 
@@ -40,6 +42,13 @@ if [[ -f "${LEGACY_ICON}" ]]; then
   else
     echo "Se conserva el icono anterior ${LEGACY_ICON} porque fue modificado." >&2
   fi
+fi
+
+if [[ -f "${DUPLICATE_LAUNCHER}" ]] \
+  && grep -qx 'Name=AidyC Explorer' "${DUPLICATE_LAUNCHER}" \
+  && grep -qx 'Exec=nemo %U' "${DUPLICATE_LAUNCHER}"; then
+  rm -- "${DUPLICATE_LAUNCHER}"
+  echo "Se retiró el lanzador duplicado AidyC Explorer; el menú usa AidyCExplorer." >&2
 fi
 
 if [[ "${needs_replace}" == 1 && "${PRESERVE_MODIFIED}" == 1 ]]; then
@@ -66,7 +75,6 @@ for item in "${FILES[@]}"; do
   install -m "${mode}" "${source}" "${target}"
 done
 
-echo "AidyC Explorer quedó integrado para este usuario."
-echo "El menú de aplicaciones mostrará AidyC Explorer; Nemo seguirá siendo el gestor que se ejecuta."
-echo "Se usó el logo AidyC Explorer proporcionado."
+echo "La acción de etiqueta USB quedó integrada en Nemo para este usuario."
+echo "El explorador del menú es AidyCExplorer (Super+E); no se instala un segundo lanzador."
 echo "Cierra y vuelve a abrir Nemo para cargar la acción de etiqueta USB."
