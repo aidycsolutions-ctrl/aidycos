@@ -104,7 +104,7 @@ class JugooDeploymentTests(unittest.TestCase):
         self.assertIn("seed-desktop-defaults.py", installer)
         self.assertIn("bind = ALT, F4, exec, jugoo action session", installer)
         self.assertIn("bind = SUPER, SPACE, exec, jugoo action launcher", installer)
-        self.assertIn("bind = SUPER, E, exec, /usr/bin/env GDK_BACKEND=wayland /usr/bin/thunar", installer)
+        self.assertIn("bind = SUPER, E, exec, aidycexplorer", installer)
         self.assertIn("aidycos-download-dir", installer)
         self.assertIn("exec-once = /usr/local/bin/aidycos-download-dir ensure", installer)
         self.assertIn("exec-once = /usr/local/bin/aidycos-download-dir watch", installer)

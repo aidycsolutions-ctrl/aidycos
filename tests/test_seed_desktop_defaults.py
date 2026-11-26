@@ -136,6 +136,48 @@ class SeedDesktopDefaultsTests(unittest.TestCase):
                     seed.ensure_desktop_icons(icons_path, home=home, reset=False, clear=False)
                 )
 
+    def test_home_folder_shortcut_becomes_aidycexplorer(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            home = Path(temp)
+            data = home / ".local" / "share" / "waybar-shell"
+            apps = home / ".local" / "share" / "applications"
+            data.mkdir(parents=True)
+            apps.mkdir(parents=True)
+            (apps / "aidycexplorer.desktop").write_text(
+                "[Desktop Entry]\nType=Application\nName=AidyCExplorer\n",
+                encoding="utf-8",
+            )
+            icons_path = data / "desktop-icons.json"
+            icons_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "icons": [
+                            {
+                                "id": "files",
+                                "name": "Archivos",
+                                "type": "directory",
+                                "target": str(home),
+                                "icon": "user-home",
+                                "x": 48,
+                                "y": 48,
+                            }
+                        ],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch.dict(os.environ, {"HOME": str(home)}, clear=False):
+                self.assertTrue(
+                    seed.ensure_desktop_icons(icons_path, home=home, reset=False, clear=False)
+                )
+            payload = json.loads(icons_path.read_text(encoding="utf-8"))
+            explorer = next(item for item in payload["icons"] if item["name"] == "AidyCExplorer")
+            self.assertEqual(explorer["target"], "aidycexplorer")
+            self.assertEqual(explorer["icon"], "aidycexplorer")
+            self.assertNotIn("Archivos", [item["name"] for item in payload["icons"]])
+
 
 if __name__ == "__main__":
     unittest.main()

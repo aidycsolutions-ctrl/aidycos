@@ -85,7 +85,7 @@ def default_icons(home: Path) -> list[dict[str, object]]:
         ("AidyShip", "application", "aidyship", "aidyship"),
         ("AidyShare", "application", "aidyshare", "aidyshare"),
         ("Firefox", "application", "firefox-esr", "firefox-esr"),
-        ("Archivos", "directory", str(home), "user-home"),
+        ("AidyCExplorer", "application", "aidycexplorer", "aidycexplorer"),
         ("Terminal", "application", "foot", "utilities-terminal"),
         ("Calculadora", "application", "aidycalc", "aidycalc"),
         ("Instalar paquetes", "application", "aidycos-paquetes", "system-software-install"),
@@ -148,12 +148,44 @@ def _icon_keys(item: dict) -> set[str]:
     return keys
 
 
-def merge_missing_default_icons(existing: list, defaults: list[dict[str, object]]) -> list:
+def _is_stock_files_icon(item: dict, home: Path) -> bool:
+    name = str(item.get("name") or "").strip().casefold()
+    if name not in {"archivos", "files"}:
+        return False
+    if str(item.get("type") or "") != "directory":
+        return False
+    try:
+        target = Path(str(item.get("target") or "")).expanduser().resolve()
+        return target == home.resolve()
+    except OSError:
+        return False
+
+
+def _rewrite_stock_files_icon(item: dict, home: Path) -> bool:
+    """Turn the old home-folder shortcut into AidyCExplorer once the app exists."""
+    if not _app_exists("aidycexplorer") or not _is_stock_files_icon(item, home):
+        return False
+    item["name"] = "AidyCExplorer"
+    item["type"] = "application"
+    item["target"] = "aidycexplorer"
+    item["icon"] = "aidycexplorer"
+    return True
+
+
+def merge_missing_default_icons(
+    existing: list,
+    defaults: list[dict[str, object]],
+    *,
+    home: Path,
+) -> tuple[list, bool]:
     """Append default shortcuts that are not already present by name/target."""
     present: set[str] = set()
     merged: list = []
+    changed = False
     for raw in existing:
         if isinstance(raw, dict):
+            if _rewrite_stock_files_icon(raw, home):
+                changed = True
             present |= _icon_keys(raw)
             merged.append(raw)
 
@@ -175,8 +207,9 @@ def merge_missing_default_icons(existing: list, defaults: list[dict[str, object]
         entry["y"] = y
         merged.append(entry)
         present |= keys
+        changed = True
         y += 104
-    return merged
+    return merged, changed
 
 
 def ensure_desktop_icons(
@@ -199,8 +232,8 @@ def ensure_desktop_icons(
     existing = payload.get("icons") if isinstance(payload.get("icons"), list) else []
     defaults = default_icons(home)
     if existing and not reset:
-        merged = merge_missing_default_icons(existing, defaults)
-        if merged == existing:
+        merged, changed = merge_missing_default_icons(existing, defaults, home=home)
+        if not changed:
             return False
         payload = {"version": 1, "icons": merged}
         path.write_text(

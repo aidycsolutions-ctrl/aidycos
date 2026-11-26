@@ -26,6 +26,7 @@ KNOWN_APPLICATION_NAMES = {
     "aidycai": "AIDYCAI",
     "aidychat": "AidyChat",
     "aidycalc": "Calculadora",
+    "aidycexplorer": "AidyCExplorer",
     "aidycos-onlyoffice": "OnlyOffice",
     "onlyoffice": "OnlyOffice",
     "org.onlyoffice.desktopeditors": "OnlyOffice",

@@ -373,10 +373,15 @@ run_update() {
   tar -xzf "\${archive}" -C "\${WORKDIR}" || return 1
   source_dir="\$(find "\${WORKDIR}" -mindepth 1 -maxdepth 1 -type d -print -quit)"
   installer="\${source_dir}/scripts/install-debian-profile.sh"
-  if [[ ! -x "\${installer}" ]]; then
+  # codeload.github.com drops the executable bit, so -x reports a false miss.
+  if [[ ! -f "\${installer}" ]]; then
+    installer="\$(find "\${WORKDIR}" -path '*/scripts/install-debian-profile.sh' -type f -print -quit)"
+  fi
+  if [[ ! -f "\${installer}" ]]; then
     echo "La revisión descargada no contiene el instalador del perfil." >&2
     return 1
   fi
+  chmod +x "\${installer}" 2>/dev/null || true
   echo "Aplicando el perfil…"
   bash "\${installer}" --no-reboot || return 1
   mkdir -p "\$(dirname "\${MARKER}")"

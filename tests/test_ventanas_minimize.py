@@ -409,6 +409,7 @@ class ZoneRectTests(unittest.TestCase):
     def test_chrome_auto_max_class(self) -> None:
         self.assertTrue(ventanas._AUTO_MAX_CLASS.match("google-chrome"))
         self.assertTrue(ventanas._AUTO_MAX_CLASS.match("thunar"))
+        self.assertTrue(ventanas._AUTO_MAX_CLASS.match("aidycexplorer"))
         self.assertTrue(ventanas._AUTO_MAX_CLASS.match("firefox"))
 
 

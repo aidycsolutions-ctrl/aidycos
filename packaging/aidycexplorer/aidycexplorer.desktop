@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=AidyCExplorer
+GenericName=Explorador de archivos
+Comment=Explorador de archivos de AidyCOS
+Exec=aidycexplorer %U
+TryExec=aidycexplorer
+Icon=aidycexplorer
+Terminal=false
+Categories=System;FileManager;Utility;
+MimeType=inode/directory;
+StartupNotify=true
+Keywords=archivos;files;explorador;carpetas;folder;aidycexplorer;
+StartupWMClass=aidycexplorer

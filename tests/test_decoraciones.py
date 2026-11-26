@@ -30,6 +30,7 @@ class DecoracionesTests(unittest.TestCase):
     def test_non_csd_keeps_hyprbars(self) -> None:
         self.assertFalse(decoraciones.client_draws_title_buttons(class_name="foot"))
         self.assertFalse(decoraciones.client_draws_title_buttons(class_name="thunar"))
+        self.assertFalse(decoraciones.client_draws_title_buttons(class_name="aidycexplorer"))
         self.assertFalse(decoraciones.client_draws_title_buttons(class_name="aidychat"))
         # libadwaita in maps alone must not hide hyprbars (zenity false positive).
         self.assertFalse(

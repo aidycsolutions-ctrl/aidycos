@@ -362,6 +362,26 @@ restore_network() {
   log "Red: drop-ins AidyCOS quitados; interfaces restauradas si había respaldo."
 }
 
+clear_explorer_mime() {
+  local user_mime system_mime
+  user_mime="${XDG_CONFIG_HOME:-${HOME}/.config}/mimeapps.list"
+  system_mime="$(sys /etc/xdg/mimeapps.list)"
+  if [[ -f "${user_mime}" ]] && grep -q '^inode/directory=aidycexplorer\.desktop$' "${user_mime}"; then
+    if [[ "${DRY_RUN}" == 1 ]]; then
+      echo "[dry-run] quitar AidyCExplorer de ${user_mime}"
+    else
+      sed -i '/^inode\/directory=aidycexplorer\.desktop$/d' "${user_mime}"
+    fi
+  fi
+  if [[ -f "${system_mime}" ]] && grep -q '^inode/directory=aidycexplorer\.desktop$' "${system_mime}"; then
+    if [[ "${DRY_RUN}" == 1 ]]; then
+      echo "[dry-run] quitar AidyCExplorer de ${system_mime}"
+    else
+      run_root sed -i '/^inode\/directory=aidycexplorer\.desktop$/d' "${system_mime}"
+    fi
+  fi
+}
+
 remove_system_binaries() {
   local path
   for path in \
@@ -371,6 +391,7 @@ remove_system_binaries() {
     /usr/local/bin/aidylink \
     /usr/local/bin/aidyship \
     /usr/local/bin/aidycalc \
+    /usr/local/bin/aidycexplorer \
     /usr/local/bin/aidycos-onlyoffice \
     /usr/local/bin/aidycos-cajon \
     /usr/local/bin/aidycos-download-dir \
@@ -387,16 +408,19 @@ remove_system_binaries() {
   remove_path "$(sys /usr/share/applications/aidychat.desktop)"
   remove_path "$(sys /usr/share/applications/aidyship.desktop)"
   remove_path "$(sys /usr/share/applications/aidycalc.desktop)"
+  remove_path "$(sys /usr/share/applications/aidycexplorer.desktop)"
   remove_path "$(sys /usr/share/pixmaps/aidyc.png)"
   remove_path "$(sys /usr/share/pixmaps/aidychat.png)"
   remove_path "$(sys /usr/share/pixmaps/aidyship.png)"
   remove_path "$(sys /usr/share/pixmaps/aidycalc.png)"
+  remove_path "$(sys /usr/share/pixmaps/aidycexplorer.png)"
   local size
   for size in 16 24 32 48 64 128 256 512; do
     remove_path "$(sys /usr/share/icons/hicolor/${size}x${size}/apps/aidyc.png)"
     remove_path "$(sys /usr/share/icons/hicolor/${size}x${size}/apps/aidychat.png)"
     remove_path "$(sys /usr/share/icons/hicolor/${size}x${size}/apps/aidyship.png)"
     remove_path "$(sys /usr/share/icons/hicolor/${size}x${size}/apps/aidycalc.png)"
+    remove_path "$(sys /usr/share/icons/hicolor/${size}x${size}/apps/aidycexplorer.png)"
   done
 }
 
@@ -418,6 +442,7 @@ restore_or_remove_jugoo() {
   remove_path "$(sys /opt/aidyc/aidylink)"
   remove_path "$(sys /opt/aidyc/aidyship)"
   remove_path "$(sys /opt/aidyc/aidycalc)"
+  remove_path "$(sys /opt/aidyc/aidycexplorer)"
   # Keep /opt/aidyc if AidyC or other apps remain.
   if [[ -d "$(sys /opt/aidyc)" ]]; then
     if [[ -z "$(find "$(sys /opt/aidyc)" -mindepth 1 -maxdepth 1 2>/dev/null | head -n1)" ]]; then
@@ -512,6 +537,7 @@ remove_user_bits() {
     aidychat.desktop \
     aidyship.desktop \
     aidycalc.desktop \
+    aidycexplorer.desktop \
     aidylink.desktop
   do
     remove_path "${apps}/${name}"
@@ -526,6 +552,7 @@ remove_user_bits() {
     remove_path "${icons}/${size}x${size}/apps/aidychat.png"
     remove_path "${icons}/${size}x${size}/apps/aidyship.png"
     remove_path "${icons}/${size}x${size}/apps/aidycalc.png"
+    remove_path "${icons}/${size}x${size}/apps/aidycexplorer.png"
   done
 
   for name in \
@@ -536,7 +563,8 @@ remove_user_bits() {
     aidycos-uninstall \
     aidylink \
     aidyship \
-    aidycalc
+    aidycalc \
+    aidycexplorer
   do
     # Prefer restoring user jugoo backup if present.
     if [[ "${name}" == jugoo && -e "${bin_dir}/jugoo.aidycos-backup" ]]; then
@@ -671,6 +699,7 @@ maybe_remove_packages
 restore_sddm_and_pam
 restore_boot
 restore_network
+clear_explorer_mime
 remove_system_binaries
 restore_or_remove_jugoo
 restore_hyprland_user

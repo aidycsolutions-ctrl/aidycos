@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+if [ -d /opt/aidyc/aidycexplorer ]; then
+  ROOT=/opt/aidyc/aidycexplorer
+elif [ -d "${HOME}/.local/share/aidycexplorer" ]; then
+  ROOT="${HOME}/.local/share/aidycexplorer"
+else
+  echo "AidyCExplorer no está instalado." >&2
+  exit 1
+fi
+export PYTHONPATH="${ROOT}${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m aidycexplorer "$@"

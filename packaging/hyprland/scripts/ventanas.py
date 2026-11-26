@@ -56,7 +56,7 @@ SHELL_TOP_MIN = 57
 # Apps that should open snapped to the work area under the Jugoo bar.
 _AUTO_MAX_CLASS = re.compile(
     r"^(firefox(?:-esr)?|org\.mozilla\.firefox|google-chrome(?:-[\w-]+)?|chrome-[\w-]+|"
-    r"chromium(?:-browser)?|thunar|org\.xfce\.thunar)$",
+    r"chromium(?:-browser)?|thunar|org\.xfce\.thunar|aidycexplorer)$",
     re.IGNORECASE,
 )
 # CSD apps: never leave them in compositor maximize (fs=1) or they hide

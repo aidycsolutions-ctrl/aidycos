@@ -36,11 +36,12 @@ Vista previa del perfil AidyCOS para Debian 13:
   * Instalar AidyShip (commit/push GitHub con gh por usuario), icono de menú y atajo Super+G.
   * Instalar AidyShare (respaldo a AidyCShare del negocio con login AidyC).
   * Instalar Calculadora (aritmética, porcentajes, memoria, historial y científicas) y el atajo Super+K.
+  * Instalar AidyCExplorer como explorador de archivos (Super+E) y abrir las carpetas con él.
   * Habilitar NetworkManager, UPower y BlueZ para Wi-Fi, batería y Bluetooth de Jugoo.
   * Migrar Wi-Fi de ifupdown (instalador Debian) a NetworkManager para que Jugoo no lo vea como LAN.
   * Instalar librsvg2-common para que los iconos symbolic SVG de Adwaita no salgan como rectángulos.
   * Instalar los ajustes de Jugoo para volumen, fondo de escritorio, iconos y atajos.
-  * Sembrar fondo AidyCOS e iconos del escritorio (AidyChat, Firefox, Archivos, Terminal, Calculadora, paquetes, OnlyOffice).
+  * Sembrar fondo AidyCOS e iconos del escritorio (AidyChat, Firefox, AidyCExplorer, Terminal, Calculadora, paquetes, OnlyOffice).
   * Instalar Firefox ESR como navegador por defecto del perfil.
   * Instalar Synaptic, Flatpak/Flathub y el agente Polkit para descargar OnlyOffice u otras apps.
   * Instalar udisks2/gvfs/gvfs-fuse/thunar-volman, activar automount y thunar --daemon para USB.
@@ -984,6 +985,68 @@ install_aidyshare() {
 }
 install_aidyshare
 
+install_aidycexplorer() {
+  local explorer_dir=/opt/aidyc/aidycexplorer
+  local desktop_dir="${HOME}/.local/share/applications"
+  local desktop_entry="${ROOT}/packaging/aidycexplorer/aidycexplorer.desktop"
+  local icon_size
+  if ! dpkg-query -W -f='${db:Status-Status}' python3-gi 2>/dev/null | grep -qx 'installed'; then
+    sudo apt-get install -y --no-install-recommends python3-gi gir1.2-gtk-3.0
+  fi
+  sudo install -d -m 0755 "${explorer_dir}/aidycexplorer" /usr/local/bin /usr/share/applications /etc/xdg
+  sudo install -m 0644 "${ROOT}/packaging/aidycexplorer/aidycexplorer/"*.py "${explorer_dir}/aidycexplorer/"
+  sudo install -m 0644 "${ROOT}/packaging/aidycexplorer/README.md" "${explorer_dir}/README.md"
+  if [[ -f "${ROOT}/packaging/aidycexplorer/aidycexplorer.png" ]]; then
+    sudo install -D -m 0644 "${ROOT}/packaging/aidycexplorer/aidycexplorer.png" "${explorer_dir}/aidycexplorer.png"
+    sudo install -D -m 0644 "${ROOT}/packaging/aidycexplorer/aidycexplorer.png" /usr/share/pixmaps/aidycexplorer.png
+  fi
+  sudo install -m 0755 "${ROOT}/packaging/aidycexplorer/aidycexplorer-wrapper" /usr/local/bin/aidycexplorer
+  sudo install -m 0644 "${desktop_entry}" /usr/share/applications/aidycexplorer.desktop
+  for icon_size in 16 24 32 48 64 128 256 512; do
+    if [[ -f "${ROOT}/packaging/aidycexplorer/icons/aidycexplorer-${icon_size}.png" ]]; then
+      sudo install -D -m 0644 \
+        "${ROOT}/packaging/aidycexplorer/icons/aidycexplorer-${icon_size}.png" \
+        "/usr/share/icons/hicolor/${icon_size}x${icon_size}/apps/aidycexplorer.png"
+    fi
+  done
+  install -d "${desktop_dir}" "${HOME}/.local/share/icons/hicolor" "${HOME}/.config"
+  install -m 0644 "${desktop_entry}" "${desktop_dir}/aidycexplorer.desktop"
+  for icon_size in 16 24 32 48 64 128 256 512; do
+    if [[ -f "${ROOT}/packaging/aidycexplorer/icons/aidycexplorer-${icon_size}.png" ]]; then
+      install -D -m 0644 \
+        "${ROOT}/packaging/aidycexplorer/icons/aidycexplorer-${icon_size}.png" \
+        "${HOME}/.local/share/icons/hicolor/${icon_size}x${icon_size}/apps/aidycexplorer.png"
+    fi
+  done
+  python3 - "${ROOT}" "${HOME}/.config/mimeapps.list" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "packaging" / "aidycexplorer"))
+from aidycexplorer.mime import set_directory_handler
+
+set_directory_handler(Path(sys.argv[2]))
+PY
+  sudo python3 - "${ROOT}" /etc/xdg/mimeapps.list <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "packaging" / "aidycexplorer"))
+from aidycexplorer.mime import set_directory_handler
+
+set_directory_handler(Path(sys.argv[2]))
+PY
+  refresh_icon_cache sudo /usr/share/icons/hicolor
+  refresh_icon_cache user "${HOME}/.local/share/icons/hicolor"
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    sudo update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+    update-desktop-database "${desktop_dir}" >/dev/null 2>&1 || true
+  fi
+  if [[ "${PROFILE_REFRESH}" != 1 ]]; then
+    echo "AidyCExplorer instalado. Ábrelo desde el menú o con Super+E."
+  fi
+}
+
 install_aidycalc() {
   local aidycalc_dir=/opt/aidyc/aidycalc
   local desktop_dir="${HOME}/.local/share/applications"
@@ -1028,6 +1091,8 @@ install_aidycalc() {
   fi
 }
 install_aidycalc
+install_aidycexplorer
+python3 "${ROOT}/scripts/seed-desktop-defaults.py" || true
 
 CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
 HYPR_DIR="${CONFIG_HOME}/hypr"
@@ -1102,7 +1167,7 @@ input {
     kb_file = ~/.config/hypr/aidycos-keymap.xkb
 }
 bind = SUPER, SPACE, exec, jugoo action launcher
-bind = SUPER, E, exec, /usr/bin/env GDK_BACKEND=wayland /usr/bin/thunar
+bind = SUPER, E, exec, aidycexplorer
 bind = SUPER, G, exec, aidyship ui
 bind = SUPER, K, exec, aidycalc ui
 bind = , Print, exec, ~/.local/bin/captura.sh
@@ -1207,7 +1272,7 @@ EOF
     fi
     if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*E,' "${HYPR_AIDYCOS_CONF}" \
        && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*E,' "${HYPR_CONF}"; }; then
-      printf 'bind = SUPER, E, exec, /usr/bin/env GDK_BACKEND=wayland /usr/bin/thunar\n' >>"${HYPR_AIDYCOS_CONF}"
+      printf 'bind = SUPER, E, exec, aidycexplorer\n' >>"${HYPR_AIDYCOS_CONF}"
     fi
     if ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*,[[:space:]]*Print,' "${HYPR_AIDYCOS_CONF}" \
        && { [[ ! -f "${HYPR_CONF}" ]] || ! grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*,[[:space:]]*Print,' "${HYPR_CONF}"; }; then
@@ -1266,6 +1331,13 @@ EOF
     fi
   fi
 fi
+
+# Super+E used to launch Thunar. Point it at AidyCExplorer on every profile refresh.
+for hypr_file in "${HYPR_AIDYCOS_CONF}" "${HYPR_CONF}"; do
+  if [[ -f "${hypr_file}" ]] && grep -qE '^[[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*E,.*thunar' "${hypr_file}"; then
+    sed -i -E 's|^([[:space:]]*bind[[:space:]]*=[[:space:]]*SUPER,[[:space:]]*E,[[:space:]]*exec,).*|\1 aidycexplorer|' "${hypr_file}"
+  fi
+done
 
 # Load arrange binds once: prefer hyprland.conf, else aidycos.conf (never both).
 if grep -qF 'source = ~/.config/hypr/config/jugoo_ventanas.conf' "${HYPR_CONF}" 2>/dev/null; then
