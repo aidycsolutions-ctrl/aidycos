@@ -950,6 +950,90 @@ def ensure_escpos_printer(
     )
 
 
+# Roll paper the browser should offer by default: 58 mm wide, 210 mm long.
+# PPDs for XP-58 clones ship with 58x65 mm first, so Chromium/Firefox end up
+# on a tiny page or fall back to Letter.
+_RECEIPT_PAGESIZE_RE = re.compile(
+    r"^(?:X\d+MMY210MM|w\d+h595|5[78](?:mm)?x210(?:mm)?)$",
+    re.IGNORECASE,
+)
+
+
+def choose_receipt_page_size(lpoptions_text: str) -> tuple[str, bool] | None:
+    """Find the 58x210 mm choice in ``lpoptions -l`` output.
+
+    Returns ``(choice, already_default)`` or ``None`` when the PPD has no such
+    size (raw queues, office printers).
+    """
+    for raw in str(lpoptions_text or "").splitlines():
+        head, sep, rest = raw.partition(":")
+        if not sep or not head.strip().startswith("PageSize/"):
+            continue
+        for token in rest.split():
+            default = token.startswith("*")
+            choice = token.lstrip("*")
+            if _RECEIPT_PAGESIZE_RE.match(choice):
+                return choice, default
+    return None
+
+
+def is_receipt_printer(name: str, device_uri: str = "") -> bool:
+    text = f"{name} {device_uri}"
+    return bool(_RECEIPT_NAME_RE.search(text)) and not _OFFICE_PRINTER_RE.search(text)
+
+
+def _read_page_size_options(queue: str) -> str:
+    try:
+        completed = subprocess.run(
+            [cups_bin("lpoptions"), "-p", queue, "-l"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20.0,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise PrintersError(f"No se pudieron leer las opciones de «{queue}»: {error}") from error
+    return completed.stdout or ""
+
+
+def ensure_receipt_page_size(queues: Sequence[str] | None = None) -> tuple[str, ...]:
+    """Make 58 mm x 210 mm the default paper of every thermal queue.
+
+    Returns the queues that were changed. Queues whose driver has no such
+    size are left alone.
+    """
+    if queues is None:
+        names = [
+            item.name
+            for item in list_printers().printers
+            if is_receipt_printer(item.name, item.device_uri)
+        ]
+    else:
+        names = [sanitize_printer_name(item) for item in queues]
+    changed: list[str] = []
+    for name in names:
+        if not name:
+            continue
+        picked = choose_receipt_page_size(_read_page_size_options(name))
+        if picked is None or picked[1]:
+            continue
+        choice = picked[0]
+        _run_admin(
+            [
+                cups_bin("lpadmin"),
+                "-p",
+                name,
+                "-o",
+                f"PageSize={choice}",
+                "-o",
+                f"PageRegion={choice}",
+            ],
+            label=f"fijar papel 58x210 en «{name}»",
+        )
+        changed.append(name)
+    return tuple(changed)
+
+
 def enable_lan_sharing(*, share_printers: Sequence[str] | None = None) -> None:
     """Allow other LAN hosts to use printers attached to this PC."""
     _cupsctl_share_printers(True)

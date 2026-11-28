@@ -46,6 +46,13 @@ def main(argv: list[str]) -> int:
         paths.append(Path(argv[1]).expanduser())
     config = service.load_escpos_config(*paths)
     try:
+        fixed = service.ensure_receipt_page_size()
+    except service.PrintersError as error:
+        print(f"aviso: no se pudo fijar el papel 58x210: {error}", file=sys.stderr)
+    else:
+        if fixed:
+            print(f"Papel 58x210 mm fijado en: {', '.join(fixed)}")
+    try:
         result = service.ensure_escpos_printer(config)
     except service.PrintersError as error:
         print(f"error: {error}", file=sys.stderr)

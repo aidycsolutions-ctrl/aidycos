@@ -488,6 +488,42 @@ class EscposQueueTests(unittest.TestCase):
         self.assertTrue(result.removed_placeholder)
         self.assertTrue(any(cmd[-2:] == ("-x", "Tickets") for cmd in recorded), recorded)
 
+    def test_choose_receipt_page_size(self) -> None:
+        service = _load_service()
+        text = (
+            "PageSize/Media Size: *X48MMY65MM X48MMY105MM X48MMY210MM "
+            "X48MMY297MM Custom.WIDTHxHEIGHT\n"
+            "Resolution/Resolution: *203x203dpi\n"
+        )
+        self.assertEqual(service.choose_receipt_page_size(text), ("X48MMY210MM", False))
+        self.assertEqual(
+            service.choose_receipt_page_size(text.replace("*X48MMY65MM", "X48MMY65MM").replace("X48MMY210MM", "*X48MMY210MM")),
+            ("X48MMY210MM", True),
+        )
+        self.assertIsNone(service.choose_receipt_page_size("PageSize/Media: *Letter A4\n"))
+        self.assertIsNone(service.choose_receipt_page_size(""))
+
+    def test_receipt_printer_detection_skips_office_inkjets(self) -> None:
+        service = _load_service()
+        self.assertTrue(service.is_receipt_printer("Xprinter_XP58", "usb://YICHIP3121/POS-58"))
+        self.assertFalse(service.is_receipt_printer("HP_Smart_Tank_585", "ipp://localhost/ipp/print"))
+
+    def test_ensure_receipt_page_size_sets_only_when_needed(self) -> None:
+        service = _load_service()
+        recorded: list[tuple[str, ...]] = []
+        service._run = lambda argv, **_kwargs: recorded.append(tuple(argv))
+        service.cups_bin = lambda name: name
+        service._read_page_size_options = lambda queue: (
+            "PageSize/Media Size: *X48MMY65MM X48MMY210MM\n"
+            if queue == "Xprinter_XP58"
+            else "PageSize/Media Size: X48MMY65MM *X48MMY210MM\n"
+        )
+        changed = service.ensure_receipt_page_size(("Xprinter_XP58", "Other_58"))
+        self.assertEqual(changed, ("Xprinter_XP58",))
+        self.assertEqual(len(recorded), 1)
+        self.assertIn("PageSize=X48MMY210MM", recorded[0])
+        self.assertIn("PageRegion=X48MMY210MM", recorded[0])
+
 
 if __name__ == "__main__":
     unittest.main()
